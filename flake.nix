@@ -20,6 +20,7 @@
           ninja
           pkg-config
           edid-decode
+          jq
           libevdi
           libdrm
           libva

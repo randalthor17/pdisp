@@ -49,7 +49,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - AOA on the target tablet (Samsung, Android 16): **yes** (protocol 2, accessory mode in ~800 ms, USB 2.0 high speed).
 - Open, carried forward: intra refresh in practice, raw-capture text quality, tablet `MediaCodec` accepting the stream (M5), AOA permission prompt and auto-launch (M7).
 
-**M1: Virtual output**
+**M1: Virtual output** (done 2026-11-21; `meson test` runs the checks, the niri one needs a free evdi device)
 - EDID generator (timing, physical size, name, serial, later chromaticity) with unit tests checked against `edid-decode`. Physical size must be right in the base-block centimetre fields as well as the timing descriptor, because niri reads the former.
 - Daemon creates an evdi device, connects it with the EDID, and disconnects and reconnects it on demand.
 - Pass: `niri msg outputs` shows the output with the right mode and physical size. Disconnect and reconnect keeps the same output identity (make, model, serial).
