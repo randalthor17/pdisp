@@ -25,7 +25,24 @@ vdisplay_dep = declare_dependency(
 edid_cli_lib = static_library('pdisp-edid-cli', 'tools/edid_cli.c', dependencies: edid_dep)
 edid_cli_dep = declare_dependency(link_with: edid_cli_lib, dependencies: edid_dep)
 
+# Wayland client (test pattern) and capture/PNG tools
+zlib_dep = dependency('zlib')
+wayland_client_dep = dependency('wayland-client')
+wayland_scanner = find_program('wayland-scanner')
+xdg_xml = dependency('wayland-protocols').get_variable('pkgdatadir') / 'stable/xdg-shell/xdg-shell.xml'
+xdg_shell_h = custom_target('xdg-shell-client-header',
+  input: xdg_xml, output: 'xdg-shell-client-protocol.h',
+  command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'])
+xdg_shell_c = custom_target('xdg-shell-protocol-code',
+  input: xdg_xml, output: 'xdg-shell-protocol.c',
+  command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
+
 pdisp_edid = executable('pdisp-edid', 'tools/pdisp-edid.c', dependencies: edid_cli_dep)
+pdisp_pattern = executable('pdisp-pattern', 'tools/pdisp-pattern.c', xdg_shell_h, xdg_shell_c,
+  include_directories: inc, dependencies: wayland_client_dep)
+pdisp_capture = executable('pdisp-capture', 'tools/pdisp-capture.c', 'tools/png.c',
+  dependencies: [edid_cli_dep, vdisplay_dep, zlib_dep])
+
 pdisp_vdisplay = executable('pdisp-vdisplay', 'tools/pdisp-vdisplay.c', dependencies: [edid_cli_dep, vdisplay_dep])
 
 test_edid = executable('test_edid', 'tests/test_edid.c', dependencies: [edid_dep, m_dep])
@@ -47,4 +64,12 @@ test('m1 niri output', m1_check,
   protocol: 'exitcode',
   is_parallel: false,
   timeout: 60,
+  suite: 'integration')
+
+m2_check = find_program('tests/m2_capture_check.sh')
+test('m2 capture round trip', m2_check,
+  args: [pdisp_capture, pdisp_pattern, meson.current_build_dir() / 'm2-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
   suite: 'integration')

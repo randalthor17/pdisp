@@ -13,18 +13,24 @@
       packages.${system} = { inherit libevdi; };
 
       devShells.${system}.default = pkgs.mkShell {
-        packages = with pkgs; [
+        nativeBuildInputs = with pkgs; [
           gcc
           gdb
           meson
           ninja
           pkg-config
+          wayland-scanner
           edid-decode
           jq
+        ];
+        buildInputs = with pkgs; [
           libevdi
           libdrm
           libva
           libusb1
+          wayland
+          wayland-protocols
+          zlib
         ];
       };
     };

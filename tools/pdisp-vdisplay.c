@@ -4,7 +4,6 @@
 #include "vdisplay.h"
 
 #include <errno.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -28,16 +27,15 @@ static void on_mode(const struct vdisplay_mode *m, void *u) { (void)u; LOG("mode
 static void on_dpms(int m, void *u) { (void)u; LOG("dpms %d", m); }
 static void on_crtc(int s, void *u) { (void)u; LOG("crtc_state %d", s); }
 
-/* Dispatch events for `secs` seconds, or until a signal arrives. */
+/* Run the event loop for `secs` seconds, or until a signal arrives. */
 static void run_for(struct vdisplay *vd, double secs)
 {
-	struct pollfd pfd = { .fd = vdisplay_event_fd(vd), .events = POLLIN };
 	double end = now() + secs;
 	while (!stop && now() < end) {
 		int ms = (int)((end - now()) * 1000);
 		if (ms > 200) ms = 200;
 		if (ms < 0) ms = 0;
-		if (poll(&pfd, 1, ms) > 0) vdisplay_dispatch(vd);
+		vdisplay_pump(vd, ms);
 	}
 }
 

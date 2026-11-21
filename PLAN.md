@@ -54,7 +54,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - Daemon creates an evdi device, connects it with the EDID, and disconnects and reconnects it on demand.
 - Pass: `niri msg outputs` shows the output with the right mode and physical size. Disconnect and reconnect keeps the same output identity (make, model, serial).
 
-**M2: Capture**
+**M2: Capture** (done 2026-11-21: bit-exact pattern round trip; animated capture ~58 fps at 2304x1440@60 with 1.2 ms average and 5.7 ms worst grab, mostly partial rects; see `tests/m2_capture_check.sh`)
 - Receive frames and dirty rects from `libevdi`, with the request-while-ready loop.
 - Pass: a test pattern on the virtual output round-trips to a PNG that matches. Capture time per frame is logged. A moving window produces partial rects and no more than one update per compositor frame.
 
