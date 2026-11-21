@@ -54,6 +54,10 @@ These hooks are not tested here.
 - On a phone: `adb shell input tap/swipe` into the app, and `pkexec build/pdisp-evdump` on the PC (used for the Pixel 8a result above).
 
 ## Known limits
+- **Touch must stay on the virtual display (requirement, user 2026-11-22).** Without the binding above niri sends the touches to its
+  first output, i.e. onto a real monitor. So the binding is not optional: the daemon should say loudly when it has not been confirmed
+  (the line it prints), and packaging (M11) should ship it as an include for niri and the hook for other compositors. A compositor-free
+  fallback (scaling the touch range to the virtual output's rectangle inside the whole layout) is possible but fragile, and is not done.
 - Compositor gestures (scroll, pinch) are the compositor's: the events are standard touchscreen events, but whether niri 26.04 or
   an application turns them into scrolling or zooming was not checked here.
 - A plugged-in phone's app prefers the USB path when the cable is attached, even when the PC is only listening on Wi-Fi; it then
