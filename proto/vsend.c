@@ -135,7 +135,10 @@ int vsend_submit(struct vsend *vs, uint32_t frame_id, uint32_t ref_frame_id, uin
 
 	struct vtx_frame vf;
 	int rc = vtx_frame_init(&vf, frame_id, ref_frame_id, capture_us, vs->cfg.epoch, vflags, copy, size,
-				vs->cfg.shard_size, vs->fec_percent);
+				vs->cfg.shard_size,
+				/* every later frame depends on a keyframe: it gets the most protection, whatever the recent loss was (the very first
+				 * one is sent before any loss has been measured, on a link that may have been idle) */
+				(vflags & PROTO_VFLAG_IDR) ? vs->cfg.fec_percent_max : vs->fec_percent);
 	if (rc != 0) { free(copy); return rc; }
 	unsigned jobs = vtx_frame_packets(&vf);
 	if (vs->normal.count + jobs > VS_QUEUE) { free(copy); return -EAGAIN; }

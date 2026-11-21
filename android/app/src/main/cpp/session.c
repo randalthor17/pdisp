@@ -199,7 +199,8 @@ static int decode_cb(const struct vrecv_frame *f, void *user)
 	/* A hardware decoder has only a few input buffers. Refusing a frame breaks the reference chain and costs a keyframe, so wait
 	 * a little (showing finished pictures meanwhile, which is what frees buffers) before giving up. */
 	ssize_t idx = AMediaCodec_dequeueInputBuffer(s->codec, 0);
-	for (int i = 0; idx < 0 && i < 6; i++) {
+	/* the first frames after start() may find the decoder still warming up: give them a lot longer than steady state */
+	for (int i = 0, tries = s->decoded < 8 ? 60 : 6; idx < 0 && i < tries; i++) {
 		drain_output(s);
 		idx = AMediaCodec_dequeueInputBuffer(s->codec, 1000);
 	}
