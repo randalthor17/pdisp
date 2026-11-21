@@ -74,3 +74,22 @@ slower to deliver pictures: decode latency p50 **227 ms** (p95 244 ms) against *
 same device, A/B by system property in one session. The defaults are already the low-latency behaviour on this decoder; the keys
 were reverted. (The Tab S9 FE's 48 to 60 ms is therefore not something these two keys fix; `dpb-num`, `extra-buffer-num` and
 `reorder-timestamp` remain untried and need the tablet.)
+
+
+## Galaxy Tab S9 FE (SM-X510, Android 16, 1440x2304, Exynos HEVC decoder), 2026-11-22
+Over USB and over Wi-Fi the tablet streams at its native size. With a steady 60 fps animated pattern it held 40 Mbit/s for 70 s with no loss
+over USB and 45 s over Wi-Fi. Its decoder is slower than the Pixel's and has periodic stalls (decode p50 17-23 ms, p99 130-150 ms against the
+Pixel's 16-30 ms); it starts with the real-time priority hint only (the operating-rate hint fails with "Failed to get real time resource").
+
+**A bug found with it, not specific to the tablet:** while the tablet was being touched or written on, the bitrate fell from 40 to 2-4 Mbit/s with
+no real loss, FEC rose, and the stream finally stalled. Cause: the PC numbers every datagram in one sequence, including the INPUT_ACK it sends
+for each touch or pen event; the app (and the viewer) handled an ack and skipped the receiver's packet accounting, so every ack looked like a
+lost packet (83% "loss" in a reproduction), and the sender's rule "above 20% loss, cut the rate" fired. Fixed (commit ae02361); a test
+(`test_stream`: acks counted vs not, 0 vs 833 permille) guards the receiver's contract. After the fix, 5 minutes of use stayed at 40 Mbit/s
+except one 12 s dip that matched a real 31 ms delay spike.
+
+The daemon's stats line now also shows the worst queue delay, decode time and lowest receive rate the phone reported in the interval
+(`phone: queue ... decode ... recv >= ...`). The phone never fills in `decode_ms` yet (always 0.0).
+
+Still open on the tablet: the decoder's periodic 100+ ms stalls (not the cause of the collapse above), and a hang reported with the S Pen side
+button (docs/touch.md).
