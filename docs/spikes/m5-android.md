@@ -36,3 +36,15 @@ Findings:
 - Samsung runs the panel at 90 Hz unless asked; `ANativeWindow_setFrameRate` did not change it, the window's `preferredRefreshRate` does.
 - Remaining: a few per cent of frames still arrive more than 25 ms apart (Wi-Fi jitter); `refused` still reaches 10 per 30 s late
   in a run, each costing a keyframe.
+
+## Second device: Pixel 8a (Android 17, API 37, 1080x2400 at 420 dpi, Tensor G3), Wi-Fi
+- Works unchanged. It also uses `c2.exynos.hevc.decoder` (Samsung LSI IP) with the same vendor parameters. Decode is 9 to 12 ms p50
+  (15 to 24 ms p95) against 48 to 60 ms on the Tab S9 FE, so the tablet's long decoder pipeline is a property of that device
+  (3.3 MP at 60 fps on an Exynos 1380), not of the stream. See `docs/latency.md` for capture-to-vsync numbers measured on the phone.
+- Rotation works: the app is `fullUser` (follows the system auto-rotate setting), reports the new size with DISPLAY_CHANGED, the daemon
+  rebuilds the output (epoch 1) and the phone confirms; streaming was back in about 100 ms at 60 fps with no lost frames, picture
+  correct in both orientations (checked by screenshot of the animated pattern).
+- Landscape keyboard on phones is full screen and hid the Connect button: the field now uses no extract UI and the Go key connects.
+- `maximumWindowMetrics` does not follow rotation, `currentWindowMetrics` does.
+- Testing tips: `adb shell settings put system user_rotation N` works only while the app is in front (the launcher resets it);
+  `wm user-rotation lock` did nothing on Android 17.

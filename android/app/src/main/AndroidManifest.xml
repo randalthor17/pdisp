@@ -10,7 +10,7 @@
     <application android:label="pdisp" android:allowBackup="false"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
         <activity android:name=".MainActivity" android:exported="true"
-            android:screenOrientation="sensorLandscape" android:launchMode="singleTop"
+            android:screenOrientation="fullUser" android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

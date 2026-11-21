@@ -125,6 +125,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         }
     }
 
+    /** The phone was rotated: tell the PC, which rebuilds its virtual monitor at the new size (RECONFIGURE). */
+    override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (handle != 0L) {
+            val d = displayInfo()
+            PdispNative.nativeDisplayChanged(handle, d.width, d.height)
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleIntent(intent)
@@ -180,9 +189,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     /** The display's real pixel size (landscape, rounded down to a multiple of 8 as the encoder needs) and its refresh rates in mHz. */
     private fun displayInfo(): DisplayInfo {
-        val b = windowManager.maximumWindowMetrics.bounds
-        val w = maxOf(b.width(), b.height()) and 7.inv()
-        val h = minOf(b.width(), b.height()) and 7.inv()
+        val b = windowManager.currentWindowMetrics.bounds // follows the current rotation (this activity is full screen)
+        val w = b.width() and 7.inv()
+        val h = b.height() and 7.inv()
         val display = if (Build.VERSION.SDK_INT >= 30) display!! else @Suppress("DEPRECATION") windowManager.defaultDisplay
         val size = display.mode
         val rates = display.supportedModes

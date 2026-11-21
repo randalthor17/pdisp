@@ -39,6 +39,7 @@ struct session {
 	atomic_bool stop, finished;
 	ANativeWindow *window;
 	char host[128], name[PROTO_NAME_MAX];
+	atomic_uint pending_w, pending_h; /* a new display size reported by the UI thread, sent by the session thread */
 	int usb_fd; /* >= 0: talk over this USB accessory descriptor instead of the network */
 	unsigned port, width, height, dpi, n_rates, rates_mhz[PROTO_MAX_RATES];
 
@@ -283,6 +284,7 @@ static int send_hello(struct session *s, struct net_ctl *ctl, uint16_t type)
 	h.device_caps = PROTO_CAP_TOUCH;
 	h.native_width = (uint16_t)s->width;
 	h.native_height = (uint16_t)s->height;
+	h.orientation = s->height > s->width ? 1 : 0;
 	h.density_dpi = (uint16_t)s->dpi;
 	for (unsigned i = 0; i < s->n_rates && i < PROTO_MAX_RATES; i++) h.refresh_mhz[h.n_refresh++] = s->rates_mhz[i];
 	h.n_codecs = 1;
@@ -426,6 +428,13 @@ static void *run(void *arg)
 			vrecv_decoder_error(vr);
 		}
 		drain_output(s);
+		{ /* the UI thread reported a rotation: tell the PC, which answers with RECONFIGURE */
+			unsigned pw = atomic_exchange(&s->pending_w, 0), ph2 = atomic_exchange(&s->pending_h, 0);
+			if (pw && ph2 && (pw != s->width || ph2 != s->height)) {
+				s->width = pw; s->height = ph2;
+				if (send_hello(s, &ctl, PROTO_CTL_DISPLAY_CHANGED) == 0) set_status(s, "display changed to %ux%u, waiting for the PC", pw, ph2);
+			}
+		}
 		vrecv_tick(vr, now);
 		if (!streaming && now >= next_hello) { /* until video arrives keep telling the PC where we are */
 			next_hello = now + 100000;
@@ -553,4 +562,13 @@ JNIEXPORT jboolean JNICALL Java_dev_pdisp_PdispNative_nativeFinished(JNIEnv *env
 	(void)env; (void)cls;
 	struct session *s = (struct session *)(intptr_t)handle;
 	return !s || atomic_load(&s->finished);
+}
+
+JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeDisplayChanged(JNIEnv *env, jclass cls, jlong handle, jint width, jint height)
+{
+	(void)env; (void)cls;
+	struct session *s = (struct session *)(intptr_t)handle;
+	if (!s || width <= 0 || height <= 0) return;
+	atomic_store(&s->pending_h, (unsigned)height);
+	atomic_store(&s->pending_w, (unsigned)width);
 }

@@ -17,6 +17,9 @@ object PdispNative {
         width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String,
     ): Long
 
+    /** The display size changed (rotation): the session reports it to the PC. */
+    external fun nativeDisplayChanged(handle: Long, width: Int, height: Int)
+
     external fun nativeStop(handle: Long)
     external fun nativeStatus(handle: Long): String
     external fun nativeFinished(handle: Long): Boolean
