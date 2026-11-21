@@ -9,7 +9,7 @@ add_project_arguments('-D_POSIX_C_SOURCE=200809L', language: 'c')
 m_dep = meson.get_compiler('c').find_library('m')
 evdi_dep = dependency('evdi')
 
-inc = include_directories('daemon', 'tools')
+inc = include_directories('daemon', 'tools', 'proto')
 
 edid_lib = static_library('pdisp-edid', 'daemon/edid.c',
   include_directories: inc,
@@ -106,3 +106,8 @@ test('loss recovery', find_program('tests/loss_recovery_check.sh'),
   protocol: 'exitcode',
   timeout: 120,
   suite: 'integration')
+
+proto_lib = static_library('pdisp-proto', 'proto/proto.c', include_directories: inc)
+proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
+test_proto = executable('test_proto', 'tests/test_proto.c', dependencies: proto_dep)
+test('proto wire format', test_proto)

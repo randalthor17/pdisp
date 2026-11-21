@@ -1,6 +1,7 @@
-# pdisp protocol, version 1 (draft 0, for review)
+# pdisp protocol, version 1 (draft 1)
 
-Status: draft for review, not implemented. Nothing here is final until the open questions at the end are settled.
+Status: reviewed; the open questions at the end are settled (section 8). Implementation in progress: the wire codecs are in
+`proto/` (M4). Still subject to change while the congestion control and the secure handshake (M6) are designed.
 The design follows from the M0 spikes (`docs/spikes/`): Wi-Fi is the main transport, so loss and congestion must not
 stall or corrupt the picture, and the encoder can recover from loss without a keyframe
 (`encoder_invalidate_from`, bit-exact for up to 5 lost frames).
@@ -303,16 +304,13 @@ seconds. Sent every second. Used to turn `capture_us` into glass-to-glass latenc
   picture recovers within a bounded time, and latency does not grow.
 - The desktop test client enforces the frame-gating rule and logs held, skipped and recovered frames.
 
-## 8. Open questions
+## 8. Decisions (settled in review)
 
-1. **Packet overhead.** Fixed overhead is 16 (header) + 28 (video header) + 16 (tag) = 60 bytes per 1200-byte shard, 5%.
-   Acceptable, or compact the video header (for example, send `capture_us` and `frame_bytes` only in shard 0 of block 0)?
-2. **FEC defaults.** Start at 10% parity, adaptive between 0 and 30% from `loss_permille`?
-3. **Shard size.** 1200 bytes avoids fragmentation on Wi-Fi (MTU 1500) and tunnels. Larger shards (1400) cut overhead and
-   packet rate but risk fragmentation.
-4. **Input.** Redundant event stream (as specified) versus a state snapshot. Events keep taps and fast gestures exact; the
-   cost is a slightly larger packet while events are unacknowledged.
-5. **Cursor.** Drawn on the phone from CURSOR_POS and shapes (as specified), versus baked into the video. The cursor then
-   has no encode latency, but cursor effects the compositor draws itself are not shown.
-6. **Library sharing.** One C library used from Kotlin through JNI (leaning), or reimplemented with the vectors as the check.
-7. **Codecs.** HEVC Main 8-bit only in v1, with AV1 and Main10 reserved in the codec list.
+1. **Packet overhead**: kept as specified (60 bytes per 1200-byte shard, 5%). Compaction can come later as a version-1 TLV-free change
+   only if measurements show it matters.
+2. **FEC defaults**: 10% parity initially, adaptive between 0 and 30% from `loss_permille`.
+3. **Shard size**: 1200 bytes.
+4. **Input**: the redundant ordered event stream (section 3.8), not state snapshots.
+5. **Cursor**: drawn on the phone from CURSOR_POS and CURSOR_SHAPE.
+6. **Library sharing**: one C library, used from Kotlin through JNI.
+7. **Codecs**: HEVC Main 8-bit only in v1; AV1 and Main10 stay reserved in the codec list.
