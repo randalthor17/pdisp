@@ -575,6 +575,10 @@ out:
 	if (ufd >= 0) close(ufd);
 	net_ctl_close(&ctl);
 	if (mux) usbmux_stop(mux);
+	/* The accessory descriptor is ours to close. While it stays open Android treats the accessory as in use and ignores the PC's next
+	 * request to switch to it, so a cable pulled and replugged never reconnects. A reader still blocked on it (usbmux detached it) holds
+	 * its own reference to the file and ends when the link does; the thread never reads again after stop, so the number is not reused under it. */
+	if (s->usb_fd >= 0) { close(s->usb_fd); s->usb_fd = -1; }
 	atomic_store(&s->finished, true);
 	return NULL;
 }

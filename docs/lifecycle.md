@@ -68,10 +68,16 @@ With a 15 s grace period, driving the phone with adb (nothing was locked: a lock
 | daemon restarted under the open app | monitor gone after 222 ms; the app reconnected to the restarted daemon by itself |
 | app killed | the monitor stayed for the grace period, then went; nothing reconnected |
 
-## USB: a bug found, fixed, and not yet re-verified
-Simulating a pulled cable (the phone leaves accessory mode) the daemon noticed in 861 ms and kept the monitor, but never got the phone
-back. Cause: while waiting for a phone over USB the daemon now polls in half-second slices (so it can keep servicing the display), and each
-slice asked the phone to switch to accessory mode again. The switch takes about a second to complete, so each new request restarted it:
-a livelock. `usblink_open` now remembers that it asked a moment ago (5 s) and waits for the accessory to appear. The burst of repeated
-requests also left this Pixel's USB accessory handling stuck until the cable is replugged, so the fix has not been verified end to end yet.
-`PDISP_USB_DEBUG=1` makes the daemon print what it does to each USB device.
+## USB: what is verified, and an Android limit
+Real pull and replug of the cable (Pixel 8a, Android 17), daemon with a 25 s grace period:
+- The daemon noticed the pull in 0.9 s, kept the monitor, and after the grace period removed it (as designed).
+- It then asked the phone to switch to accessory mode again, but **the phone did not switch**: after a pull Android reverts its USB mode to
+  charging only, and its USB service then fails to open `/dev/usb_accessory` (`UsbDeviceManagerJNI: could not open /dev/usb_accessory`)
+  until the mode is set by hand again in the USB notification. Setting it from adb (`svc usb setFunctions mtp`) did not help either. A fresh
+  replug with the mode set, or force-stopping the app, did connect. So **reconnecting over USB after an unplug needs the user to re-select
+  File transfer on this phone**; a program cannot do it without privileges. The Wi-Fi path reconnects by itself.
+- Two bugs found on the way were fixed: the daemon asked for the accessory switch every poll slice (each request restarted the switch);
+  it now waits 5 s between requests. The app never closed the accessory descriptor when a session ended; it does now.
+- Still unverified: whether USB reuse of the monitor works within the grace period when the phone has been put back into File transfer in
+  time. `PDISP_USB_DEBUG=1` prints the daemon's USB steps.
+- Idea for later: the app can notice a cable with no accessory and tell the user to set USB to File transfer.
