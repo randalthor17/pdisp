@@ -7,10 +7,10 @@
 #   - plain clients and a secure client against an insecure daemon fail; the daemon survives strangers
 #   - a world-readable identity file is refused
 # Needs niri, a free evdi device and a VAAPI HEVC encoder (the streaming cases). Exits 77 (meson: skipped) otherwise.
-# usage: m6_pairing_check.sh <pdispd> <pdisp-view> [artifact-dir]
+# usage: m6_pairing_check.sh <pdispd> <pdisp-view> [artifact-dir] [pdisp-keys]
 set -u
 daemon=$1; viewer=$2
-art=${3:-$(mktemp -d)}; mkdir -p "$art"; rm -rf "$art"/*
+art=${3:-$(mktemp -d)}; keys=${4:-}; mkdir -p "$art"; rm -rf "$art"/*
 skip() { echo "SKIP: $*"; exit 77; }
 command -v niri >/dev/null 2>&1 || skip "niri not installed"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
@@ -126,6 +126,27 @@ run_viewer "$art/phoneA"
 [ "$vrc" = 4 ] || fail "a secure client did not notice the insecure daemon (exit $vrc)"
 stop_daemon
 echo "ok 7: insecure daemon detected by a secure client"
+
+# 9. revoking: list and remove with the tool; the removed device is refused at once, the other one still works
+if [ -n "$keys" ]; then
+	"$keys" -K "$art/pc" list >"$art/list.txt" 2>&1 || fail "pdisp-keys list failed"
+	[ "$(grep -c . "$art/list.txt")" = 2 ] || fail "the list should show two devices: $(cat "$art/list.txt")"
+	"$keys" -K "$art/pc" identity | grep -q '^[0-9a-f]\{4\}-' || fail "pdisp-keys identity printed no fingerprint"
+	"$keys" -K "$art/pc" remove ab >/dev/null 2>&1 && fail "a 2-character prefix removed something"
+	victim=$("$keys" -K "$art/phoneA" identity | cut -d' ' -f1)
+	grep -q "$victim" "$art/list.txt" || fail "phone A is not in the list"
+	"$keys" -K "$art/pc" remove "$victim" | grep -q "removed 1" || fail "pdisp-keys remove did not remove the device"
+	[ "$(nkeys)" = 1 ] || fail "after one removal $(nkeys) keys remain"
+	start_daemon deny -o
+	run_viewer "$art/phoneA"
+	[ "$vrc" = 5 ] || fail "the revoked device was not refused (exit $vrc)"
+	stop_daemon
+	start_daemon deny -o
+	run_viewer "$art/phoneB"
+	[ "$vrc" = 0 ] && streams || fail "the device that was not revoked stopped working (exit $vrc)"
+	stop_daemon
+	echo "ok 9: devices listed and revoked with pdisp-keys"
+fi
 
 # 8. an identity file that other users can read is refused
 chmod 644 "$art/pc/identity"

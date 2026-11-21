@@ -24,8 +24,8 @@ All integers are little-endian. "PC" is the daemon, "phone" is the Android app (
   turns them back into a stream socket and a datagram socket, so everything above the transport is unchanged. FEC, NACK and
   retransmission have nothing to repair there but keep working (the receiver still acknowledges frames). The first datagram
   from the phone (HELLO_UDP) and READY are sent as on Wi-Fi.
-- Security (milestone M6) wraps both channels: a handshake authenticated by the phone's key, then per-packet
-  authenticated encryption on UDP (section 3.4). Milestone M4 uses a `security = none` mode that exists for development only.
+- Security wraps both channels (`docs/security.md`): a Noise XX handshake on the control channel, then authenticated encryption of
+  every control frame and every datagram (section 3.4). `security = none` exists for development only.
 
 ## 2. Control channel (TCP)
 
@@ -59,7 +59,7 @@ Unknown message types are skipped by length. Receivers must never read past `len
 Strings are `u16 length` + UTF-8. Lists are `u16 count` + elements. Every HELLO, SETUP and RECONFIGURE ends with
 extension TLVs (`u16 type, u16 length, value`); unknown TLVs are skipped, which is how fields are added without a version bump.
 
-**HELLO** (phone to PC, first message after the (M6) secure handshake):
+**HELLO** (phone to PC, the first message after the secure handshake):
 
     u16 proto_min, u16 proto_max         supported protocol versions, this document is version 1
     string device_name
@@ -113,8 +113,10 @@ PONGs and then sees none for 6 to 8 s treats the control channel as dead. The UD
 
     phone                                   PC
       TCP connect  ------------------------>
-      (M6: secure handshake, device authorised)
-      HELLO  ------------------------------>
+      HANDSHAKE x3 (Noise XX, plain frames) <->   both sides now hold keys and each other's static key
+      (from here every control frame and datagram is encrypted)
+      HELLO  ------------------------------>      the PC checks the phone's key against its authorised devices
+      <---------------- PAIRING_REQUIRED          only for an unknown key, when the PC's user is being asked (compare the codes)
                                             creates or reconnects the virtual output from the HELLO display fields
       <------------------------------ SETUP   (or REJECT)
       opens UDP, configures the decoder
@@ -203,9 +205,11 @@ rejects every frame after one lost reference (`docs/spikes/m0-loss-resilience.md
 
 ### 3.4 Authenticated encryption (M6, informative)
 
-Each direction has its own key from the handshake. The AEAD is ChaCha20-Poly1305 with the 96-bit nonce formed from a
-fixed direction byte and the 64-bit `seq`; the common header is the associated data. `seq` therefore never repeats for a
-key. The control channel is protected by the same handshake. Details are fixed in M6.
+Each direction has its own key from the handshake, and each epoch its own keys derived from those (a new epoch restarts `seq` at
+0). The AEAD is ChaCha20-Poly1305 with the 96-bit nonce formed from a direction byte and the 64-bit `seq`; the common header is the
+associated data and stays readable, the payload is encrypted and a 16-byte tag follows. All datagrams of one sender, whatever their
+type, share one `seq` space, so a (key, nonce) pair never repeats. The receiver keeps a 1024-packet replay window. The control channel
+frames are sealed with a counter nonce. Full description: `docs/security.md`.
 
 ### 3.5 FEEDBACK (phone to PC)
 
@@ -308,7 +312,6 @@ seconds. Sent every second. Used to turn `capture_us` into glass-to-glass latenc
 ## 6. Not covered by this draft
 
 - Device discovery (manual host and port in M4; mDNS later) and the AOA accessory strings.
-- The secure handshake and key derivation (M6).
 - The congestion control algorithm beyond the wire fields above.
 - Audio, clipboard, multiple phones (not in v1).
 - HDR and 10-bit signalling beyond the reserved codec and capability values.

@@ -81,7 +81,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - Kotlin app: TCP connect, handshake with real resolution, density and refresh rates, `MediaCodec` surface decode.
 - Pass: the phone shows the virtual monitor at its native resolution.
 
-**M6: Pairing and security**
+**M6: Pairing and security** (done 2026-11-21: Noise XX handshake with static keys, `authorized_keys` store with `pdisp-keys`, pairing prompt with a comparison code, encrypted control channel and datagrams; tests cover rejection and passwordless reconnect; verified on the Pixel 8a over Wi-Fi and USB; design in `docs/security.md`)
 - Keypair, authorized-keys store, approval prompt, encrypted transport.
 - Pass: an unauthorized key is rejected. An authorized key reconnects without a prompt. Tests cover both.
 

@@ -24,6 +24,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "handshake.h"
+#include "identity.h"
 #include "net.h"
 #include "proto.h"
 #include "timesync.h"
@@ -40,6 +42,7 @@ struct session {
 	ANativeWindow *window;
 	char host[128], name[PROTO_NAME_MAX];
 	atomic_uint pending_w, pending_h; /* a new display size reported by the UI thread, sent by the session thread */
+	char identity_dir[512]; /* the app's private files directory: the device key and the PCs it has paired with */
 	int usb_fd; /* >= 0: talk over this USB accessory descriptor instead of the network */
 	unsigned port, width, height, dpi, n_rates, rates_mhz[PROTO_MAX_RATES];
 
@@ -298,6 +301,18 @@ static int send_hello(struct session *s, struct net_ctl *ctl, uint16_t type)
 	return n < 0 ? n : net_ctl_send(ctl, type, b, (size_t)n);
 }
 
+/* a datagram to the PC: sealed with the session keys, sent on the connected USB socket or to the PC's UDP port */
+static ssize_t dsend(struct session *s, int ufd, struct sec_udp *udp, const struct sockaddr_in *to, const uint8_t *buf, size_t n)
+{
+	uint8_t tmp[2048 + SEC_UDP_OVERHEAD];
+	if (n > 2048) return -1;
+	memcpy(tmp, buf, n);
+	int sn = sec_udp_seal(udp, tmp, n, sizeof tmp);
+	if (sn < 0) return -1;
+	if (s->usb_fd >= 0) return send(ufd, tmp, (size_t)sn, MSG_DONTWAIT);
+	return sendto(ufd, tmp, (size_t)sn, 0, (const struct sockaddr *)to, sizeof *to);
+}
+
 static void *run(void *arg)
 {
 	struct session *s = arg;
@@ -319,6 +334,27 @@ static void *run(void *arg)
 	struct vrecv *vr = NULL;
 	int ufd = -1;
 
+	/* ---- the secure handshake: who is the PC, and does it know us? */
+	struct sec_udp udp;
+	struct hs_peer pc;
+	char pcs_path[640];
+	bool new_pc = false;
+	{
+		struct identity id;
+		int created, e = identity_load_or_create(s->identity_dir, &id, &created);
+		if (e) { set_status(s, "cannot use this device's key: %s", strerror(-e)); goto out; }
+		set_status(s, "securing the connection");
+		e = hs_initiate(&ctl, &id, s->name, 10000, &pc, &udp);
+		pc_wipe(&id, sizeof id);
+		if (e == -EPROTO) { set_status(s, "the PC does not use the secure protocol: update pdispd"); goto out; }
+		if (e) { set_status(s, "the secure handshake failed: %s", strerror(-e)); goto out; }
+		snprintf(pcs_path, sizeof pcs_path, "%s/known_pcs", s->identity_dir);
+		new_pc = keystore_find(pcs_path, pc.pub, NULL, 0) <= 0;
+		char fp[IDENTITY_FINGERPRINT_LEN];
+		identity_fingerprint(pc.pub, fp);
+		LOGI("PC '%s' key %s%s, code %06u", pc.name, fp, new_pc ? " (not paired before)" : "", pc.sas);
+	}
+
 	uint16_t type;
 	const uint8_t *payload;
 	size_t plen;
@@ -327,7 +363,12 @@ static void *run(void *arg)
 	int r = 0;
 	while (!atomic_load(&s->stop) && (r = net_ctl_recv(&ctl, &type, &payload, &plen, 200)) == 0) {}
 	if (atomic_load(&s->stop)) goto out;
-	if (r != 1) { set_status(s, "the PC closed the connection"); goto out; }
+	if (r == 1 && type == PROTO_CTL_PAIRING_REQUIRED) { /* the PC asks its user to approve this device: show the code to compare */
+		set_status(s, "Pairing: approve this device on the PC. The code there must be %06u", pc.sas);
+		for (int i = 0; i < 600 && !atomic_load(&s->stop) && (r = net_ctl_recv(&ctl, &type, &payload, &plen, 200)) == 0; i++) {}
+		if (atomic_load(&s->stop)) goto out;
+	}
+	if (r != 1) { set_status(s, r == 0 ? "the PC did not answer in time" : "the PC closed the connection"); goto out; }
 	if (type == PROTO_CTL_REJECT) {
 		struct proto_reject rj;
 		if (proto_reject_decode(payload, plen, &rj) == 0) set_status(s, "the PC refused: %s", rj.text);
@@ -336,6 +377,7 @@ static void *run(void *arg)
 	}
 	struct proto_setup su;
 	if (type != PROTO_CTL_SETUP || proto_setup_decode(payload, plen, &su) != 0) { set_status(s, "bad SETUP from the PC"); goto out; }
+	if (new_pc) keystore_add(pcs_path, pc.pub, pc.name); /* the PC let us in: remember it */
 	if (open_codec(s, &su.params) != 0) { set_status(s, "this device cannot decode the stream"); goto out; }
 
 	struct vrecv_config rc = { .session_id = su.session_id, .shard_size = su.params.shard_size };
@@ -357,13 +399,11 @@ static void *run(void *arg)
 		getpeername(cfd, (struct sockaddr *)&to, &pl);
 		to.sin_port = htons(su.udp_port);
 	}
-#define DSEND(buf, n) (s->usb_fd >= 0 ? send(ufd, (buf), (n), MSG_DONTWAIT) : sendto(ufd, (buf), (n), 0, (struct sockaddr *)&to, sizeof to))
-	uint64_t udp_seq = 0;
-	struct proto_pkt_hdr hh = { .session_id = su.session_id, .type = PROTO_PKT_HELLO_UDP };
+#define DSEND(buf, n) dsend(s, ufd, &udp, &to, (buf), (n))
 	uint8_t hb[PROTO_PKT_HDR_SIZE], pkt[2048];
-	hh.seq = udp_seq++;
-	proto_pkt_hdr_write(&hh, hb, sizeof hb);
-	DSEND(hb, sizeof hb);
+	/* all our datagrams come from one sequence space: it is the AEAD nonce, two counters would reuse nonces */
+	int hn = vrecv_make_packet(vr, PROTO_PKT_HELLO_UDP, NULL, 0, hb, sizeof hb);
+	if (hn > 0) DSEND(hb, (size_t)hn);
 	net_ctl_send(&ctl, PROTO_CTL_READY, NULL, 0);
 
 	uint64_t t0 = net_now_us(), next_fb = t0 + 10000, next_hello = t0 + 100000, next_ping = t0 + 1000000, last_stat = t0;
@@ -379,6 +419,11 @@ static void *run(void *arg)
 		for (;;) {
 			ssize_t got = recv(ufd, pkt, sizeof pkt, 0);
 			if (got < 0) break;
+			{ /* only authenticated, fresh datagrams reach the protocol code */
+				int o = sec_udp_open(&udp, pkt, (size_t)got);
+				if (o < 0) continue;
+				got = o;
+			}
 			last_rx = now;
 			streaming = true;
 			struct proto_pkt_hdr ph;
@@ -416,6 +461,7 @@ static void *run(void *arg)
 					struct vrecv_config nrc = { .session_id = su.session_id, .shard_size = np.shard_size };
 					vr = vrecv_create(&nrc, &rcb);
 					vrecv_set_epoch(vr, np.epoch);
+					sec_udp_set_epoch(&udp, np.epoch); /* sequence numbers restart: new datagram keys */
 					width = np.width; height = np.height;
 					net_ctl_send(&ctl, PROTO_CTL_RECONFIGURE_ACK, NULL, 0);
 				}
@@ -448,9 +494,8 @@ static void *run(void *arg)
 		}
 		if (!streaming && now >= next_hello) { /* until video arrives keep telling the PC where we are */
 			next_hello = now + 100000;
-			hh.seq = udp_seq++;
-			proto_pkt_hdr_write(&hh, hb, sizeof hb);
-			DSEND(hb, sizeof hb);
+			hn = vrecv_make_packet(vr, PROTO_PKT_HELLO_UDP, NULL, 0, hb, sizeof hb);
+			if (hn > 0) DSEND(hb, (size_t)hn);
 		}
 		if (streaming && now >= next_time) { /* ask for the PC's clock: every 100 ms at first to settle, then once a second */
 			next_time = now + (s->time_resp < 5 ? 100000 : 1000000);
@@ -502,12 +547,17 @@ out:
 }
 
 static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, jobject surface, jint width, jint height, jint dpi,
-			  jintArray rates, jstring name)
+			  jintArray rates, jstring name, jstring identity_dir)
 {
 	struct session *s = calloc(1, sizeof *s);
 	if (!s) return 0;
 	s->usb_fd = usb_fd;
 	pthread_mutex_init(&s->status_mu, NULL);
+	{
+		const char *d = (*env)->GetStringUTFChars(env, identity_dir, NULL);
+		snprintf(s->identity_dir, sizeof s->identity_dir, "%s", d);
+		(*env)->ReleaseStringUTFChars(env, identity_dir, d);
+	}
 	if (host) {
 		const char *h = (*env)->GetStringUTFChars(env, host, NULL);
 		snprintf(s->host, sizeof s->host, "%s", h);
@@ -529,18 +579,18 @@ static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, job
 }
 
 JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStart(JNIEnv *env, jclass cls, jstring host, jint port, jobject surface,
-							      jint width, jint height, jint dpi, jintArray rates, jstring name)
+							      jint width, jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir)
 {
 	(void)cls;
-	return start_common(env, host, port, -1, surface, width, height, dpi, rates, name);
+	return start_common(env, host, port, -1, surface, width, height, dpi, rates, name, identity_dir);
 }
 
 /* `fd` is the descriptor of the open USB accessory; ownership passes to the native side. */
 JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStartUsb(JNIEnv *env, jclass cls, jint fd, jobject surface, jint width,
-								 jint height, jint dpi, jintArray rates, jstring name)
+								 jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir)
 {
 	(void)cls;
-	return start_common(env, NULL, 0, fd, surface, width, height, dpi, rates, name);
+	return start_common(env, NULL, 0, fd, surface, width, height, dpi, rates, name, identity_dir);
 }
 
 JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeStop(JNIEnv *env, jclass cls, jlong handle)

@@ -171,6 +171,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val d = displayInfo()
         handle = PdispNative.nativeStartUsb(
             pfd.detachFd(), surfaceView.holder.surface, d.width, d.height, resources.displayMetrics.densityDpi, d.rates, Build.MODEL,
+            filesDir.absolutePath,
         )
         sessionStarted()
     }
@@ -207,6 +208,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val d = displayInfo()
         handle = PdispNative.nativeStart(
             host, 47110, surfaceView.holder.surface, d.width, d.height, resources.displayMetrics.densityDpi, d.rates, Build.MODEL,
+            filesDir.absolutePath,
         )
         sessionStarted()
     }

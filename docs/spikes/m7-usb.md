@@ -32,6 +32,11 @@ daemon waits for the next plug-in. `tests/m7_usb_check.sh` repeats this (needs t
 - Switching takes under a second; from starting the daemon to the first frame took about 5 s in the test.
 - The daemon waits 120 s for the app's HELLO in USB mode (a person may have to tap a prompt).
 
+## Update after M6
+The USB path runs the same secure handshake inside the byte pipe, so the cable is not trusted any more than Wi-Fi. Verified on the
+Pixel 8a (accessory mode, Android 17): the system prompt appears with "Always open" pre-ticked on that phone, and with "Only this time" the
+app starts, pairs and streams. `pdispd -u` now needs an identity directory like any other mode (`-K`, `-P`).
+
 ## Not verified
 - ADB off (accessory ids `2d00`/`2d04`), other vendors and a USB 3 port, sleep/resume of the tablet or the PC, two tablets at once,
   and the permission prompt on a clean install.

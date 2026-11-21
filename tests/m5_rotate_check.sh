@@ -32,7 +32,7 @@ view_center() { adb shell uiautomator dump /sdcard/pdisp_ui.xml >/dev/null 2>&1
 	adb shell cat /sdcard/pdisp_ui.xml | tr '>' '\n' | grep "$1" | grep -o 'bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' | head -1 |
 		tr -cs '0-9' ' ' | awk '{ printf "%d %d", ($1 + $3) / 2, ($2 + $4) / 2 }'; }
 
-"$daemon" -S 120 -n pdisp-dev >"$dlog" 2>&1 &
+"$daemon" -S 120 -n pdisp-dev -P accept -K "$art/pc-id" >"$dlog" 2>&1 &
 dpid=$!
 i=0; while [ $i -lt 40 ] && ! ss -ltn | grep -q ":47110 "; do kill -0 "$dpid" 2>/dev/null || { wait "$dpid"; [ $? = 3 ] && skip "no free evdi device"; fail "daemon exited"; }; sleep 0.5; i=$((i + 1)); done
 

@@ -25,7 +25,7 @@ fail() { echo "FAIL: $*"; grep -v '^\[libevdi\|^libva' "$dlog" | tail -12; exit 
 
 adb shell am force-stop dev.pdisp; adb shell input keyevent KEYCODE_HOME
 adb shell svc usb setFunctions mtp >/dev/null; sleep 4 # leave accessory mode: the daemon must switch the device again
-"$daemon" -u >"$dlog" 2>&1 &
+"$daemon" -u -P accept -K "$art/pc-id" >"$dlog" 2>&1 &
 dpid=$!
 i=0; while [ $i -lt 120 ] && ! grep -q "streaming to" "$dlog"; do
 	kill -0 "$dpid" 2>/dev/null || { wait "$dpid"; [ $? = 3 ] && skip "no free evdi device"; fail "daemon exited early"; }

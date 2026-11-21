@@ -8,13 +8,13 @@ object PdispNative {
 
     external fun nativeStart(
         host: String, port: Int, surface: Surface,
-        width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String,
+        width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String, identityDir: String,
     ): Long
 
     /** Same session over a USB accessory file descriptor (ownership passes to the native side). */
     external fun nativeStartUsb(
         fd: Int, surface: Surface,
-        width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String,
+        width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String, identityDir: String,
     ): Long
 
     /** The display size changed (rotation): the session reports it to the PC. */
