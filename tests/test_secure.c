@@ -284,6 +284,41 @@ static int via(struct sec_udp *tx, struct sec_udp *rx, uint64_t seq)
 	return sec_udp_open(rx, pkt, (size_t)n);
 }
 
+static void udp_epochs(void)
+{
+	uint8_t k1[32], k2[32];
+	new_keys(k1, k2);
+	struct sec_udp tx, rx;
+	sec_udp_init(&tx, k1, k2, 1);
+	sec_udp_init(&rx, k2, k1, 0);
+	uint8_t a[100], b[100];
+	/* the same sequence number in two epochs must never be encrypted with the same keystream */
+	make_pkt(a, 40, 7, PROTO_PKT_VIDEO);
+	memcpy(b, a, 56);
+	int na = sec_udp_seal(&tx, a, 56, sizeof a);
+	sec_udp_set_epoch(&tx, 1);
+	int nb = sec_udp_seal(&tx, b, 56, sizeof b);
+	CHECK(na == nb && memcmp(a + 16, b + 16, 56 - 16 + 16) != 0);
+	/* the receiver in epoch 0 accepts the first and refuses the second; after switching it is the other way round */
+	uint8_t a2[100], b2[100];
+	memcpy(a2, a, (size_t)na); memcpy(b2, b, (size_t)nb);
+	CHECK(sec_udp_open(&rx, a, (size_t)na) == 56);
+	CHECK(sec_udp_open(&rx, b, (size_t)nb) < 0); /* (already-seen sequence number: refused before any cryptography) */
+	sec_udp_set_epoch(&rx, 1);
+	CHECK(sec_udp_open(&rx, a2, (size_t)na) == -EBADMSG);
+	CHECK(sec_udp_open(&rx, b2, (size_t)nb) == 56);
+	/* the new epoch starts a fresh window: sequence numbers start again from 0 and are accepted once each */
+	CHECK(via(&tx, &rx, 0) == 36 && via(&tx, &rx, 0) == -EEXIST && via(&tx, &rx, 1) == 36);
+	/* epochs are independent, not a chain: going to epoch 0 again would reuse keys, which the callers never do, but it must at least
+	 * give the epoch-0 keys back deterministically */
+	struct sec_udp again;
+	sec_udp_init(&again, k1, k2, 1);
+	CHECK(memcmp(again.send_key, tx.send_key, 32) != 0);
+	sec_udp_set_epoch(&again, 1);
+	CHECK(memcmp(again.send_key, tx.send_key, 32) == 0);
+	CHECK(memcmp(again.send_key, again.recv_key, 32) != 0 && memcmp(again.send_key, k1, 32) != 0);
+}
+
 static void udp_window(void)
 {
 	uint8_t k1[32], k2[32];
@@ -332,6 +367,7 @@ int main(void)
 	ctl_attacks();
 	udp_basic();
 	udp_window();
+	udp_epochs();
 	if (failures) { fprintf(stderr, "%d failure(s)\n", failures); return 1; }
 	puts("secure: all checks passed");
 	return 0;

@@ -41,7 +41,9 @@ int sec_ctl_open(struct sec_ctl *c, const uint8_t *buf, size_t len, uint8_t *out
 /* ---- datagrams */
 
 struct sec_udp {
-	uint8_t send_key[PC_KEY_LEN], recv_key[PC_KEY_LEN];
+	uint8_t base_send[PC_KEY_LEN], base_recv[PC_KEY_LEN]; /* from the handshake */
+	uint8_t send_key[PC_KEY_LEN], recv_key[PC_KEY_LEN];   /* the keys of the current epoch, derived from the base keys */
+	uint8_t epoch;
 	uint8_t send_dir, recv_dir; /* 0: initiator (phone) to responder (PC), 1: the other way */
 	uint64_t highest;
 	uint64_t window[SEC_UDP_WINDOW / 64];
@@ -49,6 +51,10 @@ struct sec_udp {
 };
 
 void sec_udp_init(struct sec_udp *u, const uint8_t send_key[PC_KEY_LEN], const uint8_t recv_key[PC_KEY_LEN], int is_initiator);
+/* A new epoch (RECONFIGURE) starts a new sender whose sequence numbers restart at 0, so it must not reuse the old keys: each epoch
+ * has its own keys derived from the handshake keys, and a fresh replay window. Both sides call this when they learn of the epoch.
+ * Packets of another epoch then fail authentication, which is the intended way to drop them. sec_udp_init() starts at epoch 0. */
+void sec_udp_set_epoch(struct sec_udp *u, uint8_t epoch);
 /* In place: `pkt` holds `len` bytes (16-byte header plus payload) and has room for SEC_UDP_OVERHEAD more. Returns the new length,
  * or a negative errno. Needs no state, so it may be called from any thread. */
 int sec_udp_seal(const struct sec_udp *u, uint8_t *pkt, size_t len, size_t cap);

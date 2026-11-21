@@ -51,10 +51,32 @@ int sec_ctl_open(struct sec_ctl *c, const uint8_t *buf, size_t len, uint8_t *out
 void sec_udp_init(struct sec_udp *u, const uint8_t send_key[PC_KEY_LEN], const uint8_t recv_key[PC_KEY_LEN], int is_initiator)
 {
 	memset(u, 0, sizeof *u);
-	memcpy(u->send_key, send_key, PC_KEY_LEN);
-	memcpy(u->recv_key, recv_key, PC_KEY_LEN);
+	memcpy(u->base_send, send_key, PC_KEY_LEN);
+	memcpy(u->base_recv, recv_key, PC_KEY_LEN);
 	u->send_dir = is_initiator ? 0 : 1;
 	u->recv_dir = is_initiator ? 1 : 0;
+	sec_udp_set_epoch(u, 0);
+}
+
+static void epoch_key(uint8_t out[PC_KEY_LEN], const uint8_t base[PC_KEY_LEN], uint8_t epoch)
+{
+	static const uint8_t label[] = "pdisp/udp/epoch";
+	uint8_t msg[sizeof label], d[PC_HASH_LEN];
+	memcpy(msg, label, sizeof label - 1);
+	msg[sizeof label - 1] = epoch;
+	pc_hmac(d, base, PC_KEY_LEN, msg, sizeof label, NULL, 0);
+	memcpy(out, d, PC_KEY_LEN);
+	pc_wipe(d, sizeof d);
+}
+
+void sec_udp_set_epoch(struct sec_udp *u, uint8_t epoch)
+{
+	u->epoch = epoch;
+	epoch_key(u->send_key, u->base_send, epoch);
+	epoch_key(u->recv_key, u->base_recv, epoch);
+	u->highest = 0;
+	memset(u->window, 0, sizeof u->window);
+	u->have_any = 0;
 }
 
 static void udp_nonce(uint8_t nonce[PC_NONCE_LEN], uint8_t dir, const uint8_t *pkt)
