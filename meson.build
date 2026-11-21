@@ -206,3 +206,6 @@ test('m6 pairing and authorisation', m6_pairing,
 
 test_inputseq = executable('test_inputseq', 'tests/test_inputseq.c', dependencies: proto_dep)
 test('input event stream', test_inputseq)
+
+test_touch = executable('test_touch', 'tests/test_touch.c', 'daemon/touch.c', dependencies: proto_dep)
+test('uinput touchscreen', test_touch)
