@@ -26,6 +26,7 @@
 
 #include "handshake.h"
 #include "identity.h"
+#include "inputseq.h"
 #include "net.h"
 #include "proto.h"
 #include "timesync.h"
@@ -46,6 +47,9 @@ struct session {
 	int usb_fd; /* >= 0: talk over this USB accessory descriptor instead of the network */
 	unsigned port, width, height, dpi, n_rates, rates_mhz[PROTO_MAX_RATES];
 
+	pthread_mutex_t in_mu;      /* guards in_tx: touches arrive on the UI thread, the session thread sends them */
+	struct input_tx in_tx;
+	uint64_t touch_pushed, touch_acked;
 	pthread_mutex_t status_mu;
 	char status[256];
 
@@ -441,6 +445,16 @@ static void *run(void *arg)
 					s->time_resp++;
 				}
 			}
+			if (got >= PROTO_PKT_HDR_SIZE + 4 && proto_pkt_hdr_read(pkt, (size_t)got, &ph) == 0 && ph.type == PROTO_PKT_INPUT_ACK) {
+				uint32_t acked;
+				if (proto_u32_decode(pkt + PROTO_PKT_HDR_SIZE, (size_t)got - PROTO_PKT_HDR_SIZE, &acked) == 0) {
+					pthread_mutex_lock(&s->in_mu);
+					input_tx_ack(&s->in_tx, acked);
+					if (acked > s->touch_acked) s->touch_acked = acked;
+					pthread_mutex_unlock(&s->in_mu);
+				}
+				continue;
+			}
 			vrecv_on_packet(vr, pkt, (size_t)got, now);
 		}
 		if (p[1].revents & (POLLIN | POLLHUP)) {
@@ -505,6 +519,16 @@ static void *run(void *arg)
 				if (tn > 0) DSEND(tp, (size_t)tn);
 			}
 		}
+		{ /* the phone's touches: new events at once, unacknowledged ones again every 12 ms */
+			uint8_t ib[PROTO_MAX_INPUT_EVENTS * 24 + 16], ip[sizeof ib + PROTO_PKT_HDR_SIZE];
+			pthread_mutex_lock(&s->in_mu);
+			int in_n = input_tx_build(&s->in_tx, now, 12000, ib, sizeof ib);
+			pthread_mutex_unlock(&s->in_mu);
+			if (in_n > 0) {
+				int pn = vrecv_make_packet(vr, PROTO_PKT_INPUT, ib, (size_t)in_n, ip, sizeof ip);
+				if (pn > 0) DSEND(ip, (size_t)pn);
+			}
+		}
 		if (now >= next_fb) {
 			next_fb = now + 10000;
 			int fn = vrecv_feedback_packet(vr, now, pkt, sizeof pkt);
@@ -520,9 +544,10 @@ static void *run(void *arg)
 		if (now - last_stat >= 500000) {
 			double secs = (now - last_stat) / 1e6;
 			const struct vrecv_stats *st = vrecv_stats(vr);
-			set_status(s, "%ux%u  %.0f fps  decoded %llu  lost frames %llu  IDR requests %llu", width, height,
+			set_status(s, "%ux%u  %.0f fps  decoded %llu  lost frames %llu  IDR requests %llu  touches %llu/%llu", width, height,
 				   (s->rendered - last_rendered) / secs, (unsigned long long)st->frames_decoded,
-				   (unsigned long long)st->frames_given_up, (unsigned long long)st->idr_decoded);
+				   (unsigned long long)st->frames_given_up, (unsigned long long)st->idr_decoded,
+				   (unsigned long long)s->touch_pushed, (unsigned long long)s->touch_acked);
 			last_stat = now;
 			last_rendered = s->rendered;
 			if (now - last_cadence >= 5000000) { last_cadence = now; report_cadence(s); }
@@ -553,6 +578,8 @@ static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, job
 	if (!s) return 0;
 	s->usb_fd = usb_fd;
 	pthread_mutex_init(&s->status_mu, NULL);
+	pthread_mutex_init(&s->in_mu, NULL);
+	input_tx_init(&s->in_tx);
 	{
 		const char *d = (*env)->GetStringUTFChars(env, identity_dir, NULL);
 		snprintf(s->identity_dir, sizeof s->identity_dir, "%s", d);
@@ -631,4 +658,26 @@ JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeDisplayChanged(JNIEnv *e
 	if (!s || width <= 0 || height <= 0) return;
 	atomic_store(&s->pending_h, (unsigned)height);
 	atomic_store(&s->pending_w, (unsigned)width);
+}
+
+/* One touch event from the UI thread: kind 0 down, 1 move, 2 up, 3 cancel; x and y are fractions of the screen scaled to 0..65535. */
+JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeTouch(JNIEnv *env, jclass cls, jlong handle, jint kind, jint pointer_id, jint x, jint y,
+							     jint pressure, jint tool)
+{
+	(void)env; (void)cls;
+	struct session *s = (struct session *)(intptr_t)handle;
+	if (!s || kind < 0 || kind > 3 || pointer_id < 0 || pointer_id > 255) return;
+	struct proto_input_event e;
+	memset(&e, 0, sizeof e);
+	e.kind = (uint8_t)kind;
+	e.pointer_id = (uint8_t)pointer_id;
+	e.tool = (uint8_t)(tool >= 0 && tool <= 2 ? tool : 0);
+	e.x = (uint16_t)(x < 0 ? 0 : x > 65535 ? 65535 : x);
+	e.y = (uint16_t)(y < 0 ? 0 : y > 65535 ? 65535 : y);
+	e.pressure = (uint16_t)(pressure < 0 ? 0 : pressure > 65535 ? 65535 : pressure);
+	e.time_us = (uint32_t)net_now_us();
+	pthread_mutex_lock(&s->in_mu);
+	input_tx_push(&s->in_tx, e);
+	s->touch_pushed++;
+	pthread_mutex_unlock(&s->in_mu);
 }

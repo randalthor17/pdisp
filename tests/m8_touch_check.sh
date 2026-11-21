@@ -3,9 +3,12 @@
 # land on the virtual output at the right pixels, in the right order, as multitouch. Verified with a Wayland client on that output that
 # logs every touch event the compositor delivers to it. Also with half of the phone's INPUT datagrams dropped.
 #
-# The compositor must map the touchscreen to the virtual output. The check does that for niri by loading a temporary copy of your config
-# with `touch { map-to-output ... }` added (niri msg action load-config-file --path), and restores your config afterwards; your config
-# file is never written. Other compositors: the check is skipped.
+# The compositor must map the touchscreen to the virtual output, which for niri means a line in its config. This check therefore
+# CHANGES THE RUNNING COMPOSITOR'S CONFIGURATION for its duration, so it only runs when you ask for that with PDISP_TEST_NIRI_CONFIG=1:
+# it loads a temporary copy of your config with `touch { map-to-output ... }` added (relative includes such as dms/colors.kdl are turned
+# into absolute ones, so the copy loses nothing) and afterwards reloads your real file by its explicit path. Note that niri's
+# `load-config-file` without a path reloads the LAST loaded path, not your file, which is why the restore names the path. Your config
+# file is never written.
 # Needs niri, a free evdi device, a VAAPI HEVC encoder and write access to /dev/uinput (the uinput group). Exits 77 otherwise.
 # usage: m8_touch_check.sh <pdispd> <pdisp-view> <pdisp-pattern> [artifact-dir]
 set -u
@@ -15,7 +18,7 @@ skip() { echo "SKIP: $*"; exit 77; }
 command -v niri >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || skip "niri or jq missing"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
 [ -w /dev/uinput ] || skip "no write access to /dev/uinput"
-[ -z "${PDISP_NO_NIRI_CONFIG:-}" ] || skip "PDISP_NO_NIRI_CONFIG is set (the test must load a temporary niri config)"
+[ -n "${PDISP_TEST_NIRI_CONFIG:-}" ] || skip "this check changes the running niri's config for a moment: set PDISP_TEST_NIRI_CONFIG=1 to allow it"
 niri msg action load-config-file --help >/dev/null 2>&1 || skip "this niri cannot load a config file at run time"
 
 PORT=${PDISP_TEST_PORT:-47117}
@@ -23,16 +26,20 @@ SERIAL=PDISPTOUCH
 ID="PNP(PDI) pdisp $SERIAL"
 W=2304; H=1440
 dpid=; vpid=; ppid=
-cleanup() { for p in $ppid $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; wait 2>/dev/null; niri msg action load-config-file >/dev/null 2>&1; }
+real_cfg=$(readlink -f ~/.config/niri/config.kdl 2>/dev/null); real_dir=$HOME/.config/niri
+restore_niri() { niri msg action load-config-file --path "$HOME/.config/niri/config.kdl" >/dev/null 2>&1; } # the explicit path: see the header
+cleanup() { for p in $ppid $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; wait 2>/dev/null; restore_niri; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*"; echo "--- daemon:"; grep -v '^\[libevdi\|^libva' "$art/daemon.log" | tail -8; echo "--- viewer:"; tail -5 "$art/viewer.log"; echo "--- window:"; tail -8 "$art/window.log"; exit 1; }
 
 # a copy of the user's config with the touchscreen mapped to the virtual output (inside the existing input block, or a new one)
 cfg="$art/niri-touch.kdl"; rm -f "$cfg"
-if grep -q '^input {' ~/.config/niri/config.kdl 2>/dev/null; then
-	awk -v v="$ID" '{ print } /^input \{/ && !done { printf "    touch {\n        map-to-output \"%s\"\n    }\n", v; done=1 }' ~/.config/niri/config.kdl > "$cfg"
+# relative includes would resolve against the copy's directory and silently vanish (they are often optional): make them absolute
+sed "s|^\(include[^\"]*\)\"\([^/][^\"]*\)\"|\1\"$real_dir/\2\"|" ~/.config/niri/config.kdl > "$cfg.base"
+if grep -q '^input {' "$cfg.base"; then
+	awk -v v="$ID" '{ print } /^input \{/ && !done { printf "    touch {\n        map-to-output \"%s\"\n    }\n", v; done=1 }' "$cfg.base" > "$cfg"
 else
-	{ cat ~/.config/niri/config.kdl 2>/dev/null; printf 'input {\n    touch {\n        map-to-output "%s"\n    }\n}\n' "$ID"; } > "$cfg"
+	{ cat "$cfg.base"; printf 'input {\n    touch {\n        map-to-output "%s"\n    }\n}\n' "$ID"; } > "$cfg"
 fi
 niri validate --config "$cfg" >/dev/null 2>&1 || skip "cannot build a valid test config from yours"
 
@@ -57,7 +64,7 @@ run_case() { # run_case <name> <input loss percent> <touch script>
 	wait "$vpid"; vrc=$?; vpid=
 	kill "$ppid" 2>/dev/null; wait "$ppid" 2>/dev/null; ppid=
 	wait "$dpid" 2>/dev/null; dpid=
-	niri msg action load-config-file >/dev/null 2>&1
+	restore_niri
 	[ "$vrc" = 0 ] || fail "$name: the viewer failed (rc=$vrc)"
 	grep -q "touchscreen created" "$art/daemon.log" || fail "$name: the daemon created no touchscreen"
 	grep -q "touch=yes" "$art/window.log" || fail "$name: the compositor never offered touch to the window"

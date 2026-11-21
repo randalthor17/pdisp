@@ -89,7 +89,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - libusb switch to accessory mode, bulk endpoints, udev rule, app launches on plug-in.
 - Pass: plug in, tap permission once, and the monitor appears with no adb or developer mode.
 
-**M8: Touch**
+**M8: Touch** (done 2026-11-21: phone touches become a uinput multitouch screen on the PC; verified with a Wayland client on the virtual output and on a Pixel 8a; the niri binding is one config line, see `docs/touch.md`; compositor gestures not verified)
 - `uinput` multitouch device created from handshake capabilities. Touch messages over the protocol. Niri binding adapter.
 - Pass: touches land on the phone's output, and compositor gestures (scroll, pinch) work.
 

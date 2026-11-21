@@ -20,6 +20,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -54,9 +55,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             if (handle != 0L) {
                 val text = PdispNative.nativeStatus(handle)
                 if (PdispNative.nativeFinished(handle)) { stopSession(); status.text = text } // it ended or failed: keep its message
-                else { status.text = text; ui.postDelayed(this, 500) }
+                else { status.text = text; showOverlay(!streamingText.containsMatchIn(text)); ui.postDelayed(this, 500) }
             }
         }
+    }
+
+    private val streamingText = Regex("^\\d+x\\d+ +\\d+ fps")
+
+    /** While the picture is showing, the whole screen is the PC's monitor: the overlay would swallow touches and cover the corner. */
+    private fun showOverlay(show: Boolean) { overlay.visibility = if (show) View.VISIBLE else View.GONE }
+
+    override fun onBackPressed() {
+        if (handle != 0L) { stopSession(); showOverlay(true) } else super.onBackPressed() // Back ends the stream first, then leaves the app
     }
 
     private val permissionReceiver = object : BroadcastReceiver() {
@@ -72,7 +82,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-        surfaceView = SurfaceView(this).also { it.holder.addCallback(this) }
+        surfaceView = SurfaceView(this).also {
+            it.holder.addCallback(this)
+            it.setOnTouchListener { v, ev -> if (handle != 0L) { sendTouch(v, ev); true } else false }
+        }
         root.addView(surfaceView)
 
         hostField = EditText(this).apply {
@@ -122,6 +135,35 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
                     c.release()
                 } catch (e: Exception) { Log.i("pdisp", "  vendor params: $e") }
             }
+        }
+    }
+
+    private val lastSent = HashMap<Int, Pair<Int, Int>>() // pointer id -> last position sent, so a still finger sends nothing
+
+    /** Touches on the stream go to the PC as the events of a touchscreen (the PC's compositor does the gestures). */
+    private fun sendTouch(v: View, ev: MotionEvent) {
+        val w = v.width.toFloat().coerceAtLeast(1f)
+        val h = v.height.toFloat().coerceAtLeast(1f)
+        fun px(i: Int) = (ev.getX(i) / w * 65535f).toInt().coerceIn(0, 65535)
+        fun py(i: Int) = (ev.getY(i) / h * 65535f).toInt().coerceIn(0, 65535)
+        fun pr(i: Int) = (ev.getPressure(i).coerceIn(0f, 1f) * 65535f).toInt()
+        fun tool(i: Int) = when (ev.getToolType(i)) {
+            MotionEvent.TOOL_TYPE_STYLUS -> 1
+            MotionEvent.TOOL_TYPE_ERASER -> 2
+            else -> 0
+        }
+        fun send(kind: Int, i: Int) {
+            val id = ev.getPointerId(i)
+            val x = px(i); val y = py(i)
+            if (kind == 1 && lastSent[id] == Pair(x, y)) return
+            lastSent[id] = Pair(x, y)
+            PdispNative.nativeTouch(handle, kind, id, x, y, pr(i), tool(i))
+        }
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> send(0, ev.actionIndex)
+            MotionEvent.ACTION_MOVE -> for (i in 0 until ev.pointerCount) send(1, i)
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> { send(2, ev.actionIndex); lastSent.remove(ev.getPointerId(ev.actionIndex)) }
+            MotionEvent.ACTION_CANCEL -> { for (i in 0 until ev.pointerCount) send(3, i); lastSent.clear() }
         }
     }
 
@@ -232,6 +274,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         wifiLock = null
         button.text = "Connect"
         status.text = "disconnected"
+        showOverlay(true)
     }
 
     override fun surfaceCreated(holder: SurfaceHolder) {

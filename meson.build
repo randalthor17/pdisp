@@ -219,3 +219,5 @@ test('m8 touch reaches the virtual output', m8_touch,
   is_parallel: false,
   timeout: 240,
   suite: 'integration')
+
+pdisp_evdump = executable('pdisp-evdump', 'tools/pdisp-evdump.c')
