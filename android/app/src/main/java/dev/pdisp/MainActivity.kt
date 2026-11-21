@@ -17,6 +17,7 @@ import android.hardware.usb.UsbManager
 import android.net.wifi.WifiManager
 import android.app.KeyguardManager
 import android.os.Build
+import android.os.BatteryManager
 import android.os.PowerManager
 import kotlin.math.cos
 import kotlin.math.sin
@@ -318,9 +319,17 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         if (!wantConnected || handle != 0L || !surfaceReady) return
         when (val t = target) {
             is Target.Host -> startHostSession(t.host)
-            Target.Usb -> usb.accessoryList?.firstOrNull()?.let { connectUsb(it) } ?: run { status.text = "waiting for the USB cable"; scheduleReconnect() }
+            Target.Usb -> usb.accessoryList?.firstOrNull()?.let { connectUsb(it) } ?: run { status.text = usbWaitingText(); scheduleReconnect() }
             null -> {}
         }
+    }
+
+    /** Android keeps a new USB connection charging-only until the user allows data; then the PC's request to switch to accessory mode is ignored. */
+    private fun usbWaitingText(): String {
+        val plugged = registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0) ?: 0
+        return if (plugged and BatteryManager.BATTERY_PLUGGED_USB != 0)
+            "cable connected, but USB is charging only: open the USB notification and choose File transfer"
+        else "waiting for the USB cable"
     }
 
     private fun scheduleReconnect() {

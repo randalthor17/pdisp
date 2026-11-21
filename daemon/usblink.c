@@ -37,6 +37,7 @@ struct usblink {
  * waits for a phone, in short slices; a device needs about a second to re-enumerate after the request, and asking again in that time
  * restarts the switch, so a recent request is waited for instead of repeated. */
 static uint64_t last_switch_us;
+static int warned_switch; /* said once that a request was ignored; reset when an accessory shows up */
 
 static uint64_t mono_us(void)
 {
@@ -213,6 +214,10 @@ int usblink_open(int timeout_ms, unsigned vid_filter, const volatile int *stop, 
 				DBG("%04x:%04x: switch to accessory mode: %s", d.idVendor, d.idProduct, se ? strerror(-se) : "requested");
 				if (se == 0) {
 					switched = 1;
+					if (last_switch_us && !warned_switch) { /* a second request: the first was ignored */
+						fprintf(stderr, "usblink: the phone %04x:%04x did not switch to accessory mode: on it, choose File transfer in the USB notification\n", d.idVendor, d.idProduct);
+						warned_switch = 1;
+					}
 					last_switch_us = mono_us();
 					have_path = path_of(list[i], &bus, ports, &np) == 0;
 					snprintf(l->desc, sizeof l->desc, "%04x:%04x", d.idVendor, d.idProduct);
@@ -220,7 +225,7 @@ int usblink_open(int timeout_ms, unsigned vid_filter, const volatile int *stop, 
 				libusb_close(h);
 			}
 		}
-		if (target) break;
+		if (target) { warned_switch = 0; break; }
 		libusb_free_device_list(list, 1);
 		list = NULL;
 		struct timespec t1;

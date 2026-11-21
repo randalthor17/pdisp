@@ -81,3 +81,11 @@ Real pull and replug of the cable (Pixel 8a, Android 17), daemon with a 25 s gra
 - Still unverified: whether USB reuse of the monitor works within the grace period when the phone has been put back into File transfer in
   time. `PDISP_USB_DEBUG=1` prints the daemon's USB steps.
 - Idea for later: the app can notice a cable with no accessory and tell the user to set USB to File transfer.
+
+### What we do about it (no adb, no developer options)
+Android keeps a new USB connection charging-only until the user allows data, and ignores the accessory switch meanwhile. That is its
+policy for every accessory app, so the user must choose File transfer in the USB notification after (re)plugging. We make it obvious and
+automatic afterwards: the app says "cable connected, but USB is charging only: open the USB notification and choose File transfer" while
+it sees power over USB and no accessory, and connects by itself when the accessory appears; the daemon logs the same advice once when
+a phone ignores its switch request, and keeps asking (every 5 s). Install docs must mention the step. The adb path
+(`adb reverse`) is not an option: devices will not have USB debugging on.
