@@ -22,7 +22,7 @@
 struct usbmux;
 
 /* USBMUX_LINK_BLOCKING_READ: link_rd cannot be polled or woken (Android's /dev/usb_accessory): a read stays blocked until data
- * arrives or the cable is pulled. usbmux_stop() then leaves the read thread to finish on its own instead of joining it. */
+ * arrives or the cable is pulled. usbmux_stop() interrupts it with SIGUSR2 (so the device is released) and, if it still does not return, leaves it to finish on its own. */
 #define USBMUX_LINK_BLOCKING_READ 1
 
 /* Returns 0 with the mux and the application's descriptors, or a negative errno. */

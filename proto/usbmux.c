@@ -2,6 +2,8 @@
 
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
+#include <time.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -14,6 +16,7 @@ struct usbmux {
 	int ctl_in, dgram_in; /* the mux's ends of the two local sockets */
 	atomic_int stop;
 	atomic_int down;
+	atomic_int rx_done;   /* the read thread has finished with the link */
 	int wake[2];          /* pipe that wakes the threads on stop */
 	pthread_t tx, rx;
 	int started;
@@ -136,12 +139,22 @@ static void *rx_thread(void *arg)
 done:
 	free(buf);
 	mark_down(m);
+	atomic_store(&m->rx_done, 1);
 	unref(m);
 	return NULL;
 }
 
+static void interrupt_handler(int sig) { (void)sig; } /* only has to make a blocked read return EINTR */
+
 int usbmux_start(int link_rd, int link_wr, unsigned flags, struct usbmux **out, int *ctl, int *dgram)
 {
+	if (flags & USBMUX_LINK_BLOCKING_READ) {
+		struct sigaction sa;
+		memset(&sa, 0, sizeof sa);
+		sa.sa_handler = interrupt_handler; /* no SA_RESTART: the read must return */
+		sigemptyset(&sa.sa_mask);
+		sigaction(SIGUSR2, &sa, NULL);
+	}
 	struct usbmux *m = calloc(1, sizeof *m);
 	if (!m) return -ENOMEM;
 	m->link_rd = link_rd;
@@ -191,7 +204,16 @@ void usbmux_stop(struct usbmux *m)
 	atomic_store(&m->stop, 1);
 	(void)!write(m->wake[1], "x", 1);
 	pthread_join(m->tx, NULL);
-	if (m->flags & USBMUX_LINK_BLOCKING_READ) pthread_detach(m->rx); /* it ends when the link does, and frees the mux then */
-	else pthread_join(m->rx, NULL);
+	if (m->flags & USBMUX_LINK_BLOCKING_READ) {
+		/* A read that cannot be polled stays inside the driver, and for as long as it does the process keeps the device open, which on
+		 * Android makes the system refuse the next accessory (it cannot open /dev/usb_accessory). A signal ends the read with EINTR. */
+		for (int i = 0; i < 100 && !atomic_load(&m->rx_done); i++) {
+			pthread_kill(m->rx, SIGUSR2);
+			struct timespec ts = { 0, 5 * 1000 * 1000 };
+			nanosleep(&ts, NULL);
+		}
+		if (atomic_load(&m->rx_done)) pthread_join(m->rx, NULL);
+		else pthread_detach(m->rx); /* it ends when the link does, and frees the mux then */
+	} else pthread_join(m->rx, NULL);
 	unref(m);
 }

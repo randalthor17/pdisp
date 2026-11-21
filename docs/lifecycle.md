@@ -95,3 +95,17 @@ Real pull and replug, grace 40 s: pull noticed at once, monitor kept; the phone 
 request (the daemon logged the advice); about 9 s after the replug the accessory appeared on its own (no manual File transfer choice this
 time), and the daemon logged "the virtual output 1080x2400 is still there: reusing it" and streamed on it. One run; a phone that stays charging-only
 still needs the user's choice.
+
+### Repeat test (2026-11-22, no adb or USB setting changes between rounds)
+Real pull and replug, 4 rounds, grace 60 s, with the fixes to the daemon (5 s between switch requests) and the app (the accessory descriptor is
+closed; the blocked accessory read is interrupted with a signal, because a thread stuck inside the driver's `acc_read` kept
+`/dev/usb_accessory` open and made Android's USB service log `could not open /dev/usb_accessory` and refuse every later switch):
+
+| Round | Gap before replug | Result |
+|---|---|---|
+| 1 | ~5 s | reconnected by itself after 11.5 s, same monitor reused; a second session started 1.3 s later and recreated the monitor (cause not found) |
+| 2 | ~5 s | reconnected after 11.7 s, same monitor reused |
+| 3 | ~20 s | reconnected, same monitor reused |
+| 4 | ~1-2 s | reconnected (about 1 s slower), same monitor reused |
+
+No round needed the File transfer choice. An earlier run, before the blocked-read fix, failed every time even with File transfer chosen.
