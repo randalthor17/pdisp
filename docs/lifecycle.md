@@ -1,0 +1,58 @@
+# Session lifecycle (M9)
+
+The virtual monitor belongs to the daemon, not to one connection. What happens to it depends on how the phone went away.
+
+| What happened | Who notices, and how fast | The monitor |
+|---|---|---|
+| The phone disconnects on purpose (Disconnect, Back, leaving the app) | CLOSE reason 0 | removed **at once** |
+| The phone's screen turns off or locks | CLOSE reason 1 | removed **at once** |
+| The cable is pulled, the app is killed, Wi-Fi drops | the control connection closes (immediately) or the USB device vanishes | kept for the **grace period** (`pdispd -g SECS`, default 30), then removed |
+| The phone goes silent (frozen, Wi-Fi dropped without a goodbye) | no datagram for 3 s, or no PONG for 8 s | kept for the grace period, which starts when the loss is noticed |
+| The phone comes back within the grace period | | the **same monitor** is reused: nothing changes for the compositor; a fresh session (new handshake, keys and keyframe) starts on it |
+| ... needing another size (it was rotated meanwhile) | | the monitor is reconfigured in place (the same hot-plug as a rotation) |
+| The phone comes back after the grace period | | a new monitor, with the same identity (EDID make, model, serial) |
+| The daemon stops or is restarted | | removed at once (its evdi device closes); the app keeps trying to reconnect, and a restarted daemon gets a new monitor with the same identity |
+| A stranger fails the handshake, or an unauthorised device is refused | | untouched: a monitor waiting for its phone keeps waiting, with the same deadline |
+
+Why two different treatments: a phone that is *lost* will probably be back (a few seconds of Wi-Fi trouble, the device waking from sleep),
+so windows should stay where they are. A phone that *left on purpose* or *locked* is not watching, and the monitor you cannot see should
+not hold windows you might need: the compositor moves them to your other monitors immediately.
+
+What the compositor does with the windows when the monitor goes and returns is its own policy; the daemon only controls the timing and keeps
+the output's identity stable. In niri, windows of a removed output move to another output and niri moves workspaces back when the
+output returns. (Not yet checked here with real windows; see "Not verified" below.)
+
+## The daemon
+`pdispd` runs one loop for its whole life (`acquire_peer`, `serve`, `teardown_output` in `daemon/pdispd.c`): wait for a phone (listening on the
+network, or polling for the accessory on USB, in half-second slices so the display keeps being serviced), serve it, then decide as in the
+table. While the monitor waits for a lost phone the daemon keeps servicing the evdi device (so compositor updates never back up) but does
+not encode. `-o` serves one session and exits, `-S` stops after a time.
+
+## The app (`MainActivity.kt`)
+- `wantConnected` and `target` (a host, or the USB cable) are what the user asked for; they outlive any one session.
+- Disconnect or Back: `nativeStop(reason 0)`, no more retrying.
+- The surface going away (screen off, lock, another app): `nativeStop(reason 1)` if the screen is off or the keyguard is locked, else 0; the wish
+  to be connected stays, and when the screen comes back (`surfaceCreated`) it reconnects by itself.
+- A session that ends by itself because the link failed is retried (after 1 s, 2 s, ... at most 5 s apart) for as long as the user wants it;
+  one that ended because the PC refused it, the key is unusable or the decoder cannot do the stream is not (the message stays).
+
+## Tested
+`tests/m9_lifecycle_check.sh` (it watches only whether the monitor exists in `niri msg outputs`; no window is opened) with a 6 s grace:
+
+| Scenario | Result |
+|---|---|
+| phone killed (as a pulled cable) | monitor stayed 6.16 s, then went |
+| phone back after 3 s | same connector, never gone (0 gaps in 4 s of polling), 87 frames decoded afterwards |
+| phone back after the grace period | a new monitor appeared |
+| CLOSE reason 1 (lock) / reason 0 (on purpose) | gone 124 ms / 123 ms after the close |
+| phone frozen (SIGSTOP) | noticed after 3.0 s, monitor gone after 9.2 s in all (3 s + 6 s grace) |
+| phone back needing another size | the monitor followed (2400x1080), frames decoded |
+| daemon restarted | monitor gone 10 ms after the daemon stopped, back with the restarted daemon under the same serial |
+
+## Not verified
+- **Windows.** The pass check in the plan is about where windows end up. The monitor's existence and timing are tested, but not niri's
+  handling of real windows on it (unplug with windows open, resume with the app open or closed). That needs windows opened on the virtual
+  output, which moves them onto your real monitor's workspaces when it goes, so it waits for your OK.
+- **The app on a device**: the lock/unlock, background/foreground and reconnect logic builds but was not run on a phone yet (the test phone
+  was locked), nor USB unplug and re-plug.
+- Android Doze and Wi-Fi power management during a long sleep.

@@ -107,7 +107,9 @@ Cursor positions use shape ids (section 3.7).
 
 **PING/PONG**: `u64 token` echoed back. Either side may send them (the phone every second, the PC every 2 s); a side that has seen
 PONGs and then sees none for 6 to 8 s treats the control channel as dead. The UDP path has its own liveness (KEEPALIVE and feedback).
-**CLOSE**: `u16 reason` (0 normal, 1 screen lock, 2 replaced by another phone, 3 error), `string text`.
+**CLOSE**: `u16 reason` (0 normal, 1 screen lock, 2 replaced by another phone, 3 error), `string text`. The reason decides what the PC does with
+the virtual monitor (docs/lifecycle.md): 0 and 1 remove it at once; a connection that just disappears, or reason 3, keeps it for a grace
+period (30 s by default) so the same phone can come back to it.
 
 ### 2.3 Session establishment
 

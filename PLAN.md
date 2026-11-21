@@ -93,7 +93,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - `uinput` multitouch device created from handshake capabilities. Touch messages over the protocol. Niri binding adapter.
 - Pass: touches land on the phone's output, and compositor gestures (scroll, pinch) work.
 
-**M9: Session lifecycle**
+**M9: Session lifecycle** (in progress 2026-11-21: grace period, removal on goodbye or lock, reuse on a quick return, app reconnect: built; the monitor lifecycle is tested, windows and the app on a device are not yet, see `docs/lifecycle.md`)
 - Grace period, hot-unplug, sleep and resume, lock.
 - Pass: a scenario matrix on niri: unplug with windows open, resume with app open, resume with app closed, lock, daemon restart. Windows end up where the design says.
 

@@ -947,6 +947,7 @@ static int run_session(double run_secs)
 		LOG("waiting for a tablet on USB");
 	}
 
+	bool single = C.once || run_secs > 0; /* -o and -S serve one session and exit */
 	uint64_t grace_deadline = 0; /* while the monitor waits for a lost phone: when it gives up */
 	int exit_code = 0;
 	for (;;) {
@@ -957,7 +958,7 @@ static int run_session(double run_secs)
 			LOG("the phone did not come back within %u s", C.grace_secs);
 			teardown_output();
 			grace_deadline = 0;
-			if (C.once) break;
+			if (single) break;
 			continue;
 		}
 		if (r) { exit_code = 1; break; }
@@ -965,8 +966,8 @@ static int run_session(double run_secs)
 		conn_close(&c);
 		if (end == END_FATAL) { exit_code = g_exit_code ? g_exit_code : 1; break; }
 		if (end == END_STOP) break;
-		if (end == END_REJECTED) { if (C.once) break; continue; } /* the monitor and any grace period are as they were */
-		if (C.once) break;
+		if (end == END_REJECTED) { if (single) break; continue; } /* the monitor and any grace period are as they were */
+		if (single) break;
 		if (end == END_LINK && C.grace_secs && D.vd) {
 			grace_deadline = net_now_us() + (uint64_t)C.grace_secs * 1000000;
 			LOG("lost the phone: keeping the virtual output for %u s in case it comes back", C.grace_secs);
