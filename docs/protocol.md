@@ -205,23 +205,29 @@ Sent whenever a frame completes or is lost, and at least every 100 ms. At most 1
 oldest frames are given up.
 
     u8  flags           bit0 need_idr
-    u32 newest_frame_id        highest frame id the phone has seen any packet of
-    u32 held_base              every frame id up to and including this one that exists is held or given up
-    u64 held_bitmap            bit i set: frame held_base + 1 + i is held
+    u32 newest_frame_id        highest frame id the phone has seen any packet of, or learned from a KEEPALIVE
+    u32 held_base              the newest frame id such that every frame up to it is resolved: decoded, or given up
+    u64 held_bitmap            bit i set: frame held_base - i was decoded; clear: it was given up (lost)
     u8  nack_count
     ... per NACK: u32 frame_id, u8 block_index, u8 need     shards still missing to reconstruct that block
     u16 loss_permille          packets lost since the last report, after FEC
-    i32 delay_trend_us_per_s   estimated queueing delay slope (positive means the queue is growing)
+    i32 queue_delay_us         queueing delay estimate: median recent one-way delay minus its minimum over about 2 s (clock offset cancels)
     u32 recv_kbps              received rate over the report interval
     u32 jitter_us
     u16 decode_ms_x10          recent average decode time
 
+A frame is *resolved* when it was decoded or the phone gave up on it (it did not complete within about 100 ms, or its reference
+was given up). The PC learns the fate of every frame from the 64-frame window ending at `held_base`; frames above
+`held_base` are still in flight. `held_base` advances across a contiguous run of resolved frames only.
+
 The PC answers a NACK by sending `need` new parity shards (indices beyond the initial parity) with the retransmission flag set.
-`need = 255` means the phone saw nothing of that block, so it cannot say how many shards are missing. The PC then sends
+`need = 255` means the phone saw nothing of that block, so it cannot say how many shards are missing. `block_index = 255`
+together with `need = 255` means it saw nothing of the whole frame (it only knows the frame exists from a later frame or a
+KEEPALIVE); the PC may resend the frame's data shards, or ignore the request and let the loss be handled by reference
+invalidation. The PC then sends
 `data_shards` shards of its choice for the block. A block has at most 200 data shards and shard indices run to 254, so for a
 large block only the indices from `data_shards + parity_shards` up are free for new parity (117 for a 125-shard block with 13
 parity): the answer must include original data shards, with repair parity making up the rest.
-A frame the phone has given up on appears in `held_bitmap` as not held once `held_base` has passed it.
 
 ### 3.6 KEEPALIVE (PC to phone)
 
@@ -280,7 +286,9 @@ seconds. Sent every second. Used to turn `capture_us` into glass-to-glass latenc
 - **Frame skipping**: the daemon asks the transport how many bytes are queued. If the previous frame is still being sent, it
   skips the new capture before encoding (an encoded frame cannot be dropped without breaking the reference chain).
 - **Reference invalidation**: when a frame has not been acknowledged as held after about 1.5 round trips plus the repair
-  attempts, the daemon calls `encoder_invalidate_from(frame_id)`; the next frame predicts from the newest frame the phone holds.
+  attempts, the daemon calls `encoder_invalidate_frame(frame_id)` for each frame the phone reports as given up (the phone also gives up
+  on every frame that depended on one, so the reported set is complete); the next frame predicts from the newest frame the
+  phone holds. A frame sent after the loss that does not depend on it, such as a fresh IDR, stays valid.
   If none is left (more than 5 frames lost) it is an IDR. On a static screen the daemon re-encodes the current screen as a
   `refresh` frame; it is tiny because nothing changed.
 - **Rate control**: loss, delay trend and received rate drive the target bitrate (loss-based decrease, delay-based back-off,

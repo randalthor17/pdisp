@@ -186,12 +186,12 @@ enum { PROTO_FB_NEED_IDR = 1 };
 struct proto_feedback {
 	uint8_t flags;
 	uint32_t newest_frame_id;
-	uint32_t held_base;
-	uint64_t held_bitmap;
+	uint32_t held_base;   /* newest frame such that every frame up to it is resolved (decoded or given up) */
+	uint64_t held_bitmap; /* bit i: frame held_base - i was decoded (set) or given up (clear) */
 	uint8_t nack_count;
 	struct proto_nack nacks[PROTO_MAX_NACKS];
 	uint16_t loss_permille;
-	int32_t delay_trend_us_per_s;
+	int32_t queue_delay_us; /* median recent one-way delay minus its minimum over the last ~2 s; 0 or more */
 	uint32_t recv_kbps;
 	uint32_t jitter_us;
 	uint16_t decode_ms_x10;

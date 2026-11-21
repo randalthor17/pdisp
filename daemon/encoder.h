@@ -53,6 +53,10 @@ int encoder_encode(struct encoder *enc, const uint8_t *bgra, int stride, bool fo
  * without an IDR. If no earlier frame is still held, the next frame is an IDR. */
 void encoder_invalidate_from(struct encoder *enc, uint64_t first_lost);
 
+/* The receiver did not get this one frame. Frames that depended on it are reported lost separately (the receiver gives up
+ * on them too), so only this picture is dropped as a reference. A later IDR is unaffected. */
+void encoder_invalidate_frame(struct encoder *enc, uint64_t lost);
+
 void encoder_close(struct encoder *enc);
 
 #endif

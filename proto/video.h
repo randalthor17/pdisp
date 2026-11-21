@@ -84,9 +84,12 @@ const struct vrx_stats *vrx_stats(const struct vrx *rx);
  * errno if it was malformed or inconsistent with what is known about its frame. */
 int vrx_push(struct vrx *rx, const uint8_t *pkt, size_t len, uint64_t now_us, struct vrx_frame *out);
 
-/* Fills `out` with the blocks of incomplete frames that were first seen at least `min_age_us` ago and were not reported in
+/* Gives up on a frame: frees what was buffered for it and ignores its later packets. No-op for unknown frames. */
+void vrx_drop_frame(struct vrx *rx, uint32_t frame_id);
+
+/* Fills `out` with the blocks of incomplete frames that have been idle (no packet arrived) for at least `min_idle_us` and were not reported in
  * the last `retry_us`. `need` is the number of further shards required, or VIDEO_NEED_ALL for a block of which nothing
  * arrived. Returns the number of entries written (at most `max`). */
-int vrx_nacks(struct vrx *rx, uint64_t now_us, uint64_t min_age_us, uint64_t retry_us, struct proto_nack *out, int max);
+int vrx_nacks(struct vrx *rx, uint64_t now_us, uint64_t min_idle_us, uint64_t retry_us, struct proto_nack *out, int max);
 
 #endif

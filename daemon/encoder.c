@@ -492,6 +492,15 @@ void encoder_invalidate_from(struct encoder *e, uint64_t first_lost)
 	if (!any) e->force_idr_next = true;
 }
 
+void encoder_invalidate_frame(struct encoder *e, uint64_t lost)
+{
+	for (int i = 0; i < NUM_RECON; i++)
+		if (e->pics[i].valid && e->pics[i].idx == lost) e->pics[i].valid = false;
+	bool any = false;
+	for (int i = 0; i < NUM_RECON; i++) any |= e->pics[i].valid;
+	if (!any) e->force_idr_next = true;
+}
+
 static void build_ref_list(const struct encoder *e, int cur_slot, struct ref_list *rl)
 {
 	rl->n = 0;

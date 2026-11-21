@@ -160,7 +160,7 @@ static void test_roundtrips(void)
 	struct proto_feedback f, f2;
 	memset(&f, 0, sizeof f);
 	f.flags = PROTO_FB_NEED_IDR; f.newest_frame_id = 900; f.held_base = 880; f.held_bitmap = 0xfffffffffffffff5ull;
-	f.nack_count = 2; f.loss_permille = 21; f.delay_trend_us_per_s = -1500; f.recv_kbps = 18000; f.jitter_us = 800;
+	f.nack_count = 2; f.loss_permille = 21; f.queue_delay_us = 1500; f.recv_kbps = 18000; f.jitter_us = 800;
 	f.decode_ms_x10 = 31;
 	f.nacks[0] = (struct proto_nack){ 881, 0, 3 };
 	f.nacks[1] = (struct proto_nack){ 883, 1, 1 };

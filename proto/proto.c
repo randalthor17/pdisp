@@ -460,7 +460,7 @@ int proto_feedback_encode(const struct proto_feedback *m, uint8_t *out, size_t c
 		w8(&w, m->nacks[i].need);
 	}
 	w16(&w, m->loss_permille);
-	w32(&w, (uint32_t)m->delay_trend_us_per_s);
+	w32(&w, (uint32_t)m->queue_delay_us);
 	w32(&w, m->recv_kbps);
 	w32(&w, m->jitter_us);
 	w16(&w, m->decode_ms_x10);
@@ -483,7 +483,7 @@ int proto_feedback_decode(const uint8_t *buf, size_t len, struct proto_feedback 
 		m->nacks[i].need = r8(&r);
 	}
 	m->loss_permille = r16(&r);
-	m->delay_trend_us_per_s = (int32_t)r32(&r);
+	m->queue_delay_us = (int32_t)r32(&r);
 	m->recv_kbps = r32(&r);
 	m->jitter_us = r32(&r);
 	m->decode_ms_x10 = r16(&r);

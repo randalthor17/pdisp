@@ -119,7 +119,7 @@ struct vrx_block {
 struct vrx_slot {
 	bool used, complete;
 	uint32_t frame_id, ref_frame_id, frame_bytes;
-	uint64_t capture_us, first_seen_us;
+	uint64_t capture_us, first_seen_us, last_packet_us;
 	uint8_t epoch, vflags, block_count;
 	struct vrx_block *blocks;
 };
@@ -238,6 +238,7 @@ int vrx_push(struct vrx *rx, const uint8_t *pkt, size_t len, uint64_t now_us, st
 		slot_clear(rx, slot);
 	}
 	if (slot->used && slot->complete) { rx->st.late++; return 0; }
+	if (slot->used) slot->last_packet_us = now_us;
 
 	if (!slot->used) {
 		slot->blocks = calloc(vh.block_count, sizeof *slot->blocks);
@@ -251,6 +252,7 @@ int vrx_push(struct vrx *rx, const uint8_t *pkt, size_t len, uint64_t now_us, st
 		slot->vflags = vh.vflags;
 		slot->block_count = vh.block_count;
 		slot->first_seen_us = now_us;
+		slot->last_packet_us = now_us;
 	} else if (slot->ref_frame_id != vh.ref_frame_id || slot->capture_us != vh.capture_us ||
 		   slot->frame_bytes != vh.frame_bytes || slot->block_count != vh.block_count || slot->vflags != vh.vflags) {
 		rx->st.rejected++;
@@ -323,6 +325,15 @@ int vrx_push(struct vrx *rx, const uint8_t *pkt, size_t len, uint64_t now_us, st
 	return 1;
 }
 
+void vrx_drop_frame(struct vrx *rx, uint32_t frame_id)
+{
+	struct vrx_slot *s = &rx->slots[frame_id % VRX_WINDOW];
+	if (!s->used || s->frame_id != frame_id || s->complete) return;
+	for (unsigned i = 0; i < s->block_count; i++) block_free_shards(rx, &s->blocks[i]);
+	s->complete = true; /* late and duplicate packets are now ignored, and no NACKs are made for it */
+	rx->st.frames_evicted++;
+}
+
 struct nack_cand {
 	struct proto_nack nack;
 	struct vrx_block *blk;
@@ -335,13 +346,13 @@ static int nack_cmp(const void *a, const void *b)
 	return (int)x->nack.block_index - (int)y->nack.block_index;
 }
 
-int vrx_nacks(struct vrx *rx, uint64_t now_us, uint64_t min_age_us, uint64_t retry_us, struct proto_nack *out, int max)
+int vrx_nacks(struct vrx *rx, uint64_t now_us, uint64_t min_idle_us, uint64_t retry_us, struct proto_nack *out, int max)
 {
 	struct nack_cand all[VRX_WINDOW * 4];
 	int n = 0;
 	for (int i = 0; i < VRX_WINDOW; i++) {
 		struct vrx_slot *s = &rx->slots[i];
-		if (!s->used || s->complete || now_us < s->first_seen_us + min_age_us) continue;
+		if (!s->used || s->complete || now_us < s->last_packet_us + min_idle_us) continue;
 		for (unsigned j = 0; j < s->block_count && n < (int)(sizeof all / sizeof *all); j++) {
 			struct vrx_block *b = &s->blocks[j];
 			if (b->complete || (b->nacked && now_us < b->last_nack_us + retry_us)) continue;
