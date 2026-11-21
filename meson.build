@@ -109,7 +109,7 @@ test('loss recovery', find_program('tests/loss_recovery_check.sh'),
 
 mc_inc = include_directories('third_party/monocypher')
 monocypher = static_library('monocypher', 'third_party/monocypher/monocypher.c', c_args: ['-w'])
-proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', 'proto/usbmux.c', 'proto/crypto.c', include_directories: [inc, mc_inc], link_with: monocypher)
+proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', 'proto/usbmux.c', 'proto/crypto.c', 'proto/noise.c', include_directories: [inc, mc_inc], link_with: monocypher)
 proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
 test_proto = executable('test_proto', 'tests/test_proto.c', dependencies: proto_dep)
 test('proto wire format', test_proto)
@@ -181,3 +181,6 @@ test('m5 rotation follows the phone', m5_rotate,
 
 test_crypto = executable('test_crypto', 'tests/test_crypto.c', dependencies: proto_dep)
 test('crypto primitives (known answers)', test_crypto)
+
+test_noise = executable('test_noise', 'tests/test_noise.c', dependencies: proto_dep)
+test('noise xx handshake', test_noise)
