@@ -366,7 +366,7 @@ static void *run(void *arg)
 	net_ctl_send(&ctl, PROTO_CTL_READY, NULL, 0);
 
 	uint64_t t0 = net_now_us(), next_fb = t0 + 10000, next_hello = t0 + 100000, next_ping = t0 + 1000000, last_stat = t0;
-	uint64_t last_rx = t0, last_rendered = 0, last_pong = t0, last_cadence = t0, next_time = 0;
+	uint64_t last_rx = t0, last_rendered = 0, last_pong = t0, last_cadence = t0, next_time = 0, last_given_up = 0;
 	timesync_init(&s->ts);
 	bool streaming = false;
 	unsigned width = su.params.width, height = su.params.height;
@@ -436,6 +436,15 @@ static void *run(void *arg)
 			}
 		}
 		vrecv_tick(vr, now);
+		{ /* when does the receiver give up on frames? (startup bursts versus steady state) */
+			const struct vrecv_stats *gs = vrecv_stats(vr);
+			if (gs->frames_given_up != last_given_up) {
+				LOGI("GIVEUP total=%llu (+%llu) at %.2f s into the stream, decoded %llu, refused %llu", (unsigned long long)gs->frames_given_up,
+				     (unsigned long long)(gs->frames_given_up - last_given_up), (now - t0) / 1e6, (unsigned long long)s->decoded,
+				     (unsigned long long)s->input_refused);
+				last_given_up = gs->frames_given_up;
+			}
+		}
 		if (!streaming && now >= next_hello) { /* until video arrives keep telling the PC where we are */
 			next_hello = now + 100000;
 			hh.seq = udp_seq++;

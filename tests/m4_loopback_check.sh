@@ -76,6 +76,11 @@ awk -v l="$p99" -v m="${MAX_P99_MS:-80}" 'BEGIN { exit !(l < m) }' || fail "capt
 [ "$idr" -ge 1 ] && [ "$idr" -le "${MAX_IDR:-1}" ] || fail "$idr IDRs decoded (allowed 1 to ${MAX_IDR:-1})"
 [ -z "${MAX_GIVEN_UP:-}" ] || [ "$given" -le "$MAX_GIVEN_UP" ] || fail "gave up on $given frames (allowed $MAX_GIVEN_UP)"
 [ "$checks" -ge 5 ] || fail "only $checks periodic pattern checks ran"
+cother=$(val check_other)
+[ "${cother:-0}" = 0 ] || echo "NOTE: $cother of $checks sampled pictures were not the test pattern at all: the desktop was showing something else (niri overview from a stray hot corner, a notification). Decoding is judged on the others."
+if [ "${cother:-0}" != 0 ] && [ "$cbad" != 0 ]; then # the overview's opening and closing animations are partial pictures too
+	echo "SKIP: inconclusive, the desktop was disturbed during the run ($cother pictures were something else, $cbad partial)"; exit 77
+fi
 [ "$cbad" = 0 ] || fail "$cbad periodic pattern checks found a corrupt picture (lowest match ${cmin}%)"
 awk -v c="$cmin" -v m="${MIN_CHECK_PCT:-90}" 'BEGIN { exit !(c >= m) }' || fail "lowest periodic pattern match ${cmin}% is below ${MIN_CHECK_PCT:-90}%"
 [ -s "$art/view.png" ] || fail "no snapshot written"

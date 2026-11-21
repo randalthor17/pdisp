@@ -91,7 +91,8 @@ struct viewer {
 	uint64_t max_gap_us;     /* longest time between two decoded frames, after the first 30 */
 	struct SwsContext *chk_sws;
 	uint8_t *chk_bgra;
-	unsigned chk_samples, chk_bad;
+	unsigned chk_samples, chk_bad, chk_other; /* bad: partly wrong picture; other: not the pattern at all (compositor showed something else) */
+	const char *snap_path;   /* -o: where a snapshot goes; bad checks save pictures next to it */
 	double chk_min;          /* lowest pattern match over the periodic checks */
 };
 
@@ -120,8 +121,19 @@ static void check_picture(const AVFrame *fr)
 	int dst_stride[4] = { fr->width * 4, 0, 0, 0 };
 	sws_scale(V.chk_sws, (const uint8_t *const *)fr->data, fr->linesize, 0, fr->height, dst, dst_stride);
 	double m = pattern_match(V.chk_bgra, fr->width, fr->height);
-	if (!V.chk_samples || m < V.chk_min) V.chk_min = m;
-	if (m < 0.9) V.chk_bad++;
+	if (!V.chk_samples) V.chk_min = 1.0;
+	if (m >= 0.05 && m < V.chk_min) V.chk_min = m; /* a different picture altogether says nothing about decoding */
+	if (m < 0.9) {
+		/* A decode error damages part of a picture. A picture that matches almost nowhere is a different picture: the desktop was
+		 * showing something else (niri's overview after a stray hot-corner touch, a notification, a lock screen), decoded faithfully. */
+		if (m < 0.05) V.chk_other++; else V.chk_bad++;
+		if (V.snap_path && V.chk_bad + V.chk_other <= 3) { /* keep the evidence: what did a mismatching picture look like, and when? */
+			char name[512];
+			snprintf(name, sizeof name, "%s.bad%u.png", V.snap_path, V.chk_bad + V.chk_other);
+			png_write_bgra(name, V.chk_bgra, fr->width, fr->height, fr->width * 4);
+			LOG("check %u failed (%.1f%% match) on decoded frame %llu, saved %s", V.chk_samples + 1, m * 100, (unsigned long long)V.decoded, name);
+		}
+	}
 	V.chk_samples++;
 }
 
@@ -351,7 +363,7 @@ int main(int argc, char **argv)
 		case 'r': rates = optarg; break;
 		case 'D': dpi = (unsigned)atoi(optarg); break;
 		case 'S': secs = atof(optarg); break;
-		case 'o': snap = optarg; break;
+		case 'o': snap = optarg; V.snap_path = optarg; break;
 		case 'c': check = true; break;
 		case 'G': V.read_stamps = true; break;
 		case 'w': V.window = true; break;
@@ -575,12 +587,12 @@ int main(int argc, char **argv)
 	double match = V.bgra ? pattern_match(V.bgra, V.width, V.height) : 0;
 	printf("VIEW packets=%llu ", (unsigned long long)vs->packets);
 	printf("decoded=%llu fps=%.1f decode_ms_avg=%.2f latency_ms_p50=%.1f p99=%.1f max=%.1f given_up=%llu idr=%llu "
-	       "decoder_errors=%llu match=%.1f%% freeze_ms=%.1f checks=%u check_min=%.1f%% check_bad=%u clock_offset_us=%lld clock_rtt_ms=%.1f reconfigs=%llu pongs=%llu final_size=%dx%d\n",
+	       "decoder_errors=%llu match=%.1f%% freeze_ms=%.1f checks=%u check_min=%.1f%% check_bad=%u check_other=%u clock_offset_us=%lld clock_rtt_ms=%.1f reconfigs=%llu pongs=%llu final_size=%dx%d\n",
 	       (unsigned long long)V.decoded, V.decoded / span, V.decoded ? V.decode_ms_sum / V.decoded : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat / 2] / 1000.0 : 0.0, V.n_lat ? V.lat_us[(size_t)((V.n_lat - 1) * 0.99)] / 1000.0 : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat - 1] / 1000.0 : 0.0, (unsigned long long)vs->frames_given_up,
 	       (unsigned long long)vs->idr_decoded, (unsigned long long)vs->decoder_errors, match * 100, V.max_gap_us / 1000.0,
-	       V.chk_samples, V.chk_samples ? V.chk_min * 100 : 100.0, V.chk_bad, (long long)atomic_load(&V.offset_us), V.sync_rtt_us / 1000.0,
+	       V.chk_samples, V.chk_samples ? V.chk_min * 100 : 100.0, V.chk_bad, V.chk_other, (long long)atomic_load(&V.offset_us), V.sync_rtt_us / 1000.0,
 	       (unsigned long long)V.reconfigs, (unsigned long long)V.pongs, V.last ? V.last->width : 0, V.last ? V.last->height : 0);
 	if (V.read_stamps) {
 		qsort(V.glass_us, V.n_glass, sizeof *V.glass_us, cmp_u64);
@@ -597,6 +609,8 @@ int main(int argc, char **argv)
 	if (cn > 0) net_ctl_send(&ctl, PROTO_CTL_CLOSE, cb, (size_t)cn);
 	int status = 0;
 	if (V.decoded == 0) { fprintf(stderr, "FAIL: nothing was decoded\n"); status = 1; }
+	else if (check && match < 0.05)
+		fprintf(stderr, "NOTE: the last picture is not the test pattern at all (%.1f%%): the compositor was showing something else\n", match * 100);
 	else if (check && match < 0.95) { fprintf(stderr, "FAIL: the decoded picture does not match the pattern (%.1f%%)\n", match * 100); status = 1; }
 	vrecv_destroy(vr);
 	net_ctl_close(&ctl);

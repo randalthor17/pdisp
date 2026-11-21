@@ -30,7 +30,7 @@ run_scenario() {
 	rc=$?
 	case $rc in
 		0) ;;
-		77) echo "SKIP: $name needs the live session"; exit 77 ;;
+		77) echo "SKIP: $name (no live session, or the desktop was disturbed during the run)"; exit 77 ;;
 		*) echo "FAILED: $name (rc=$rc)"; failed=1 ;;
 	esac
 }

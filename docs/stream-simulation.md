@@ -127,3 +127,13 @@ changes in the sender. The simulation had not shown any of them because its link
 - The viewer decodes in software. A phone uses MediaCodec; decode latency differs.
 - Run-to-run variation is real (the freeze in the acceptance case ranged 89 to 251 ms), so the thresholds are bounds, not
   targets: 400 ms for freezes in the loss scenarios.
+
+## The "corrupt picture" failures were the desktop, not the codec (2026-11-21)
+The netem acceptance test failed about one run in four with "N periodic pattern checks found a corrupt picture (lowest match 0.0%)",
+in whichever scenario was running, including the one with no loss at all, while the viewer reported 0 decoder errors, 0 given-up frames
+and one IDR. `pdisp-view -o snap.png` now saves the first three mismatching pictures next to the snapshot. They showed niri's overview
+(the pattern window zoomed out among the wallpaper): a stray touch of a hot corner or a key on the machine running the tests. The
+decoder reproduced it faithfully. Pictures that match almost nowhere (under 5%) are now reported as `check_other` (and as a NOTE),
+not counted as corruption, and a run with both such pictures and partial mismatches (the overview's open and close animations) is
+skipped as inconclusive. Partial mismatches alone, which is what a decode error looks like, still fail the test. Previously widened
+timing limits remain; run-to-run variance there is real.
