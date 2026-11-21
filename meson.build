@@ -227,3 +227,11 @@ test('touchscreen and pen devices', test_inputdev)
 
 test_palm = executable('test_palm', 'tests/test_palm.c', dependencies: proto_dep)
 test('palm rejection', test_palm)
+
+m8_gesture = find_program('tests/m8_gesture_check.sh')
+test('m8 touch gestures in a real application', m8_gesture,
+  args: [pdispd, pdisp_view, meson.current_build_dir() / 'm8-gesture-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 240,
+  suite: 'integration')

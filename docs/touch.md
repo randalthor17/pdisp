@@ -58,3 +58,35 @@ These hooks are not tested here.
   an application turns them into scrolling or zooming was not checked here.
 - A plugged-in phone's app prefers the USB path when the cable is attached, even when the PC is only listening on Wi-Fi; it then
   needs a second Connect. (Session lifecycle, M9.)
+
+## Stylus
+Fingers become the touchscreen; a pen becomes a second device, a **pen tablet** (`pdisp stylus`: `BTN_TOOL_PEN`/`BTN_TOOL_RUBBER`, tip
+pressure 0..4095, hover distance, tilt in degrees, the two barrel buttons). It exists when the phone's HELLO says it has a stylus
+(the app checks for a pen digitiser). Event meaning for the pen (spec section 3.8): hover = near but not touching (`pressure` is the
+distance), down/move/up = the tip, cancel = the pen left proximity, every event carries the button state, and a pen turned over to its
+eraser end leaves one tool and enters the other. Tested without privileges by recording the device's events (`tests/test_inputdev.c`) and,
+as root, on the real device: the system classifies it as a tablet (`ID_INPUT_TABLET=1`) and a scripted pen stroke through the
+secure daemon comes out with the right positions, rising pressure, tilt, the held button, the eraser and the pencil hover
+(`pkexec build/pdisp-evdump -n "pdisp stylus"`).
+
+**Mapping the pen**: niri has a separate section, `input { tablet { map-to-output "PNP(PDI) pdisp PDISP0001" } }` (valid in niri
+26.04; the daemon prints both lines). **Not verified with a real pen**: the Pixel 8a has none and `adb shell input` cannot inject a
+stylus tool type. The Kotlin code that reads tool type, hover, barrel buttons and tilt (the tilt/orientation to x/y-tilt conversion in
+particular) needs a run on the Galaxy Tab S9 FE with its S Pen.
+
+## Palm rejection (`proto/palm.c`, applied in the app before anything is sent)
+1. **The pen wins**: when the pen comes near, every finger already down is cancelled (it is the hand holding the pen), and new fingers are
+   refused while the pen is near and for 400 ms after it leaves (the pen counts as gone after 600 ms of silence in case its leave was missed).
+2. A contact Android calls a palm (`TOOL_TYPE_PALM`) or has cancelled (`FLAG_CANCELED`) is refused, or cancelled if it was already sent.
+3. A contact whose major axis is longer than about 25 mm is a palm, and so is a finger that grows past that while it moves.
+A refused contact stays refused until it lifts. It is on by default; `PdispNative.nativeSetPalmRejection` switches it off (no settings
+screen yet). Tested exhaustively as logic (`tests/test_palm.c`); the real contact-size values depend on the device reporting
+`getTouchMajor`, which is not checked on a tablet.
+
+## Gestures: verified
+Pinch-zoom, zoom-out and drag-pan work in a real application: `loupe` (GTK4) fullscreen on the virtual output, driven by a scripted
+phone through the secure daemon. Window screenshots after each gesture show the picture zoomed in about 4x after the pinch, panned
+down after the vertical drag, and back to fit after the reverse pinch. (`tests/m8_gesture_check.sh`; it changes the running niri's config
+for about 30 seconds, so it needs `PDISP_TEST_NIRI_CONFIG=1`.) This is the toolkit's gesture recognition working on our multitouch
+stream. What niri itself does with touchscreen gestures (for example a three-finger swipe) was **not** tested, because it would move your
+workspaces; the events are standard touchscreen events, so whatever niri implements for touchscreens applies.

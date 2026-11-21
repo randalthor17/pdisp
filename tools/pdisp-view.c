@@ -99,6 +99,8 @@ struct viewer {
 	struct input_tx tx;
 	struct sched_ev { uint64_t at_us; struct proto_input_event ev; } *sched;
 	size_t n_sched, i_sched;
+	size_t step_end[64]; /* number of scheduled events when each script step ends, to report "TOUCHSTEP n done" as they are sent */
+	unsigned n_steps, steps_reported;
 	uint64_t touch_started_us;
 	uint64_t touch_pushed, touch_acked_to;
 	const char *snap_path;   /* -o: where a snapshot goes; bad checks save pictures next to it */
@@ -404,6 +406,7 @@ static int parse_touch_script(const char *script)
 			continue;
 		} else { free(copy); return -1; }
 		t += 150000;
+		if (V.n_steps < 64) V.step_end[V.n_steps++] = V.n_sched;
 	}
 	free(copy);
 	return 0;
@@ -715,6 +718,10 @@ int main(int argc, char **argv)
 				e.time_us = (uint32_t)now;
 				input_tx_push(&V.tx, e);
 				V.touch_pushed++;
+			}
+			while (V.steps_reported < V.n_steps && V.i_sched >= V.step_end[V.steps_reported]) { /* a step has been fully sent */
+				printf("TOUCHSTEP %u done\n", ++V.steps_reported);
+				fflush(stdout);
 			}
 		}
 		{
