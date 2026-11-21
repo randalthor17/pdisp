@@ -3,6 +3,7 @@ package dev.pdisp
 import android.app.Activity
 import android.content.Context
 import android.graphics.Color
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -27,6 +28,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private lateinit var overlay: LinearLayout
     private lateinit var hostField: EditText
     private lateinit var status: TextView
+    private var wifiLock: WifiManager.WifiLock? = null
     private var handle = 0L
     private var surfaceReady = false
     private val ui = Handler(Looper.getMainLooper())
@@ -95,17 +97,26 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val rates = display.supportedModes
             .filter { maxOf(it.physicalWidth, it.physicalHeight) == maxOf(size.physicalWidth, size.physicalHeight) }
             .map { (it.refreshRate * 1000 + 0.5f).toInt() }.distinct().sortedDescending().ifEmpty { listOf(60000) }
+        // match the panel's refresh to the stream: 60 fps on a 90 Hz panel lands on uneven vsync slots
+        window.attributes = window.attributes.also { it.preferredRefreshRate = 60f }
         handle = PdispNative.nativeStart(
             host, 47110, surfaceView.holder.surface, w, h, resources.displayMetrics.densityDpi,
             rates.toIntArray(), Build.MODEL,
         )
-        if (handle != 0L) { (overlay.getChildAt(1) as Button).text = "Disconnect"; ui.post(poll) }
+        if (handle != 0L) {
+            // Wi-Fi power save batches packets for tens of milliseconds, which shows up as stutter
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            wifiLock = wm.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "pdisp").also { it.acquire() }
+            (overlay.getChildAt(1) as Button).text = "Disconnect"; ui.post(poll)
+        }
     }
 
     private fun stopSession() {
         val h = handle
         handle = 0
         if (h != 0L) PdispNative.nativeStop(h)
+        wifiLock?.let { if (it.isHeld) it.release() }
+        wifiLock = null
         (overlay.getChildAt(1) as Button).text = "Connect"
         status.text = "disconnected"
     }

@@ -5,6 +5,8 @@
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <arpa/inet.h>
+#include <dlfcn.h>
+#include <dlfcn.h>
 #include <errno.h>
 #include <jni.h>
 #include <media/NdkMediaCodec.h>
@@ -14,6 +16,7 @@
 #include <pthread.h>
 #include <stdarg.h>
 #include <stdatomic.h>
+#include <time.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,8 +43,56 @@ struct session {
 
 	AMediaCodec *codec;
 	atomic_bool decoder_failed;
-	uint64_t decoded, rendered, input_refused;
+	uint64_t decoded, rendered, input_refused, dropped_in_drain;
+	uint64_t frame_ns, next_slot_ns; /* the presentation grid: one slot per frame interval */
+
+	/* render cadence: intervals between presented pictures, for the periodic report */
+	uint64_t last_render_us;
+	uint32_t intervals_us[1024];
+	unsigned n_intervals;
+	unsigned long over25, over40, over70;
+	/* the same for complete frames reaching the decoder: separates network jitter from decode delay */
+	/* decode latency: time from queueing a frame to its picture being ready, keyed by presentation timestamp */
+	uint64_t in_time_us[64], in_pts[64];
+	uint32_t dec_us[1024];
+	unsigned n_dec;
+	uint64_t last_arrival_us;
+	uint32_t arrivals_us[1024];
+	unsigned n_arrivals;
 };
+
+static int cmp_u32(const void *a, const void *b)
+{
+	uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+	return x < y ? -1 : x > y;
+}
+
+static void report_cadence(struct session *s)
+{
+	if (s->n_intervals < 10) return;
+	qsort(s->intervals_us, s->n_intervals, sizeof s->intervals_us[0], cmp_u32);
+	unsigned n = s->n_intervals;
+	LOGI("CADENCE n=%u interval_ms p50=%.1f p95=%.1f p99=%.1f max=%.1f  over25=%lu over40=%lu over70=%lu  dropped_in_drain=%llu refused=%llu",
+	     n, s->intervals_us[n / 2] / 1000.0, s->intervals_us[n * 95 / 100] / 1000.0, s->intervals_us[n * 99 / 100] / 1000.0,
+	     s->intervals_us[n - 1] / 1000.0, s->over25, s->over40, s->over70, (unsigned long long)s->dropped_in_drain,
+	     (unsigned long long)s->input_refused);
+	if (s->n_arrivals >= 10) {
+		qsort(s->arrivals_us, s->n_arrivals, sizeof s->arrivals_us[0], cmp_u32);
+		unsigned m = s->n_arrivals;
+		LOGI("ARRIVAL n=%u frame_gap_ms p50=%.1f p95=%.1f p99=%.1f max=%.1f", m, s->arrivals_us[m / 2] / 1000.0,
+		     s->arrivals_us[m * 95 / 100] / 1000.0, s->arrivals_us[m * 99 / 100] / 1000.0, s->arrivals_us[m - 1] / 1000.0);
+	}
+	if (s->n_dec >= 10) {
+		qsort(s->dec_us, s->n_dec, sizeof s->dec_us[0], cmp_u32);
+		unsigned m = s->n_dec;
+		LOGI("DECODE n=%u latency_ms p50=%.1f p95=%.1f p99=%.1f max=%.1f", m, s->dec_us[m / 2] / 1000.0,
+		     s->dec_us[m * 95 / 100] / 1000.0, s->dec_us[m * 99 / 100] / 1000.0, s->dec_us[m - 1] / 1000.0);
+	}
+	s->n_dec = 0;
+	s->n_arrivals = 0;
+	s->n_intervals = 0;
+	s->over25 = s->over40 = s->over70 = 0;
+}
 
 static void set_status(struct session *s, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 static void set_status(struct session *s, const char *fmt, ...)
@@ -73,10 +124,8 @@ static int try_codec(struct session *s, const struct proto_stream_params *p, int
 	AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_HEIGHT, p->height);
 	AMediaFormat_setBuffer(f, "csd-0", p->param_sets, p->param_sets_len);
 	AMediaFormat_setInt32(f, "low-latency", 1); /* no output reordering delay */
-	if (hints) {
-		AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_PRIORITY, 0); /* real-time */
-		AMediaFormat_setInt32(f, "operating-rate", 120);
-	}
+	if (hints & 1) AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_PRIORITY, 0); /* real-time */
+	if (hints & 2) AMediaFormat_setInt32(f, "operating-rate", 120);        /* clocks the decoder for this many frames a second */
 	s->codec = AMediaCodec_createDecoderByType("video/hevc");
 	if (!s->codec) { AMediaFormat_delete(f); LOGE("no HEVC decoder"); return -1; }
 	media_status_t st = AMediaCodec_configure(s->codec, f, s->window, NULL, 0);
@@ -89,10 +138,25 @@ static int try_codec(struct session *s, const struct proto_stream_params *p, int
 static int open_codec(struct session *s, const struct proto_stream_params *p)
 {
 	close_codec(s);
-	if (try_codec(s, p, 1) != 0 && try_codec(s, p, 0) != 0) return -1;
+	/* vendors accept different subsets of the real-time hints (Exynos refuses the priority): take the most we can get */
+	static const int order[] = { 3, 2, 1, 0 };
+	int ok = -1;
+	for (unsigned i = 0; i < sizeof order / sizeof order[0] && ok < 0; i++)
+		if (try_codec(s, p, order[i]) == 0) ok = order[i];
+	if (ok < 0) return -1;
+	LOGI("decoder started with hints %d (1 = priority, 2 = operating rate)", ok);
 	atomic_store(&s->decoder_failed, false);
+	s->frame_ns = p->refresh_mhz ? 1000000000000ull / p->refresh_mhz : 16666667;
+	s->next_slot_ns = 0;
+	{ /* run the panel at the stream's rate, not a 90 Hz multiple that judders (API 30, so looked up at run time) */
+		typedef int32_t (*set_frame_rate_fn)(ANativeWindow *, float, int8_t);
+		set_frame_rate_fn fn = (set_frame_rate_fn)dlsym(RTLD_DEFAULT, "ANativeWindow_setFrameRate");
+		if (fn) fn(s->window, (float)p->refresh_mhz / 1000.0f, 1 /* FIXED_SOURCE */);
+	}
 	return 0;
 }
+
+static void drain_output(struct session *s);
 
 /* vrecv's decode callback: copy the access unit into a free codec input buffer. Non-zero means the decoder could not take it,
  * which makes the receiver ask for an IDR. */
@@ -100,41 +164,82 @@ static int decode_cb(const struct vrecv_frame *f, void *user)
 {
 	struct session *s = user;
 	if (!s->codec || atomic_load(&s->decoder_failed)) return -1;
+	{
+		uint64_t t = net_now_us();
+		if (s->last_arrival_us && s->n_arrivals < 1024) {
+			uint64_t d = t - s->last_arrival_us;
+			s->arrivals_us[s->n_arrivals++] = (uint32_t)(d > 4000000 ? 4000000 : d);
+		}
+		s->last_arrival_us = t;
+	}
+	/* A hardware decoder has only a few input buffers. Refusing a frame breaks the reference chain and costs a keyframe, so wait
+	 * a little (showing finished pictures meanwhile, which is what frees buffers) before giving up. */
 	ssize_t idx = AMediaCodec_dequeueInputBuffer(s->codec, 0);
+	for (int i = 0; idx < 0 && i < 6; i++) {
+		drain_output(s);
+		idx = AMediaCodec_dequeueInputBuffer(s->codec, 1000);
+	}
 	if (idx < 0) { s->input_refused++; return -1; }
 	size_t cap = 0;
 	uint8_t *buf = AMediaCodec_getInputBuffer(s->codec, (size_t)idx, &cap);
 	if (!buf || cap < f->size) { AMediaCodec_queueInputBuffer(s->codec, (size_t)idx, 0, 0, 0, 0); return -1; }
 	memcpy(buf, f->data, f->size);
 	if (AMediaCodec_queueInputBuffer(s->codec, (size_t)idx, 0, f->size, f->capture_us, 0) != AMEDIA_OK) return -1;
+	s->in_pts[s->decoded % 64] = f->capture_us;
+	s->in_time_us[s->decoded % 64] = net_now_us();
 	s->decoded++;
 	return 0;
 }
 
-/* Shows the newest decoded picture; older ones that are ready are dropped, never queued up behind it. */
+/* Presents decoded pictures on a regular grid of display times. A picture that is ready is not shown "now" (the display then
+ * takes it at whatever refresh comes next, and a second picture ready in the same moment replaces it): each gets the next free
+ * slot, one frame interval after the previous, and SurfaceFlinger shows it at the vsync at or after that time. Only when the
+ * backlog is more than three frames deep (the decoder was stalled and caught up) are the oldest pictures dropped. */
+static uint64_t mono_ns(void)
+{
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (uint64_t)t.tv_sec * 1000000000ull + (uint64_t)t.tv_nsec;
+}
+
 static void drain_output(struct session *s)
 {
 	if (!s->codec) return;
 	AMediaCodecBufferInfo info;
-	ssize_t pending = -1;
 	for (int guard = 0; guard < 16; guard++) {
 		ssize_t idx = AMediaCodec_dequeueOutputBuffer(s->codec, &info, 0);
-		if (idx >= 0) {
-			if (pending >= 0) AMediaCodec_releaseOutputBuffer(s->codec, (size_t)pending, false);
-			pending = idx;
-		} else if (idx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED || idx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) {
-			continue;
-		} else if (idx == AMEDIACODEC_INFO_TRY_AGAIN_LATER) {
-			break;
-		} else {
+		if (idx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED || idx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) continue;
+		if (idx == AMEDIACODEC_INFO_TRY_AGAIN_LATER) break;
+		if (idx < 0) {
 			LOGE("decoder output error %zd", idx);
 			atomic_store(&s->decoder_failed, true);
 			break;
 		}
-	}
-	if (pending >= 0) {
-		AMediaCodec_releaseOutputBuffer(s->codec, (size_t)pending, true);
+		for (unsigned k = 0; k < 64; k++) /* when did this picture go in? */
+			if (s->in_pts[k] == (uint64_t)info.presentationTimeUs && s->in_time_us[k]) {
+				if (s->n_dec < 1024) s->dec_us[s->n_dec++] = (uint32_t)(net_now_us() - s->in_time_us[k]);
+				s->in_time_us[k] = 0;
+				break;
+			}
+		uint64_t now = mono_ns(), step = s->frame_ns ? s->frame_ns : 16666667;
+		uint64_t slot = s->next_slot_ns > now ? s->next_slot_ns : now;
+		if (slot > now + 3 * step) { /* too far behind: skip this picture and let the grid catch up */
+			AMediaCodec_releaseOutputBuffer(s->codec, (size_t)idx, false);
+			s->dropped_in_drain++;
+			continue;
+		}
+		AMediaCodec_releaseOutputBufferAtTime(s->codec, (size_t)idx, (int64_t)slot);
+		s->next_slot_ns = slot + step;
 		s->rendered++;
+		uint64_t t = slot / 1000;
+		if (s->last_render_us) {
+			uint64_t d = t - s->last_render_us;
+			if (s->n_intervals < 1024) s->intervals_us[s->n_intervals++] = (uint32_t)(d > 4000000 ? 4000000 : d);
+			if (d > 25000) s->over25++;
+			if (d > 40000) s->over40++;
+			if (d > 70000) s->over70++;
+		}
+		s->last_render_us = t;
 	}
 }
 
@@ -195,6 +300,13 @@ static void *run(void *arg)
 	vr = vrecv_create(&rc, &rcb);
 	ufd = net_udp_bind(0);
 	net_tune_udp(ufd);
+	{ /* keyframes arrive as bursts of 100+ packets: the default receive buffer overflows */
+		int rcvbuf = 4 << 20;
+		setsockopt(ufd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof rcvbuf);
+		socklen_t ol = sizeof rcvbuf;
+		getsockopt(ufd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, &ol);
+		LOGI("UDP receive buffer %d bytes", rcvbuf);
+	}
 	struct sockaddr_in to;
 	{
 		socklen_t pl = sizeof to;
@@ -210,7 +322,7 @@ static void *run(void *arg)
 	net_ctl_send(&ctl, PROTO_CTL_READY, NULL, 0);
 
 	uint64_t t0 = net_now_us(), next_fb = t0 + 10000, next_hello = t0 + 100000, next_ping = t0 + 1000000, last_stat = t0;
-	uint64_t last_rx = t0, last_rendered = 0, last_pong = t0;
+	uint64_t last_rx = t0, last_rendered = 0, last_pong = t0, last_cadence = t0;
 	bool streaming = false;
 	unsigned width = su.params.width, height = su.params.height;
 	set_status(s, "connected, waiting for video");
@@ -283,6 +395,7 @@ static void *run(void *arg)
 				   (unsigned long long)st->frames_given_up, (unsigned long long)st->idr_decoded);
 			last_stat = now;
 			last_rendered = s->rendered;
+			if (now - last_cadence >= 5000000) { last_cadence = now; report_cadence(s); }
 		}
 	}
 	/* tell the PC we are leaving */
