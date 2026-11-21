@@ -109,7 +109,7 @@ test('loss recovery', find_program('tests/loss_recovery_check.sh'),
 
 mc_inc = include_directories('third_party/monocypher')
 monocypher = static_library('monocypher', 'third_party/monocypher/monocypher.c', c_args: ['-w'])
-proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', 'proto/usbmux.c', 'proto/crypto.c', 'proto/noise.c', 'proto/identity.c', include_directories: [inc, mc_inc], link_with: monocypher)
+proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', 'proto/usbmux.c', 'proto/crypto.c', 'proto/noise.c', 'proto/identity.c', 'proto/secure.c', include_directories: [inc, mc_inc], link_with: monocypher)
 proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
 test_proto = executable('test_proto', 'tests/test_proto.c', dependencies: proto_dep)
 test('proto wire format', test_proto)
@@ -187,3 +187,6 @@ test('noise xx handshake', test_noise)
 
 test_identity = executable('test_identity', 'tests/test_identity.c', dependencies: proto_dep)
 test('identity files and key stores', test_identity)
+
+test_secure = executable('test_secure', 'tests/test_secure.c', dependencies: [proto_dep, dependency('threads')])
+test('secure channels', test_secure)

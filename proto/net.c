@@ -1,5 +1,7 @@
 #include "net.h"
 
+#include "crypto.h"
+
 #include <arpa/inet.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -95,8 +97,21 @@ void net_ctl_close(struct net_ctl *c)
 {
 	if (c->fd >= 0) close(c->fd);
 	free(c->buf);
-	memset(c, 0, sizeof *c);
+	if (c->pbuf) { pc_wipe(c->pbuf, c->pcap); free(c->pbuf); }
+	pc_wipe(c, sizeof *c);
 	c->fd = -1;
+}
+
+void net_ctl_secure(struct net_ctl *c, const uint8_t send_key[PC_KEY_LEN], const uint8_t recv_key[PC_KEY_LEN])
+{
+	if (c->consumed) { /* the last plain frame (the final handshake message) is done with */
+		memmove(c->buf, c->buf + c->consumed, c->len - c->consumed);
+		c->len -= c->consumed;
+		c->consumed = 0;
+	}
+	sec_ctl_init(&c->tx, send_key);
+	sec_ctl_init(&c->rx, recv_key);
+	c->secure = 1;
 }
 
 int net_ctl_send(struct net_ctl *c, uint16_t type, const uint8_t *payload, size_t len)
@@ -105,6 +120,16 @@ int net_ctl_send(struct net_ctl *c, uint16_t type, const uint8_t *payload, size_
 	if (!frame) return -ENOMEM;
 	int n = proto_ctl_frame_write(type, payload, len, frame, len + 8);
 	if (n < 0) { free(frame); return n; }
+	if (c->secure) { /* the whole plain frame becomes the plaintext of one secure frame */
+		uint8_t *sealed = malloc((size_t)n + 4 + PC_TAG_LEN);
+		if (!sealed) { free(frame); return -ENOMEM; }
+		int sn = sec_ctl_seal(&c->tx, frame, (size_t)n, sealed, (size_t)n + 4 + PC_TAG_LEN);
+		pc_wipe(frame, (size_t)n);
+		free(frame);
+		if (sn < 0) { free(sealed); return sn; }
+		frame = sealed;
+		n = sn;
+	}
 	size_t off = 0;
 	while (off < (size_t)n) {
 		ssize_t w = send(c->fd, frame + off, (size_t)n - off, MSG_NOSIGNAL);
@@ -122,15 +147,56 @@ int net_ctl_send(struct net_ctl *c, uint16_t type, const uint8_t *payload, size_
 
 int net_ctl_recv(struct net_ctl *c, uint16_t *type, const uint8_t **payload, size_t *len, int timeout_ms)
 {
-	if (c->consumed) { /* drop the message handed out by the previous call */
-		memmove(c->buf, c->buf + c->consumed, c->len - c->consumed);
-		c->len -= c->consumed;
-		c->consumed = 0;
+	/* the buffer whose bytes are plain frames: the socket's, or in secure mode the decrypted one */
+	uint8_t **fb = c->secure ? &c->pbuf : &c->buf;
+	size_t *flen = c->secure ? &c->plen : &c->len, *fcons = c->secure ? &c->pconsumed : &c->consumed;
+	if (*fcons) { /* drop the message handed out by the previous call */
+		memmove(*fb, *fb + *fcons, *flen - *fcons);
+		*flen -= *fcons;
+		*fcons = 0;
 	}
 	for (;;) {
-		int n = proto_ctl_frame_parse(c->buf, c->len, type, payload, len);
+		int n = proto_ctl_frame_parse(*fb, *flen, type, payload, len);
 		if (n < 0) return -EINVAL;
-		if (n > 0) { c->consumed = (size_t)n; return 1; }
+		if (n > 0) { *fcons = (size_t)n; return 1; }
+
+		if (c->secure) { /* decrypt every complete secure frame that has arrived */
+			if (c->sec_err) return c->sec_err;
+			int progress = 0;
+			for (;;) {
+				if (c->pcap - c->plen < 65536) {
+					size_t nc = c->pcap ? c->pcap * 2 : 131072;
+					while (nc - c->plen < 65536) nc *= 2;
+					uint8_t *nb = realloc(c->pbuf, nc);
+					if (!nb) return -ENOMEM;
+					c->pbuf = nb;
+					c->pcap = nc;
+				}
+				size_t pl = 0;
+				int r = sec_ctl_open(&c->rx, c->buf, c->len, c->pbuf + c->plen, c->pcap - c->plen, &pl);
+				if (r == -ENOSPC) { /* a big frame: make room for it */
+					size_t nc = c->pcap * 2;
+					uint8_t *nb = realloc(c->pbuf, nc);
+					if (!nb || nc > SEC_CTL_MAX_PLAIN * 4) return -ENOMEM;
+					c->pbuf = nb;
+					c->pcap = nc;
+					continue;
+				}
+				if (r < 0) { /* -EBADMSG or -EMSGSIZE: forged, replayed, reordered or truncated: the connection is finished, but
+					      * frames that authenticated before this one are still delivered first */
+					c->sec_err = r;
+					if (progress) break;
+					return r;
+				}
+				if (r == 0) break;
+				c->plen += pl;
+				memmove(c->buf, c->buf + r, c->len - (size_t)r);
+				c->len -= (size_t)r;
+				progress = 1;
+			}
+			if (progress) continue;
+		}
+		if (c->secure && c->sec_err) return c->sec_err;
 
 		struct pollfd p = { .fd = c->fd, .events = POLLIN };
 		int r = poll(&p, 1, timeout_ms);
@@ -147,6 +213,6 @@ int net_ctl_recv(struct net_ctl *c, uint16_t *type, const uint8_t **payload, siz
 		if (got == 0) return -ECONNRESET;
 		if (got < 0) { if (errno == EINTR || errno == EAGAIN) continue; return -errno; }
 		c->len += (size_t)got;
-		if (c->len > PROTO_MAX_CTL_PAYLOAD + 16) return -EMSGSIZE;
+		if (!c->secure && c->len > PROTO_MAX_CTL_PAYLOAD + 16) return -EMSGSIZE; /* (secure frames are bounded by sec_ctl_open) */
 	}
 }
