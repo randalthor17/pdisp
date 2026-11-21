@@ -31,6 +31,8 @@ static void put_text(uint8_t *d, uint8_t tag, const char *s)
 	if (n < 13) d[5 + n] = 0x0A;
 }
 
+static int g_hz = 60;   // MODE=WxH@Hz overrides the default 2400x1080@60
+
 static void make_edid(uint8_t e[128], int w, int h, int mm_w, int mm_h,
 		      uint32_t serial, const char *name, const char *sn)
 {
@@ -51,8 +53,8 @@ static void make_edid(uint8_t e[128], int w, int h, int mm_w, int mm_h,
 	for (int i = 0; i < 8; i++) { e[38 + 2 * i] = 1; e[39 + 2 * i] = 1; }
 
 	// detailed timing; reduced blanking: hblank 160 (fp 48, sync 32), vblank 31 (fp 3, sync 10)
-	int hb = 160, hfp = 48, hsw = 32, vb = 31, vfp = 3, vsw = 10;
-	long clk = (long)(w + hb) * (h + vb) * 60 / 10000;
+	int hb = 160, hfp = 48, hsw = 32, vb = g_hz > 60 ? 60 : 31, vfp = 3, vsw = 10;
+	long clk = (long)(w + hb) * (h + vb) * g_hz / 10000;
 	uint8_t *d = e + 54;
 	d[0] = clk & 0xFF; d[1] = clk >> 8;
 	d[2] = w & 0xFF; d[3] = hb & 0xFF; d[4] = ((w >> 8) << 4) | (hb >> 8);
@@ -66,7 +68,7 @@ static void make_edid(uint8_t e[128], int w, int h, int mm_w, int mm_h,
 	put_text(e + 72, 0xFC, name);
 	uint8_t *r = e + 90;                 // range limits
 	memset(r, 0, 18);
-	r[3] = 0xFD; r[5] = 30; r[6] = 60; r[7] = 30; r[8] = 80; r[9] = 18; r[10] = 0x01;
+	r[3] = 0xFD; r[5] = 30; r[6] = g_hz; r[7] = 30; r[8] = (int)((long)(h + vb) * g_hz / 1000) + 5; r[9] = clk / 1000 + 1; r[10] = 0x01;
 	r[11] = 0x0A; memset(r + 12, 0x20, 6);
 	put_text(e + 108, 0xFF, sn);
 
@@ -123,7 +125,12 @@ int main(int argc, char **argv)
 	LOG("libevdi %d.%d.%d, device %d status=%d (0=AVAILABLE)\n", v.version_major, v.version_minor, v.version_patchlevel, card, evdi_check_device(card));
 
 	uint8_t edid[128];
-	make_edid(edid, 2400, 1080, 148, 66, 0x00000001, "pdisp-phone", "PDISP0001");
+	int mw = 2400, mh = 1080, mmw = 148, mmh = 66;
+	if (getenv("MODE")) {   // e.g. 2304x1440@90 (physical size scaled to a ~11" tablet)
+		sscanf(getenv("MODE"), "%dx%d@%d", &mw, &mh, &g_hz);
+		mmw = mw * 234 / 2304; mmh = mh * 150 / 1440;
+	}
+	make_edid(edid, mw, mh, mmw, mmh, 0x00000001, "pdisp-phone", "PDISP0001");
 	FILE *f = getenv("EDID_OUT") ? fopen(getenv("EDID_OUT"), "wb") : NULL;
 	if (f) { fwrite(edid, 1, 128, f); fclose(f); }
 
@@ -149,7 +156,8 @@ int main(int argc, char **argv)
 			LOG("reconnect (same EDID)\n");
 			evdi_connect2(h, edid, 128, 4096 * 2160, 4096 * 2160 * 60); connected = 1;
 		}
-		if (connected && have_buf && evdi_request_update(h, buf.id)) grab(h);
+		// a frame that is already ready is grabbed synchronously; only wait for an event when none is
+		if (connected && have_buf && evdi_request_update(h, buf.id)) { grab(h); if (poll(&pfd, 1, 0) > 0) evdi_handle_events(h, &ctx); continue; }
 		if (poll(&pfd, 1, 100) > 0) evdi_handle_events(h, &ctx);
 	}
 	LOG("done: %d frames total\n", frames);

@@ -84,11 +84,50 @@ with an mpv `testsrc2` window moved onto the virtual output with `niri msg actio
 
 Intra refresh and "no keyframe spikes" were not tested; `-g 120` IDR intervals are the only structure so far.
 
+## Load check: 2304x1440@90 fullscreen video (tablet-class mode)
+
+EDID mode set with `MODE=2304x1440@90` (edid-decode: 332.64 MHz, 234x150 mm, 135 kHz). Source: a pre-rendered noisy
+90 fps clip (`testsrc2` + `noise`, 150 Mbit/s HEVC) played by `mpv --hwdec=vaapi --vo=gpu`, moved to the virtual
+output and fullscreened with `niri msg action move-window-to-monitor/fullscreen-window`. Encode: `hevc_vaapi`,
+CBR 40M, bufsize 1500k, `-bf 0`, one IDR only (`-g 100000`).
+
+- 888 frames in 10 s (88.8 fps, target 90), mean gap 11.3 ms. 861 of 888 updates were full-frame rects. Max gap 113 ms,
+  6 gaps over 20 ms (likely the clip looping every 3 s; not confirmed). evdi grab avg 1.96 ms, max 3.36 ms for a 13 MB frame.
+- Encoder kept pace (`speed=0.99x` on the live fifo input); P-frames avg 54 KB (~39 Mbit/s at 90 fps), max 155 KB.
+- So niri + evdi + VAAPI sustain 2304x1440@90 on this machine with a full-screen high-motion source.
+  The copy into evdi's buffer is not separately measurable, but it is not the limit here.
+- Pitfall found in the spike itself: after a synchronous `evdi_request_update` success, waiting in `poll` for an
+  event caps delivery at the poll timeout (10 fps at 100 ms) and back-pressures the compositor (mpv then dropped
+  frames). The real daemon must loop on `request_update` while it returns true and only block when it returns false.
+
+## Keyframes, intra refresh and rate control
+
+- libva reports `VAConfigAttribEncIntraRefresh` = rolling column, rolling row and P-frame for HEVC on this GPU
+  (also `EncROI` with 32 regions, `EncMaxRefFrames` l0=2, max width 4096). `ffmpeg`'s `hevc_vaapi` has no option for it,
+  so intra refresh can only be used from direct libva code. **Advertised, not tested in practice.**
+- Keyframe spike is real on desktop content. Capture of a moving window at VBR 30M, `-g 120`: I-frames avg 393 KB
+  (max 728 KB) vs P-frames avg 53 KB (max 169 KB).
+- Re-encoding that capture with a tight CBR buffer fixes most of it without intra refresh
+  (all with `-bf 0`, hardware encode, PSNR against the decoded source):
+
+  | Setting | I avg / max | P avg / max | rate | PSNR avg / min |
+  |---|---|---|---|---|
+  | VBR 30M `-g 120` | 206 / 342 KB | 58 / 90 KB | 29.2 Mbit/s | 55.7 / 52.9 dB |
+  | CBR 20M buf 2 Mbit `-g 120` | 134 / 209 KB | 42 / 79 KB | 21.1 Mbit/s | 54.4 / 49.0 dB |
+  | CBR 20M buf 700 kbit `-g 120` | 73 / 92 KB | 42 / 76 KB | 20.7 Mbit/s | 53.3 / 49.0 dB |
+  | CBR 20M buf 700 kbit, no periodic IDR | one IDR only | 43 / 76 KB | 21.0 Mbit/s | 53.7 / 52.5 dB |
+
+  A 700 kbit buffer holds the I-frame to about the largest P-frame at a ~2 dB PSNR cost on this content. The source was
+  already compressed, so these PSNR numbers are optimistic for text and need re-checking on raw capture in M10.
+- Design implication: no periodic IDR. Send an IDR on connect and on request (loss, decoder reset), use CBR with a
+  small VBV buffer, and add intra refresh through libva only if keyframe-on-demand proves too bursty over Wi-Fi.
+
 ## Not yet verified
 
 - AOA: done, see `m0-aoa.md` (works; app-side parts still need M5/M7).
-- evdi + niri under heavier load than a 720p test pattern (compositor copy cost, higher resolutions and refresh rates).
-- HEVC intra refresh / per-frame size spikes at keyframes (matters for Wi-Fi latency).
+- HEVC intra refresh working in practice (advertised only).
+- Raw-capture quality on text (the PSNR table uses an already-compressed source).
+- Decoder side: does the tablet's `MediaCodec` accept this stream (profile/level 153 = 5.1, full-range tag)? M5.
 - Touch binding (`uinput` is available, `/dev/uinput` group `uinput`, user is a member).
 - evdi robustness across kernel updates and newer kernels (nixpkgs rebuilds it per kernel).
 
