@@ -69,7 +69,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - VAAPI HEVC low-latency from captured frames, output to a file. Prefer direct libva in the daemon; ffmpeg is acceptable for the first version.
 - Pass: the file plays in `mpv` and `ffprobe` reports the expected stream. Encode time per frame is logged. The keyframe size stays near the largest P-frame size under the chosen CBR settings.
 
-**M4: Protocol, Wi-Fi transport, desktop test client, network emulation, latency harness** (in progress: wire codecs, FEC, sender/receiver tested in simulation, and the real pipeline running end to end over loopback with `pdispd` and `pdisp-view`, see `docs/stream-simulation.md`; next the netem run, latency harness and the control-channel extras)
+**M4: Protocol, Wi-Fi transport, desktop test client, network emulation, latency harness** (the loss design is done and passes its acceptance on the real pipeline under netem, see `docs/stream-simulation.md`; still open: a live display window in the viewer, the control-channel extras (PING/PONG, RECONFIGURE, clock sync) and a pixel-stamped glass-to-glass latency measurement)
 - The protocol spec (`docs/protocol.md`, draft 0 awaiting review) with test vectors, and the shared C library: framing, handshake, packetisation, FEC, NACK, pacing, congestion feedback, reassembly. Fuzz and round-trip tests.
 - TCP control plus UDP video and input. The encoder side uses `encoder_invalidate_from`, frame skipping before encode and bitrate adaptation.
 - A desktop test client that decodes, shows the stream and enforces the "do not decode frames with a missing reference" rule.

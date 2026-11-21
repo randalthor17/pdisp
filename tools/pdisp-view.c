@@ -60,6 +60,13 @@ struct viewer {
 	bool quit;
 	atomic_bool decoder_failed;
 	AVFrame *last;           /* newest decoded picture, converted at exit */
+
+	/* freeze and corruption tracking over the whole run */
+	uint64_t max_gap_us;     /* longest time between two decoded frames, after the first 30 */
+	struct SwsContext *chk_sws;
+	uint8_t *chk_bgra;
+	unsigned chk_samples, chk_bad;
+	double chk_min;          /* lowest pattern match over the periodic checks */
 };
 
 #define JOB_RING 64
@@ -73,6 +80,25 @@ struct job {
 static struct viewer V;
 
 /* decode one access unit; runs on the decode thread */
+static double pattern_match(const uint8_t *bgra, int w, int h);
+
+/* periodic check of a decoded picture against the test pattern (the animated bar covers at most 3%) */
+static void check_picture(const AVFrame *fr)
+{
+	V.chk_sws = sws_getCachedContext(V.chk_sws, fr->width, fr->height, (enum AVPixelFormat)fr->format, fr->width, fr->height,
+					 AV_PIX_FMT_BGRA, SWS_FAST_BILINEAR, NULL, NULL, NULL);
+	if (!V.chk_sws) return;
+	sws_setColorspaceDetails(V.chk_sws, sws_getCoefficients(SWS_CS_ITU709), 0, sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+	if (!V.chk_bgra) V.chk_bgra = malloc((size_t)fr->width * fr->height * 4);
+	uint8_t *dst[4] = { V.chk_bgra, NULL, NULL, NULL };
+	int dst_stride[4] = { fr->width * 4, 0, 0, 0 };
+	sws_scale(V.chk_sws, (const uint8_t *const *)fr->data, fr->linesize, 0, fr->height, dst, dst_stride);
+	double m = pattern_match(V.chk_bgra, fr->width, fr->height);
+	if (!V.chk_samples || m < V.chk_min) V.chk_min = m;
+	if (m < 0.9) V.chk_bad++;
+	V.chk_samples++;
+}
+
 static void decode_job(const struct job *jb)
 {
 	uint64_t t0 = net_now_us();
@@ -88,6 +114,8 @@ static void decode_job(const struct job *jb)
 		if (rc < 0) { V.errors++; atomic_store(&V.decoder_failed, true); return; }
 		uint64_t now = net_now_us();
 		V.decoded++;
+		if (V.decoded > 30 && V.last_frame_us && now - V.last_frame_us > V.max_gap_us) V.max_gap_us = now - V.last_frame_us;
+		if (V.decoded > 60 && V.decoded % 20 == 0) check_picture(V.frame);
 		V.decode_ms_sum += (now - t0) / 1000.0;
 		if (!V.first_frame_us) V.first_frame_us = now;
 		V.last_frame_us = now;
@@ -357,11 +385,12 @@ int main(int argc, char **argv)
 	double match = V.bgra ? pattern_match(V.bgra, V.width, V.height) : 0;
 	printf("VIEW packets=%llu ", (unsigned long long)vs->packets);
 	printf("decoded=%llu fps=%.1f decode_ms_avg=%.2f latency_ms_p50=%.1f p99=%.1f max=%.1f given_up=%llu idr=%llu "
-	       "decoder_errors=%llu match=%.1f%%\n",
+	       "decoder_errors=%llu match=%.1f%% freeze_ms=%.1f checks=%u check_min=%.1f%% check_bad=%u\n",
 	       (unsigned long long)V.decoded, V.decoded / span, V.decoded ? V.decode_ms_sum / V.decoded : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat / 2] / 1000.0 : 0.0, V.n_lat ? V.lat_us[(size_t)((V.n_lat - 1) * 0.99)] / 1000.0 : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat - 1] / 1000.0 : 0.0, (unsigned long long)vs->frames_given_up,
-	       (unsigned long long)vs->idr_decoded, (unsigned long long)vs->decoder_errors, match * 100);
+	       (unsigned long long)vs->idr_decoded, (unsigned long long)vs->decoder_errors, match * 100, V.max_gap_us / 1000.0,
+	       V.chk_samples, V.chk_samples ? V.chk_min * 100 : 100.0, V.chk_bad);
 	if (snap && V.bgra && png_write_bgra(snap, V.bgra, V.width, V.height, V.width * 4) == 0) LOG("wrote %s", snap);
 
 	uint8_t cb[64];

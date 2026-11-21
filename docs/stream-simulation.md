@@ -83,3 +83,47 @@ decoded 40 fps with 44 frames given up and a collapsed bitrate. Three causes, no
 After the fixes, on the real pipeline (2304x1440 at 60 Hz, loopback, animated pattern, 10 s): 580 frames decoded at 58 fps,
 nothing given up, one IDR, 82 repair packets, capture-to-decode latency p50 20 ms, p99 31 ms (software decode averages
 7.75 ms per frame), decoded picture matching the pattern.
+
+## M4 acceptance on the real pipeline: netem (`tests/m4_netem_check.sh`)
+
+The real daemon and viewer, through niri and evdi, inside an unprivileged user and network namespace with netem on the
+loopback device, applied to UDP only (the control connection stays on a clean path). 10 s per scenario, animated pattern
+at 2304x1440 and 60 Hz, ~600 frames. The viewer checks the decoded picture against the pattern every 20 frames, so
+"no persistent corruption" is measured throughout the run, not only at the end.
+
+| Scenario | Frames decoded | Given up | IDRs | Longest freeze | Latency p50 / p99 | Corrupt pictures |
+|---|---|---|---|---|---|---|
+| 8 ms delay each way | 572 to 579 | 0 | 1 | 39 to 47 ms | 16 to 26 / 38 to 57 ms | 0 |
+| bursty ~2% loss, 15 ms jitter, 40 Mbit/s cap (the plan's acceptance case) | 563 to 578 | 0 (9 in one of six runs) | 1 (2) | 89 to 251 ms | 44 to 49 / 102 to 115 ms | 0 |
+| bursty ~5% loss, 15 ms jitter | 563 to 576 | 0 | 1 | 86 to 108 ms | 33 to 35 / 88 to 94 ms | 0 |
+| 15 Mbit/s cap, target starting at 20 | 563 to 579 | 0 | 1 | 51 to 61 ms | 33 to 40 / 90 to 105 ms | 0 |
+
+All of it passes: no persistent corruption (every periodic check at 95.8% or better against a pattern whose animated bar covers
+at most 3%), freezes bounded at about a quarter of a second at worst, and latency that does not grow. The rare 250 ms freeze is
+the expected recovery cost of an unrepaired loss: 100 ms before the receiver gives up, a round trip, and an IDR.
+
+### What the netem runs found
+
+The first runs failed badly (138 frames decoded under a 15 Mbit/s cap; a 6 s freeze under 5% loss), which led to three
+changes in the sender. The simulation had not shown any of them because its link was gentler and its loss less bursty.
+
+- **Controller oscillation.** The target went 7.9, 18, 24, 19 Mbit/s on a 15 Mbit/s link: it increased about 40% a second but
+  took five reports to notice a queue and cut 7%. Each overshoot filled the 100 ms buffer, the round trip rose to 90 ms, and
+  every loss event then took about six frames with it. The controller now increases about 2% per 100 ms and only after a quiet
+  second, cuts within three reports in proportion to the queue depth, and starts at 12 Mbit/s.
+- **Loss is not congestion.** The per-interval loss figure covers about 14 packets, so one lost packet reads as 71 permille.
+  Using it for decisions made the bitrate drift to the floor under sustained random loss. A smoothed figure (about 200 ms)
+  now gates increases above 10% loss and triggers cuts only above 20%; delay is the congestion signal, and the FEC overhead
+  (up to 30%) handles random loss.
+- **The doomed chain, again.** From 2.5 s on every frame was lost, although the sender saw only 3 or 4 frames unresolved:
+  lost frames count as resolved, and each report invalidated one frame while the encoder kept predicting from its newest valid
+  frame, a not-yet-reported descendant of the lost one. The sender now also invalidates all descendants of a lost frame at
+  once (it knows every frame's reference, and the receiver gives up on descendants anyway), which breaks the chain at the source.
+
+### Limits
+
+- netem is not Wi-Fi: loss is bursty here, but there is no power save, no rate adaptation, no aggregation, and the paths are
+  symmetric. The tablet decides.
+- The viewer decodes in software. A phone uses MediaCodec; decode latency differs.
+- Run-to-run variation is real (the freeze in the acceptance case ranged 89 to 251 ms), so the thresholds are bounds, not
+  targets: 400 ms for freezes in the loss scenarios.

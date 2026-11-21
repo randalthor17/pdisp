@@ -111,7 +111,7 @@ static void usage(const char *argv0)
 		"  -N SERIAL   binary EDID serial (default 1)\n"
 		"  -m WxH@HZ   use this mode instead of the phone's native size\n"
 		"  -R MAXHZ    highest refresh rate to pick from the phone's list (default 60)\n"
-		"  -b KBPS     initial bitrate (default 20000)\n"
+		"  -b KBPS     initial bitrate (default 12000; the controller raises it while the link allows)\n"
 		"  -B KBPS     highest bitrate (default 40000)\n"
 		"  -r NODE     VAAPI render node (default: first that can encode HEVC)\n"
 		"  -d CARD     evdi card (default: first free)\n"
@@ -137,7 +137,7 @@ int main(int argc, char **argv)
 	unsigned port = 47110;
 	const char *name = "pdisp", *serial_text = "PDISP0001", *render_node = NULL;
 	uint32_t serial = 1;
-	unsigned max_hz_mhz = 60000, bitrate = 20000, max_bitrate = 40000;
+	unsigned max_hz_mhz = 60000, bitrate = 12000, max_bitrate = 40000;
 	unsigned force_w = 0, force_h = 0, force_mhz = 0;
 	int card = -1, opt;
 	double run_secs = 0;

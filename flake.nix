@@ -22,6 +22,7 @@
           wayland-scanner
           edid-decode
           jq
+          iproute2
           ffmpeg-headless
         ];
         buildInputs = with pkgs; [

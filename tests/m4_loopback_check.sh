@@ -4,6 +4,8 @@
 # in the loop, match the pattern, and keep up with the refresh rate.
 # Needs niri, jq, a free evdi device, a VAAPI HEVC encoder. Exits 77 (meson: skipped) when they are missing.
 # usage: m4_loopback_check.sh <pdispd> <pdisp-view> <pdisp-pattern> [artifact-dir] [extra pdisp-view args...]
+# Thresholds can be overridden through the environment (used by the netem check): MIN_DECODED (450), MIN_FPS (50),
+# MAX_P99_MS (80), MAX_FREEZE_MS (none), MIN_CHECK_PCT (90), MAX_IDR (1), MAX_GIVEN_UP (none).
 set -u
 daemon=$1; viewer=$2; pattern=$3
 art=${4:-$(mktemp -d)}
@@ -62,11 +64,17 @@ grep '^DAEMON' "$dlog"
 [ "$drc" = 0 ] || fail "daemon failed (rc=$drc)"
 
 val() { echo "$summary" | tr ' ' '\n' | grep "^$1=" | head -1 | cut -d= -f2 | tr -d '%'; }
-decoded=$(val decoded); fps=$(val fps); p99=$(val p99); given=$(val given_up); idr=$(val idr); match=$(val match); errs=$(val decoder_errors)
-[ "$decoded" -ge 450 ] 2>/dev/null || fail "decoded only $decoded frames in 10 s"
-awk -v f="$fps" 'BEGIN { exit !(f >= 50) }' || fail "decode rate $fps fps is below 50"
-awk -v l="$p99" 'BEGIN { exit !(l < 80) }' || fail "capture-to-decode latency p99 ${p99} ms is over 80 ms"
+decoded=$(val decoded); fps=$(val fps); p99=$(val p99); given=$(val given_up); idr=$(val idr); match=$(val match)
+errs=$(val decoder_errors); freeze=$(val freeze_ms); cmin=$(val check_min); cbad=$(val check_bad); checks=$(val checks)
+[ "$decoded" -ge "${MIN_DECODED:-450}" ] 2>/dev/null || fail "decoded only $decoded frames in 10 s (want ${MIN_DECODED:-450})"
+awk -v f="$fps" -v m="${MIN_FPS:-50}" 'BEGIN { exit !(f >= m) }' || fail "decode rate $fps fps is below ${MIN_FPS:-50}"
+awk -v l="$p99" -v m="${MAX_P99_MS:-80}" 'BEGIN { exit !(l < m) }' || fail "capture-to-decode latency p99 ${p99} ms is over ${MAX_P99_MS:-80} ms"
+[ -z "${MAX_FREEZE_MS:-}" ] || awk -v f="$freeze" -v m="$MAX_FREEZE_MS" 'BEGIN { exit !(f <= m) }' || fail "longest freeze ${freeze} ms is over $MAX_FREEZE_MS ms"
 [ "$errs" = 0 ] || fail "$errs decoder errors"
-[ "$idr" = 1 ] || fail "$idr IDRs decoded (expected exactly the first)"
+[ "$idr" -ge 1 ] && [ "$idr" -le "${MAX_IDR:-1}" ] || fail "$idr IDRs decoded (allowed 1 to ${MAX_IDR:-1})"
+[ -z "${MAX_GIVEN_UP:-}" ] || [ "$given" -le "$MAX_GIVEN_UP" ] || fail "gave up on $given frames (allowed $MAX_GIVEN_UP)"
+[ "$checks" -ge 5 ] || fail "only $checks periodic pattern checks ran"
+[ "$cbad" = 0 ] || fail "$cbad periodic pattern checks found a corrupt picture (lowest match ${cmin}%)"
+awk -v c="$cmin" -v m="${MIN_CHECK_PCT:-90}" 'BEGIN { exit !(c >= m) }' || fail "lowest periodic pattern match ${cmin}% is below ${MIN_CHECK_PCT:-90}%"
 [ -s "$art/view.png" ] || fail "no snapshot written"
-echo "PASS: $decoded frames at $fps fps, p99 latency ${p99} ms, pattern match ${match}%, given up $given, 1 IDR"
+echo "PASS: $decoded frames at $fps fps, p99 latency ${p99} ms, longest freeze ${freeze} ms, pattern match ${match}% (lowest of $checks checks ${cmin}%), gave up on $given, $idr IDR(s)"

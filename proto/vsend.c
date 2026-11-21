@@ -11,8 +11,8 @@
 #define VS_QUEUE 16384
 
 struct vs_frame {
-	bool used, held, lost;
-	uint32_t id;
+	bool used, held, lost, doomed;
+	uint32_t id, ref; /* the frame this one predicts from */
 	struct vtx_frame vf;
 	uint8_t *data;
 	uint64_t first_send_us;
@@ -49,10 +49,12 @@ struct vsend {
 	/* rate adaptation */
 	uint32_t target_kbps;
 	unsigned fec_percent;
-	double loss_ewma; /* permille */
+	double loss_ewma; /* permille, fast: drives the FEC overhead */
+	double loss_slow; /* permille, about 200 ms of memory: a 10 ms interval holds ~14 packets, so one loss reads as 71 permille */
 	uint64_t last_adjust_us;
 	unsigned congested; /* consecutive reports with a standing queue */
 	uint64_t last_idr_request_us, last_idr_submit_us;
+	uint64_t last_lost_us, last_decrease_us; /* congestion memory: frames reported lost, last rate cut */
 	uint64_t rtt_us; /* smoothed: first packet sent to the frame being reported held */
 	uint64_t last_progress_us; /* when the receiver last reported seeing a newer frame than before */
 	uint32_t fb_newest;
@@ -142,6 +144,7 @@ int vsend_submit(struct vsend *vs, uint32_t frame_id, uint32_t ref_frame_id, uin
 	memset(f, 0, sizeof *f);
 	f->used = true;
 	f->id = frame_id;
+	f->ref = ref_frame_id;
 	f->vf = vf;
 	f->data = copy;
 	f->vf.data = copy;
@@ -278,27 +281,32 @@ static void enqueue_repair(struct vsend *vs, struct vs_frame *f, unsigned block,
 static void adapt(struct vsend *vs, const struct proto_feedback *fb, uint64_t now_us)
 {
 	vs->loss_ewma = vs->loss_ewma * 0.7 + fb->loss_permille * 0.3;
+	vs->loss_slow = vs->loss_slow * 0.95 + fb->loss_permille * 0.05;
 	/* FEC overhead follows the loss: about 3x the loss rate plus a margin, within the configured bounds */
 	unsigned fec = vs->cfg.fec_percent_min + (unsigned)(vs->loss_ewma * 3 / 10.0 + 0.5);
 	if (fec < vs->cfg.fec_percent_min) fec = vs->cfg.fec_percent_min;
 	if (fec > vs->cfg.fec_percent_max) fec = vs->cfg.fec_percent_max;
 	vs->fec_percent = fec;
 
-	vs->congested = fb->queue_delay_us > 30000 ? vs->congested + 1 : 0;
+	vs->congested = fb->queue_delay_us > 25000 ? vs->congested + 1 : 0;
 	if (now_us < vs->last_adjust_us + 100000) return; /* adjust at most every 100 ms */
 	uint32_t t = vs->target_kbps;
-	if (vs->congested >= 5 || fb->loss_permille > 100) {
-		/* a standing queue (50 ms of reports) or heavy loss. A mild queue backs off a little; a severe one goes below
-		 * what actually got through. */
-		if (fb->queue_delay_us > 80000 && fb->recv_kbps) {
+	bool recent_loss = vs->last_lost_us && now_us < vs->last_lost_us + 500000;
+	if (vs->congested >= 3 || vs->loss_slow > 200) {
+		/* A standing queue (25 ms or more for three reports) or severe loss (above 20%): cut in proportion to how deep the queue is, and
+		 * when it is severe go below what actually got through. */
+		unsigned q_ms = fb->queue_delay_us / 1000;
+		unsigned keep = q_ms >= 100 ? 60 : q_ms >= 25 ? 100 - (q_ms - 25) * 2 / 3 : 92; /* percent of the rate kept */
+		if (keep > 92) keep = 92;
+		t = (uint32_t)((uint64_t)t * keep / 100);
+		if (q_ms > 50 && fb->recv_kbps) {
 			uint32_t cap = (uint32_t)(fb->recv_kbps * 0.85);
-			t = cap < t * 90 / 100 ? cap : t * 90 / 100;
-		} else {
-			t = t * 93 / 100;
+			if (cap < t) t = cap;
 		}
-		vs->last_adjust_us = now_us;
-	} else if (vs->congested == 0 && fb->queue_delay_us < 12000 && fb->loss_permille < 20) {
-		t += t / 25 + 50; /* gentle increase */
+		vs->last_adjust_us = vs->last_decrease_us = now_us;
+	} else if (vs->congested == 0 && fb->queue_delay_us < 15000 && vs->loss_slow < 100 && !recent_loss &&
+		   (!vs->last_decrease_us || now_us > vs->last_decrease_us + 1000000)) {
+		t += t / 50 + 50; /* slow increase: about 2% per 100 ms, and only after a quiet second */
 		vs->last_adjust_us = now_us;
 	}
 	if (t < vs->cfg.min_bitrate_kbps) t = vs->cfg.min_bitrate_kbps;
@@ -341,6 +349,7 @@ int vsend_on_packet(struct vsend *vs, const uint8_t *pkt, size_t len, uint64_t n
 				}
 			} else {
 				vs->st.frames_lost++;
+				vs->last_lost_us = now_us ? now_us : 1;
 				if (f) f->lost = true;
 				if (n_lost < 64) lost_ids[n_lost++] = id;
 			}
@@ -348,6 +357,21 @@ int vsend_on_packet(struct vsend *vs, const uint8_t *pkt, size_t len, uint64_t n
 		vs->base = fb.held_base;
 		if (vs->cb.invalidate)
 			for (unsigned i = 0; i < n_lost; i++) vs->cb.invalidate(lost_ids[i], vs->cb.user);
+
+		/* The receiver gives up on every descendant of a lost frame, so those frames are as good as lost already. Without
+		 * waiting a round trip for each report, drop them as references now: otherwise the encoder keeps predicting from
+		 * the newest frame, a not-yet-reported descendant, and the chain of doomed frames never ends. */
+		if (n_lost && vs->cb.invalidate) {
+			for (uint32_t id = lost_ids[0] + 1; (int32_t)(vs->newest_id - id) >= 0; id++) {
+				struct vs_frame *f = frame_for(vs, id);
+				if (!f || f->held || f->lost || f->doomed || f->ref == PROTO_NO_REF) continue;
+				struct vs_frame *r = frame_for(vs, f->ref);
+				if (r && (r->lost || r->doomed)) {
+					f->doomed = true;
+					vs->cb.invalidate(id, vs->cb.user);
+				}
+			}
+		}
 	}
 	/* The receiver repeats need_idr until an IDR has been decoded, which takes a round trip or more: act on it once per
 	 * 150 ms, otherwise every report would trigger another keyframe. */

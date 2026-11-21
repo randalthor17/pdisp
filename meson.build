@@ -130,3 +130,11 @@ test('m4 loopback through the real pipeline', m4_loopback,
   is_parallel: false,
   timeout: 120,
   suite: 'integration')
+
+m4_netem = find_program('tests/m4_netem_check.sh')
+test('m4 netem loss jitter and bandwidth caps', m4_netem,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm4-netem-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 400,
+  suite: 'integration')
