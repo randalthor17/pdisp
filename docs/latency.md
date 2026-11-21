@@ -67,3 +67,10 @@ the buffer absorbs. A smoothness/latency setting belongs in M10.
 Decode in the hardware decoder: Pixel 8a (Tensor G3, `c2.exynos.hevc.decoder`) 9 to 12 ms p50 and 15 to 24 ms p95; Galaxy Tab S9 FE
 (Exynos 1380, same decoder name, 3.3 MP) 48 to 60 ms p50. The decoder lists vendor parameters (`vendor.sec-dec-output.display-delay`,
 `decode-order`, `dpb-num`, ...) that were not tried yet.
+
+### Decoder vendor parameters (Pixel 8a, 2026-11-21): do not set them
+`vendor.sec-dec-output.display-delay.value = 0` together with `vendor.sec-dec-output.decode-order.value = 1` made the decoder far
+slower to deliver pictures: decode latency p50 **227 ms** (p95 244 ms) against **9.7 ms** (p95 16.5 ms) with the defaults, same stream,
+same device, A/B by system property in one session. The defaults are already the low-latency behaviour on this decoder; the keys
+were reverted. (The Tab S9 FE's 48 to 60 ms is therefore not something these two keys fix; `dpb-num`, `extra-buffer-num` and
+`reorder-timestamp` remain untried and need the tablet.)
