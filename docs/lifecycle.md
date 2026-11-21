@@ -56,3 +56,22 @@ not encode. `-o` serves one session and exits, `-S` stops after a time.
 - **The app on a device**: the lock/unlock, background/foreground and reconnect logic builds but was not run on a phone yet (the test phone
   was locked), nor USB unplug and re-plug.
 - Android Doze and Wi-Fi power management during a long sleep.
+
+## On a device (Pixel 8a, Android 17, Wi-Fi), 2026-11-22
+With a 15 s grace period, driving the phone with adb (nothing was locked: a locked phone cannot be unlocked from here):
+
+| Scenario | Result |
+|---|---|
+| Home pressed (the app leaves the screen) | monitor gone after 646 ms ("on purpose"); returning to the app reconnected by itself and streamed |
+| Wi-Fi off for 5 s | the monitor stayed; the same connector was reused when the phone came back; streaming resumed |
+| Wi-Fi off for 25 s | monitor removed after 18.3 s (3 s to notice, then the 15 s grace period); the app reconnected when Wi-Fi returned and got a new monitor |
+| daemon restarted under the open app | monitor gone after 222 ms; the app reconnected to the restarted daemon by itself |
+| app killed | the monitor stayed for the grace period, then went; nothing reconnected |
+
+## USB: a bug found, fixed, and not yet re-verified
+Simulating a pulled cable (the phone leaves accessory mode) the daemon noticed in 861 ms and kept the monitor, but never got the phone
+back. Cause: while waiting for a phone over USB the daemon now polls in half-second slices (so it can keep servicing the display), and each
+slice asked the phone to switch to accessory mode again. The switch takes about a second to complete, so each new request restarted it:
+a livelock. `usblink_open` now remembers that it asked a moment ago (5 s) and waits for the accessory to appear. The burst of repeated
+requests also left this Pixel's USB accessory handling stuck until the cable is replugged, so the fix has not been verified end to end yet.
+`PDISP_USB_DEBUG=1` makes the daemon print what it does to each USB device.

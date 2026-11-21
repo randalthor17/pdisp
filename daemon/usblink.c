@@ -31,6 +31,20 @@ struct usblink {
 	char desc[64];
 };
 
+#define DBG(...) do { if (getenv("PDISP_USB_DEBUG")) { fprintf(stderr, "usblink: " __VA_ARGS__); fputc('\n', stderr); } } while (0)
+
+/* When the last switch to accessory mode was requested (microseconds, monotonic). usblink_open() is called again and again while the daemon
+ * waits for a phone, in short slices; a device needs about a second to re-enumerate after the request, and asking again in that time
+ * restarts the switch, so a recent request is waited for instead of repeated. */
+static uint64_t last_switch_us;
+
+static uint64_t mono_us(void)
+{
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (uint64_t)t.tv_sec * 1000000ull + (uint64_t)t.tv_nsec / 1000;
+}
+
 static void msleep(int ms)
 {
 	struct timespec t = { ms / 1000, (ms % 1000) * 1000000L };
@@ -186,15 +200,20 @@ int usblink_open(int timeout_ms, unsigned vid_filter, const volatile int *stop, 
 		ssize_t n = libusb_get_device_list(l->ctx, &list);
 		if (n < 0) { err = -EIO; break; }
 		target = find_accessory(list, n, have_path, bus, ports, np);
+		if (!target && !switched && last_switch_us && mono_us() - last_switch_us < 5000000) switched = 1; /* asked a moment ago: wait for it */
 		if (!target && !switched) { /* ask any Android device to switch */
 			for (ssize_t i = 0; i < n && !switched; i++) {
 				struct libusb_device_descriptor d;
 				if (libusb_get_device_descriptor(list[i], &d) || d.bDeviceClass == LIBUSB_CLASS_HUB) continue;
 				if (vid_filter && d.idVendor != vid_filter) continue;
 				libusb_device_handle *h;
-				if (libusb_open(list[i], &h)) continue; /* no permission (see contrib/udev) or not ours */
-				if (switch_to_accessory(h) == 0) {
+				int oe = libusb_open(list[i], &h);
+				if (oe) { DBG("%04x:%04x: cannot open: %s", d.idVendor, d.idProduct, libusb_error_name(oe)); continue; } /* no permission (see contrib/udev) or not ours */
+				int se = switch_to_accessory(h);
+				DBG("%04x:%04x: switch to accessory mode: %s", d.idVendor, d.idProduct, se ? strerror(-se) : "requested");
+				if (se == 0) {
 					switched = 1;
+					last_switch_us = mono_us();
 					have_path = path_of(list[i], &bus, ports, &np) == 0;
 					snprintf(l->desc, sizeof l->desc, "%04x:%04x", d.idVendor, d.idProduct);
 				}
