@@ -1,0 +1,9 @@
+# ninja log v5
+1	102	1795267717596405182	CMakeFiles/pdispnative.dir/home/rand/git-repos/virt-monitor/proto/timesync.c.o	1bb8fcc249a554c6
+0	265	1795267717758410717	CMakeFiles/pdispnative.dir/home/rand/git-repos/virt-monitor/proto/proto.c.o	a22ea82c541be574
+1	376	1795267717870414544	CMakeFiles/pdispnative.dir/home/rand/git-repos/virt-monitor/proto/net.c.o	1a0a03e38ff71876
+1	412	1795267717907415808	CMakeFiles/pdispnative.dir/home/rand/git-repos/virt-monitor/proto/video.c.o	eec4a93f0d937457
+0	417	1795267717911415946	CMakeFiles/pdispnative.dir/home/rand/git-repos/virt-monitor/proto/fec.c.o	9f28bace4898303b
+0	431	1795267717925416424	CMakeFiles/pdispnative.dir/session.c.o	45499ed4e0e40b04
+1	440	1795267717934416730	CMakeFiles/pdispnative.dir/home/rand/git-repos/virt-monitor/proto/vrecv.c.o	c43bdf758e5fd360
+440	452	1795267717946417141	/home/rand/git-repos/virt-monitor/android/app/build/intermediates/cxx/Debug/6w2g643n/obj/arm64-v8a/libpdispnative.so	f3ff7cb9706b9246

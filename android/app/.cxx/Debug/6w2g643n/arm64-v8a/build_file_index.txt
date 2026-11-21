@@ -1,0 +1,1 @@
+/home/rand/git-repos/virt-monitor/android/app/src/main/cpp/CMakeLists.txt

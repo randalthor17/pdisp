@@ -1,0 +1,3 @@
+/home/rand/git-repos/virt-monitor/android/app/.cxx/Debug/6w2g643n/arm64-v8a/CMakeFiles/pdispnative.dir
+/home/rand/git-repos/virt-monitor/android/app/.cxx/Debug/6w2g643n/arm64-v8a/CMakeFiles/edit_cache.dir
+/home/rand/git-repos/virt-monitor/android/app/.cxx/Debug/6w2g643n/arm64-v8a/CMakeFiles/rebuild_cache.dir
