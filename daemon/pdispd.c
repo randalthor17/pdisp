@@ -895,11 +895,12 @@ static enum end_reason serve(struct conn *c, double run_secs)
 			last_report = now;
 			const struct vsend_stats *st = vsend_stats(D.vs);
 			LOG("frames %llu (skipped %llu, idr %llu), %.1f Mbit/s target, FEC %u%%, repairs %llu, nacks %llu, lost %llu, "
-			    "queue %.1f ms, unresolved %u",
+			    "queue %.1f ms, unresolved %u, phone: queue %.1f ms decode %.1f ms recv >= %.1f Mbit/s",
 			    (unsigned long long)D.frames_encoded, (unsigned long long)D.frames_skipped, (unsigned long long)D.idr_frames,
 			    vsend_bitrate_kbps(D.vs) / 1000.0, vsend_fec_percent(D.vs), (unsigned long long)st->repair_packets,
 			    (unsigned long long)st->nacks, (unsigned long long)st->frames_lost, vsend_queue_delay_us(D.vs) / 1000.0,
-			    vsend_unresolved(D.vs));
+			    vsend_unresolved(D.vs), st->fb_queue_max_us / 1000.0, st->fb_decode_max_x10 / 10.0, st->fb_recv_kbps_min / 1000.0);
+			vsend_reset_report(D.vs);
 		}
 	}
 

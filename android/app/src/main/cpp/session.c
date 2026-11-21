@@ -459,6 +459,9 @@ static void *run(void *arg)
 					if (acked > s->touch_acked) s->touch_acked = acked;
 					pthread_mutex_unlock(&s->in_mu);
 				}
+				/* the PC numbers every datagram it sends, acknowledgements included: leaving this one out of the receiver's accounting
+				 * would read as a lost packet, so every touch or pen stroke would look like packet loss and the PC would cut the bitrate */
+				vrecv_on_packet(vr, pkt, (size_t)got, now);
 				continue;
 			}
 			vrecv_on_packet(vr, pkt, (size_t)got, now);

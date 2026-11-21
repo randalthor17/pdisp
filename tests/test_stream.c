@@ -509,6 +509,62 @@ static void test_decoder_error(void)
 	destroy(s);
 }
 
+/* The PC numbers every datagram it sends in one sequence (video, keepalives, input acknowledgements). A receiver that is not shown the
+ * acknowledgements sees gaps and reports loss, which once made the PC cut the bitrate whenever the phone was touched. */
+static int ack_decode(const struct vrecv_frame *f, void *user) { (void)f; (void)user; return 0; }
+
+static unsigned loss_with_acks(bool show_acks)
+{
+	struct vsend_config vc = { .session_id = 0x1234abcd, .bitrate_kbps = 20000, .max_bitrate_kbps = 20000, .min_bitrate_kbps = 1500 };
+	struct vsend_callbacks vcb = { 0 };
+	struct vsend *vs = vsend_create(&vc, &vcb);
+	struct vrecv_config rc = { .session_id = 0x1234abcd };
+	struct vrecv_callbacks rcb = { .decode = ack_decode, .user = NULL };
+	struct vrecv *vr = vrecv_create(&rc, &rcb);
+	uint8_t buf[MAXPKT];
+	unsigned loss = 0;
+	uint64_t now = 1000;
+	uint8_t frame[600];
+	memset(frame, 0x55, sizeof frame);
+	CHECK(vsend_submit(vs, 1, PROTO_NO_REF, now, PROTO_VFLAG_IDR, frame, sizeof frame, now) == 0); /* the receiver starts on a keyframe */
+	for (int guard = 0; guard < 64; guard++, now += 100) {
+		int n = vsend_next_packet(vs, now + 1000000, buf, sizeof buf);
+		if (n <= 0) break;
+		vrecv_on_packet(vr, buf, (size_t)n, now);
+	}
+	(void)vrecv_feedback_packet(vr, now + 20000, buf, sizeof buf); /* starts the first interval */
+	now += 20000;
+	for (int round = 0; round < 40; round++) {
+		for (int i = 0; i < 5; i++) { /* some packets of the PC's own: acknowledgements */
+			uint8_t payload[4] = { (uint8_t)round, 0, 0, 0 };
+			int n = vsend_make_packet(vs, PROTO_PKT_INPUT_ACK, payload, sizeof payload, buf, sizeof buf);
+			if (n > 0 && show_acks) vrecv_on_packet(vr, buf, (size_t)n, now);
+			now += 1000;
+		}
+		int n = vsend_make_packet(vs, PROTO_PKT_KEEPALIVE, (const uint8_t[]){ 0, 0, 0, 0, 0 }, 5, buf, sizeof buf);
+		if (n > 0) vrecv_on_packet(vr, buf, (size_t)n, now);
+		now += 1000;
+		uint8_t fb[MAXPKT];
+		int fn = vrecv_feedback_packet(vr, now + 20000, fb, sizeof fb);
+		struct proto_feedback f;
+		if (fn > PROTO_PKT_HDR_SIZE && proto_feedback_decode(fb + PROTO_PKT_HDR_SIZE, (size_t)fn - PROTO_PKT_HDR_SIZE, &f) == 0 && f.loss_permille > loss)
+			loss = f.loss_permille;
+		now += 20000;
+	}
+	vrecv_destroy(vr);
+	vsend_destroy(vs);
+	return loss;
+}
+
+static void test_ack_accounting(void)
+{
+	printf("  input acknowledgements are counted as received: ");
+	unsigned shown = loss_with_acks(true), hidden = loss_with_acks(false);
+	CHECK(shown == 0);
+	CHECK(hidden > 200); /* what the app used to report: far above the 20%% that makes the PC cut the bitrate */
+	printf("loss %u permille (acks shown), %u permille (hidden)\n", shown, hidden);
+}
+
 int main(void)
 {
 	puts("sender and receiver over a simulated link:");
@@ -520,6 +576,7 @@ int main(void)
 	test_lost_final_frame();
 	test_lossy_feedback();
 	test_decoder_error();
+	test_ack_accounting();
 	if (failures) {
 		fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

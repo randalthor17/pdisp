@@ -652,6 +652,9 @@ int main(int argc, char **argv)
 					input_tx_ack(&V.tx, acked);
 					if ((int32_t)(acked - (uint32_t)V.touch_acked_to) > 0) V.touch_acked_to = acked;
 				}
+				/* the PC numbers every datagram it sends, acknowledgements included: leaving this one out of the receiver's accounting
+				 * would read as a lost packet, so every touch or pen stroke would look like packet loss and the PC would cut the bitrate */
+				vrecv_on_packet(vr, pkt, (size_t)got, now);
 				continue;
 			}
 			vrecv_on_packet(vr, pkt, (size_t)got, now);

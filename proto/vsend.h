@@ -40,6 +40,9 @@ struct vsend_callbacks {
 struct vsend_stats {
 	uint64_t frames, packets, bytes, repair_packets, keepalives;
 	uint64_t nacks, frames_held, frames_lost, feedback;
+	/* what the phone reported since the stats were last read (see vsend_take_report): its worst queue delay and decode time, and the lowest
+	 * receive rate seen, for diagnosing why the bitrate fell */
+	uint32_t fb_queue_max_us, fb_decode_max_x10, fb_recv_kbps_min;
 };
 
 struct vsend;
@@ -85,5 +88,7 @@ uint32_t vsend_bitrate_kbps(const struct vsend *vs);
 unsigned vsend_fec_percent(const struct vsend *vs);
 
 const struct vsend_stats *vsend_stats(const struct vsend *vs);
+/* Starts a new window for the three feedback figures above. */
+void vsend_reset_report(struct vsend *vs);
 
 #endif

@@ -338,6 +338,9 @@ int vsend_on_packet(struct vsend *vs, const uint8_t *pkt, size_t len, uint64_t n
 	rc = proto_feedback_decode(pkt + PROTO_PKT_HDR_SIZE, len - PROTO_PKT_HDR_SIZE, &fb);
 	if (rc != 0) return rc;
 	vs->st.feedback++;
+	if ((uint32_t)fb.queue_delay_us > vs->st.fb_queue_max_us) vs->st.fb_queue_max_us = (uint32_t)fb.queue_delay_us;
+	if (fb.decode_ms_x10 > vs->st.fb_decode_max_x10) vs->st.fb_decode_max_x10 = fb.decode_ms_x10;
+	if (fb.recv_kbps && (!vs->st.fb_recv_kbps_min || fb.recv_kbps < vs->st.fb_recv_kbps_min)) vs->st.fb_recv_kbps_min = fb.recv_kbps;
 	if (!vs->fb_newest_set || (int32_t)(fb.newest_frame_id - vs->fb_newest) > 0) {
 		vs->fb_newest = fb.newest_frame_id;
 		vs->fb_newest_set = true;
@@ -412,4 +415,9 @@ int vsend_on_packet(struct vsend *vs, const uint8_t *pkt, size_t len, uint64_t n
 	}
 	adapt(vs, &fb, now_us);
 	return 0;
+}
+
+void vsend_reset_report(struct vsend *vs)
+{
+	vs->st.fb_queue_max_us = vs->st.fb_decode_max_x10 = vs->st.fb_recv_kbps_min = 0;
 }

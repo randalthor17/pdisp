@@ -47,7 +47,9 @@ struct vrecv *vrecv_create(const struct vrecv_config *cfg, const struct vrecv_ca
 void vrecv_destroy(struct vrecv *vr);
 void vrecv_set_epoch(struct vrecv *vr, uint8_t epoch);
 
-/* Processes a datagram from the PC (VIDEO and KEEPALIVE are used). May invoke the decode callback. */
+/* Processes a datagram from the PC (VIDEO and KEEPALIVE are used). May invoke the decode callback.
+ * Pass EVERY datagram that arrives, whatever its type, even ones you also handle yourself (INPUT_ACK, TIME_RESP): the PC numbers all of
+ * them in one sequence, so a datagram left out reads as a lost packet in the feedback and makes the PC cut the bitrate. */
 int vrecv_on_packet(struct vrecv *vr, const uint8_t *pkt, size_t len, uint64_t now_us);
 
 /* Gives up on frames that waited too long. Call regularly (at least every few milliseconds). */
