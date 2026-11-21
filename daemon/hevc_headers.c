@@ -73,7 +73,7 @@ static void write_vps(struct bits *b, const struct hevc_params *p)
 	u(b, 16, 0xffff);
 	profile_tier_level(b, p->level_idc);
 	u(b, 1, 0);      /* vps_sub_layer_ordering_info_present_flag */
-	ue(b, 1);        /* vps_max_dec_pic_buffering_minus1: current + one reference */
+	ue(b, p->dpb_size ? p->dpb_size - 1 : 1); /* vps_max_dec_pic_buffering_minus1 */
 	ue(b, 0);        /* vps_max_num_reorder_pics */
 	ue(b, 0);        /* vps_max_latency_increase_plus1 */
 	u(b, 6, 0);      /* vps_max_layer_id */
@@ -102,7 +102,7 @@ static void write_sps(struct bits *b, const struct hevc_params *p)
 	ue(b, 0);    /* bit_depth_chroma_minus8 */
 	ue(b, 8);    /* log2_max_pic_order_cnt_lsb_minus4: 12 bits */
 	u(b, 1, 0);  /* sps_sub_layer_ordering_info_present_flag */
-	ue(b, 1);    /* sps_max_dec_pic_buffering_minus1 */
+	ue(b, p->dpb_size ? p->dpb_size - 1 : 1); /* sps_max_dec_pic_buffering_minus1 */
 	ue(b, 0);    /* sps_max_num_reorder_pics */
 	ue(b, 0);    /* sps_max_latency_increase_plus1 */
 	ue(b, 0);    /* log2_min_luma_coding_block_size_minus3: 8x8 */
@@ -211,24 +211,44 @@ static size_t append_nal(uint8_t *out, size_t cap, size_t len, unsigned nal_type
 	return len;
 }
 
-size_t hevc_write_slice_header(const struct hevc_params *p, bool idr, unsigned poc, uint8_t *out, size_t cap)
-{
-	(void)p;
-	uint8_t rbsp[64];
-	struct bits b = { .buf = rbsp, .cap = sizeof rbsp };
+unsigned hevc_ctu_columns(const struct hevc_params *p) { return (p->width + HEVC_CTU_SIZE - 1) / HEVC_CTU_SIZE; }
+unsigned hevc_ctu_rows(const struct hevc_params *p) { return (p->height + HEVC_CTU_SIZE - 1) / HEVC_CTU_SIZE; }
 
-	u(&b, 1, 1);                 /* first_slice_segment_in_pic_flag */
+size_t hevc_write_slice_header(const struct hevc_params *p, bool idr, int poc, unsigned slice_ctu_address,
+			       const struct hevc_ref *refs, int nrefs, uint8_t *out, size_t cap)
+{
+	uint8_t rbsp[128];
+	struct bits b = { .buf = rbsp, .cap = sizeof rbsp };
+	unsigned pic_size_in_ctbs = hevc_ctu_columns(p) * hevc_ctu_rows(p);
+	if (slice_ctu_address >= pic_size_in_ctbs) return 0;
+
+	u(&b, 1, slice_ctu_address == 0); /* first_slice_segment_in_pic_flag */
 	if (idr) u(&b, 1, 0);        /* no_output_of_prior_pics_flag (IRAP pictures only) */
 	ue(&b, 0);                   /* slice_pic_parameter_set_id */
+	if (slice_ctu_address != 0) {
+		unsigned bits = 0;       /* slice_segment_address: Ceil(Log2(PicSizeInCtbsY)) bits */
+		while ((1u << bits) < pic_size_in_ctbs) bits++;
+		u(&b, bits, slice_ctu_address);
+	}
 	ue(&b, idr ? 2 : 1);         /* slice_type: I = 2, P = 1 */
 	if (!idr) {
-		u(&b, 12, poc & 0xfff);  /* slice_pic_order_cnt_lsb (log2_max_pic_order_cnt_lsb = 12) */
+		int used = 0;
+		for (int i = 0; i < nrefs; i++) {
+			if (refs[i].poc >= poc || (i > 0 && refs[i].poc >= refs[i - 1].poc)) return 0;
+			used += refs[i].used;
+		}
+		if (nrefs < 1 || used != 1) return 0;
+		u(&b, 12, (unsigned)poc & 0xfff); /* slice_pic_order_cnt_lsb (log2_max_pic_order_cnt_lsb = 12) */
 		u(&b, 1, 0);             /* short_term_ref_pic_set_sps_flag: the RPS follows */
-		ue(&b, 1);               /* num_negative_pics */
+		ue(&b, (uint32_t)nrefs); /* num_negative_pics */
 		ue(&b, 0);               /* num_positive_pics */
-		ue(&b, 0);               /* delta_poc_s0_minus1: the previous picture */
-		u(&b, 1, 1);             /* used_by_curr_pic_s0_flag */
-		u(&b, 1, 0);             /* num_ref_idx_active_override_flag */
+		int prev = poc;
+		for (int i = 0; i < nrefs; i++) {
+			ue(&b, (uint32_t)(prev - refs[i].poc - 1)); /* delta_poc_s0_minus1 */
+			u(&b, 1, refs[i].used);                      /* used_by_curr_pic_s0_flag */
+			prev = refs[i].poc;
+		}
+		u(&b, 1, 0);             /* num_ref_idx_active_override_flag: one used picture, one active reference */
 		ue(&b, 0);               /* five_minus_max_num_merge_cand: 5 candidates */
 	}
 	se(&b, 0);                   /* slice_qp_delta */

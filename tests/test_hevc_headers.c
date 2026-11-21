@@ -118,18 +118,37 @@ static void test_slice_headers(void)
 	uint8_t buf[64];
 	struct nal nals[2];
 
-	size_t len = hevc_write_slice_header(&p, true, 0, buf, sizeof buf);
+	size_t len = hevc_write_slice_header(&p, true, 0, 0, NULL, 0, buf, sizeof buf);
 	CHECK(len > 5 && len < 16);
 	CHECK(split(buf, len, nals, 2) == 1 && nals[0].type == 19); /* IDR_W_RADL */
 	CHECK(no_start_code_emulation(&nals[0]));
 
 	for (unsigned poc = 1; poc < 5000; poc += 37) {
-		len = hevc_write_slice_header(&p, false, poc, buf, sizeof buf);
+		len = hevc_write_slice_header(&p, false, (int)poc, 0, &(struct hevc_ref){ (int)poc - 1, true }, 1, buf, sizeof buf);
 		CHECK(len > 5 && len < 24);
 		CHECK(split(buf, len, nals, 2) == 1 && nals[0].type == 1); /* TRAIL_R */
 		CHECK(no_start_code_emulation(&nals[0]));
 	}
-	CHECK(hevc_write_slice_header(&p, false, 1, buf, 6) == 0);
+	CHECK(hevc_write_slice_header(&p, false, 1, 0, &(struct hevc_ref){ 0, true }, 1, buf, 6) == 0);
+
+	/* later slices carry their start address; an address past the picture is refused */
+	unsigned ctbs = hevc_ctu_columns(&p) * hevc_ctu_rows(&p);
+	CHECK(ctbs == 72 * 45);
+	len = hevc_write_slice_header(&p, false, 5, 72 * 10, &(struct hevc_ref){ 4, true }, 1, buf, sizeof buf);
+	CHECK(len > 5 && split(buf, len, nals, 2) == 1 && nals[0].type == 1 && no_start_code_emulation(&nals[0]));
+	CHECK(hevc_write_slice_header(&p, true, 0, ctbs, NULL, 0, buf, sizeof buf) == 0);
+
+	/* a reference set keeps older pictures; exactly one is used, and they must be ordered closest first */
+	struct hevc_ref set[3] = { { 9, false }, { 7, true }, { 4, false } };
+	len = hevc_write_slice_header(&p, false, 10, 0, set, 3, buf, sizeof buf);
+	CHECK(len > 5 && split(buf, len, nals, 2) == 1 && no_start_code_emulation(&nals[0]));
+	struct hevc_ref two_used[2] = { { 9, true }, { 8, true } };
+	CHECK(hevc_write_slice_header(&p, false, 10, 0, two_used, 2, buf, sizeof buf) == 0);
+	struct hevc_ref none_used[1] = { { 9, false } };
+	CHECK(hevc_write_slice_header(&p, false, 10, 0, none_used, 1, buf, sizeof buf) == 0);
+	struct hevc_ref unordered[2] = { { 7, true }, { 9, false } };
+	CHECK(hevc_write_slice_header(&p, false, 10, 0, unordered, 2, buf, sizeof buf) == 0);
+	CHECK(hevc_write_slice_header(&p, false, 10, 0, set, 0, buf, sizeof buf) == 0);
 }
 
 int main(void)

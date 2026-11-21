@@ -20,8 +20,15 @@ Pipeline: virtual output (kernel) -> capture -> encode -> transport -> Android d
 1. **Virtual output**: out-of-tree `evdi` (packaged in nixpkgs), driven through `libevdi`. The daemon creates a display with a generated EDID (`evdi_connect`) and removes it (`evdi_disconnect`) for hotplug. Compositors see an ordinary monitor, so no compositor code is needed here. The EDID make, model and serial are stable per paired phone, so compositors can remember the output between sessions. The connector name (`DVI-I-n`) is not stable, so identity must come from the EDID. In-tree `vkms` was rejected in M0: no EDID control through kernel 7.0, and no configfs before 6.19 (see `docs/spikes/m0-virtual-output.md`).
 2. **Capture**: `libevdi` delivers frames and one bounding dirty rect per update directly to the daemon (`evdi_request_update`, `evdi_grab_pixels`). No scanout capture, no `CAP_SYS_ADMIN` in the capture path. Updates only arrive when the screen changes. Keep requesting while an update is ready and block only when none is.
 3. **Encode**: VAAPI, HEVC 8-bit 4:2:0. Low-latency settings, no B-frames, CBR with a small VBV buffer to keep keyframes near P-frame size. No periodic IDR: send one on connect and on request, SPS/PPS with each. The application must write VPS/SPS/PPS and a slice header itself: Mesa parses them and rewrites its own (see `docs/encoder-notes.md`). Intra refresh is advertised by the driver but untested. A high-quality refresh frame is sent when the screen goes static. 10-bit, wide-gamut and AV1 come later. Colour range and matrix tags must be set deliberately.
-4. **Transport**: a small interface with two implementations. TCP is for development and Wi-Fi. Android Open Accessory (AOA) over USB is the zero-setup wired path (libusb switches the phone to accessory mode, the app launches on plug-in, one permission tap).
-5. **Protocol**: versioned framing with a handshake and then video, input, cursor and heartbeat messages. The phone reports resolution, density (for physical size in the EDID), orientation, safe-area insets, supported refresh rates, supported codecs, color capabilities (wide gamut, HDR types), and touch and stylus capability. The PC replies with the chosen mode.
+4. **Transport**: Wi-Fi is the main path, and it must survive loss and congestion without stalling or corrupting the picture. Control (handshake, configuration, reconfiguration, clock sync) runs over TCP. Video and input run over UDP with application-level loss handling (see the protocol item). Android Open Accessory (AOA) over USB is the zero-setup wired path (libusb switches the phone to accessory mode, the app launches on plug-in, one permission tap) and carries the same packets, length-prefixed, over reliable bulk endpoints, where the loss handling stays idle. The transport interface reports queued bytes so the sender can skip frames before encoding.
+5. **Protocol**: versioned handshake (min and max version, capability flags, extensible fields), then video, input, cursor, feedback and heartbeat messages. The phone reports resolution, density (for physical size in the EDID), orientation, safe-area insets, supported refresh rates, supported codecs, color capabilities (wide gamut, HDR types), and touch and stylus capability. The PC replies with the chosen mode and the parameter sets. Loss handling, all verified or designed in M0 and `docs/spikes/m0-loss-resilience.md`:
+   - Video is split into packets of at most about 1200 bytes, with per-frame Reed-Solomon FEC (adaptive, roughly 10 to 20%), NACK retransmission for what FEC cannot repair, and paced sending.
+   - Every video packet carries the frame id, the id of the frame it predicts from (or IDR), and the capture timestamp. The receiver feeds the decoder only frames whose reference it holds, and shows the last good picture otherwise (a short freeze, never garbage).
+   - The receiver acknowledges frames. On loss the encoder predicts from the newest frame the receiver has (reference invalidation, implemented in `daemon/encoder.c`: bit-exact recovery without an IDR for up to 5 lost frames, an IDR beyond that, with the keyframe cost bounded by the small VBV buffer).
+   - When the screen goes static the sender still sends a periodic keepalive carrying the latest frame id, so a lost final frame is noticed and repaired.
+   - The receiver reports loss and delay trend about every 100 ms; the sender lowers the encoder bitrate and skips frames before encoding when its queue backs up. Latency stays bounded.
+   - Input travels on its own UDP flow as pointer state (not deltas), repeated until acknowledged.
+   - Packets are authenticated and encrypted with a session key from the handshake (M6), with the packet sequence number as the nonce.
 6. **Android app** (Kotlin): `MediaCodec` surface decode with low-latency hints, fullscreen immersive, keep-screen-on, Wi-Fi low-latency lock. It sends raw touch as normalized coordinates, pointer IDs and pressure. The cursor arrives as its own message and is drawn on the phone.
 7. **Input on the PC**: a `uinput` multitouch touchscreen (`INPUT_PROP_DIRECT`). The compositor handles gestures; neither the app nor the daemon does. A small touch-binding layer maps the device to the virtual output.
 8. **Security** (modelled on adb): the phone generates a keypair. The daemon keeps an authorized-keys file. The first connection shows an approval prompt on the PC with an "always allow" option. Wi-Fi traffic is encrypted using the same keys.
@@ -62,11 +69,13 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - VAAPI HEVC low-latency from captured frames, output to a file. Prefer direct libva in the daemon; ffmpeg is acceptable for the first version.
 - Pass: the file plays in `mpv` and `ffprobe` reports the expected stream. Encode time per frame is logged. The keyframe size stays near the largest P-frame size under the chosen CBR settings.
 
-**M4: Protocol, TCP transport, desktop test client, latency harness**
-- Framing, handshake, video packets, heartbeat. Protocol fuzz and round-trip tests.
-- A desktop test client that decodes and shows the stream.
-- A latency harness that stamps frames and measures glass-to-glass.
-- Pass: live view on the desktop. Latency numbers recorded for the baseline.
+**M4: Protocol, Wi-Fi transport, desktop test client, network emulation, latency harness**
+- A written protocol spec with test vectors, and the shared C library: framing, handshake, packetisation, FEC, NACK, pacing, congestion feedback, reassembly. Fuzz and round-trip tests.
+- TCP control plus UDP video and input. The encoder side uses `encoder_invalidate_from`, frame skipping before encode and bitrate adaptation.
+- A desktop test client that decodes, shows the stream and enforces the "do not decode frames with a missing reference" rule.
+- A network emulation harness: `netem` inside an unprivileged user and network namespace (verified in M0) for random and bursty loss, jitter, bandwidth caps and bufferbloat.
+- A latency harness that stamps frames and measures glass-to-glass on the desktop.
+- Pass: live view on the desktop. Under 2% bursty loss, 15 ms jitter and a 40 Mbit/s cap there is no persistent corruption, the picture recovers within a bounded time, and latency does not grow. Latency numbers recorded for the baseline.
 
 **M5: Android app skeleton**
 - Kotlin app: TCP connect, handshake with real resolution, density and refresh rates, `MediaCodec` surface decode.
@@ -110,7 +119,7 @@ Later: other compositors (sway, KDE, GNOME), audio, clipboard, multiple phones.
 ## Open decisions
 
 - Daemon language. The leaning is C: `libevdi`, VAAPI and libusb are all C APIs, the spike code was plain C with little glue, and it matches the author's systems background. Rust and Zig are possible. Confirm at the start of M1.
-- Share the protocol library between daemon and app as C (via JNI) or write it twice with a spec and tests. Decide at M4.
+- Protocol library on Android: the FEC, reassembly, pacing and encryption are real logic, so the leaning is one C implementation used from Kotlin through JNI, rather than two implementations. Confirm at M5.
 - Project name.
 - Privilege model. Capture no longer needs `CAP_SYS_ADMIN`. The remaining privileged steps are loading the evdi module and adding a device (`/sys/devices/evdi/add`), so a user service plus a udev rule or a one-shot privileged setup unit (module options, device count) is the likely answer. Decide at M1.
 
@@ -121,6 +130,11 @@ Later: other compositors (sway, KDE, GNOME), audio, clipboard, multiple phones.
 - Compositor-to-evdi copy cost was not isolated. It kept up at 2304x1440@90 in M0, but heavier scenes and 4K are unmeasured.
 - The tablet is on USB 2.0 high speed. That is enough for the measured HEVC stream (about 20 to 40 Mbit/s), but limits headroom for high bitrates, static refinement and 10-bit.
 - The Mesa encoder only works with application-written packed headers that must agree with the VA parameters; a Mesa change in what it parses could break the stream. The integration test (`ffprobe`/decode) catches it. Sizes must be multiples of 8 until a conformance window is supported.
+- Wi-Fi loss and congestion are the main product risk. netem is not real Wi-Fi (bursty loss, power save, aggregation), so real validation needs the tablet.
+- Decoder behaviour on missing references differs by vendor. ffmpeg rejects every frame after one lost reference; Android MediaCodec is unknown until M5. The receiver rule above and reference invalidation avoid depending on concealment.
+- Intra refresh is accepted by the driver and costs about 4 times the bits on moving content, but whether a decoder heals from it could not be checked with ffmpeg. It is a fallback, not the plan. Temporal layers are disabled by the driver when intra refresh is on, and are not used.
+- The reference buffer holds 7 pictures, so loss windows beyond 5 frames (about 83 ms at 60 fps) need an IDR.
+- GPU contention: encode time rose from 2 to 4 ms to 7 to 8 ms (spikes above 100 ms) while mpv decoded and rendered on the same GPU. Not isolated; matters when the main monitor runs a game.
 - Keyframes on desktop content are about 7 times a P-frame unless rate control is constrained. Intra refresh is advertised but untested.
 - AOA behavior varies by phone vendor firmware. The permission prompt and auto-launch on Android 16 are untested until the app exists.
 - Touch-to-output binding may fail on compositors without a binding mechanism.

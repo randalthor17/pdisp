@@ -40,7 +40,9 @@ stream starts at the slice and decoders report `PPS id out of range`). Reading M
 - Width and height must be multiples of 8 (min CB 8, no conformance window yet). A mode like 2340x1080 needs a
   conformance window (crop) and an SPS that Mesa accepts with it. Not done.
 - Level is chosen by luma sample rate: 5.0 up to 267 Msamples/s, 5.1 up to 535, 5.2 above.
-- Surfaces are single-buffered; two reconstruction surfaces ping-pong as the reference.
+- Seven reconstruction surfaces form a retained-reference buffer (the current picture plus up to six references); every
+  slice header lists the valid ones, one used. This allows reference invalidation and an optional rolling intra refresh
+  and multi-slice pictures. See `docs/spikes/m0-loss-resilience.md`.
 
 ## Rate control (desktop content, 2304x1440@60, animated test pattern, `-k 60` forces an IDR per second)
 
@@ -66,7 +68,7 @@ Text quality is an M10 item.
 
 ## Not covered yet
 
-- Pipelining, intra refresh (advertised by the driver; needs packed-header/slice-header support for its slice types),
-  ROI, temporal layers.
+- Pipelining and ROI. Intra refresh runs but its healing is unverified; temporal layers are incompatible with it
+  and unused.
 - Reconnect and mode change: the encoder is opened for one size and the tool ignores frames of another size (M9).
 - The Android decoder accepting this exact stream (level 5.0/5.1, tv range) is verified only on the desktop (M5).

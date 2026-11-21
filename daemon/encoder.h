@@ -23,12 +23,17 @@ struct encoder_config {
 	bool vbr;                /* false: CBR (pads to the rate); true: VBR with an average of target_percent of the peak */
 	unsigned target_percent; /* VBR average as a percentage of bitrate_kbps (default 50) */
 	unsigned vbv_ms;         /* rate-control buffer length; small keeps keyframes close to P-frame size */
+	unsigned slices;         /* slices per picture (default 1); each is an independently decodable run of CTU rows */
+	unsigned intra_refresh_frames; /* 0: off. Otherwise a rolling column refresh sweeps the picture in about this many
+	                                  frames, so decoding recovers from lost frames without an IDR */
 };
 
 struct encoder_packet {
 	const uint8_t *data; /* Annex B bitstream; valid until the next encoder_encode() or encoder_close() */
 	size_t size;
 	bool idr;
+	uint64_t frame_index; /* 0-based count of frames since open; the handle for encoder_invalidate_from() */
+	int ref_distance;     /* how many frames back the reference is (1 = the previous frame); 0 for an IDR */
 	double upload_ms;  /* BGRA to VA surface */
 	double convert_ms; /* RGB to NV12 on the GPU */
 	double encode_ms;  /* submit until the coded buffer is ready */
@@ -42,6 +47,11 @@ const char *encoder_description(const struct encoder *enc);
 
 /* Encode one frame. `stride` is bytes per row of `bgra`. Returns 0, or a negative errno. */
 int encoder_encode(struct encoder *enc, const uint8_t *bgra, int stride, bool force_idr, struct encoder_packet *out);
+
+/* The receiver did not get frames from `first_lost` on (and may not have decoded anything after them). From the
+ * next frame the encoder predicts only from frames before `first_lost`, so the receiver's picture is correct again
+ * without an IDR. If no earlier frame is still held, the next frame is an IDR. */
+void encoder_invalidate_from(struct encoder *enc, uint64_t first_lost);
 
 void encoder_close(struct encoder *enc);
 

@@ -97,3 +97,12 @@ test('m3 encode', m3_check,
 test_hevc_headers = executable('test_hevc_headers', 'tests/test_hevc_headers.c', 'daemon/hevc_headers.c',
   include_directories: inc)
 test('hevc headers unit', test_hevc_headers)
+
+# synthetic-frame encoder driver used by the loss recovery test
+enc_synth = executable('enc_synth', 'tests/enc_synth.c', dependencies: [encoder_dep], include_directories: inc)
+
+test('loss recovery', find_program('tests/loss_recovery_check.sh'),
+  args: [enc_synth, meson.current_build_dir() / 'loss-artifacts'],
+  protocol: 'exitcode',
+  timeout: 120,
+  suite: 'integration')

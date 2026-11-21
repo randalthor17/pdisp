@@ -108,6 +108,8 @@ static void usage(const char *argv0)
 		"  -T PCT      vbr average as a percentage of the peak (default 50)\n"
 		"  -V MS       rate-control buffer in ms (default 30)\n"
 		"  -k N        force an IDR every N frames (default: never, only the first frame)\n"
+		"  -I N        rolling intra refresh sweeping the picture in about N frames (default: off)\n"
+		"  -L N        slices per picture (default 1)\n"
 		"  -r NODE     VAAPI render node (default: first that can encode HEVC)\n"
 		"  -d CARD     evdi card (default: first free)\n"
 		"  -v          log every frame\n",
@@ -123,7 +125,7 @@ int main(int argc, char **argv)
 
 	edid_cli_defaults(&p);
 	A.cfg = (struct encoder_config){ .fps = 60, .bitrate_kbps = 20000, .vbv_ms = 30, .vbr = true, .target_percent = 50 };
-	while ((opt = getopt(argc, argv, EDID_CLI_OPTS "o:S:b:V:k:r:d:R:T:vh")) != -1) {
+	while ((opt = getopt(argc, argv, EDID_CLI_OPTS "o:S:b:V:k:r:d:R:T:I:L:vh")) != -1) {
 		switch (opt) {
 		case 'o': outfile = optarg; break;
 		case 'S': secs = atof(optarg); break;
@@ -134,6 +136,8 @@ int main(int argc, char **argv)
 		case 'd': card = atoi(optarg); break;
 		case 'R': A.cfg.vbr = strcmp(optarg, "cbr") != 0; break;
 		case 'T': A.cfg.target_percent = (unsigned)atoi(optarg); break;
+		case 'I': A.cfg.intra_refresh_frames = (unsigned)atoi(optarg); break;
+		case 'L': A.cfg.slices = (unsigned)atoi(optarg); break;
 		case 'v': A.verbose = true; break;
 		default:
 			if (edid_cli_opt(&p, opt, optarg) != 1) { usage(argv[0]); return 2; }
