@@ -66,8 +66,6 @@ connector name (DVI-I-1) is not what niri keys on. The test restores your focus 
 
 ## Not verified
 - Other compositors (windows were checked on niri only), and a real application with several windows (the test uses one).
-- **The app on a device**: the lock/unlock, background/foreground and reconnect logic builds but was not run on a phone yet (the test phone
-  was locked), nor USB unplug and re-plug.
 - Android Doze and Wi-Fi power management during a long sleep.
 
 ## On a device (Pixel 8a, Android 17, Wi-Fi), 2026-11-22
@@ -122,3 +120,8 @@ closed; the blocked accessory read is interrupted with a signal, because a threa
 | 4 | ~1-2 s | reconnected (about 1 s slower), same monitor reused |
 
 No round needed the File transfer choice. An earlier run, before the blocked-read fix, failed every time even with File transfer chosen.
+
+## The lock screen on the phone (2026-11-22)
+Streaming over USB, the power button pressed: the app sent CLOSE reason 1 ("the phone closed the session (its screen locked)") and the
+daemon removed the monitor 200 ms later, with no grace period. After unlocking, the app reconnected by itself about 11 s later (one
+handshake timed out while the phone was still locked) and streamed on a new monitor.
