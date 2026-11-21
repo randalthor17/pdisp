@@ -9,6 +9,7 @@ daemon=$1; pattern=$2
 art=${3:-$(mktemp -d)}; mkdir -p "$art"
 root=$(cd "$(dirname "$0")/.." && pwd)
 skip() { echo "SKIP: $*"; exit 77; }
+[ -z "${PDISP_NO_DEVICE:-}" ] || skip "PDISP_NO_DEVICE is set"
 adb() { if type -P adb >/dev/null 2>&1; then "$(type -P adb)" "$@"; else nix develop "$root#android" -c adb "$@" 2>/dev/null; fi; }
 
 command -v niri >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || skip "niri or jq missing"
