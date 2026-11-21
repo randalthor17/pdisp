@@ -86,6 +86,7 @@ static struct daemon D;
 
 enum { PAIR_ASK, PAIR_ACCEPT, PAIR_DENY };
 static struct touchdev *touchdev;  /* the phone's touchscreen on this PC, while a session is running */
+static struct pendev *pendev;      /* its stylus, if it has one */
 static struct input_rx inrx;
 static unsigned long touch_events_applied;
 static struct sec_udp secudp; /* datagram keys of the current session (valid when !C.insecure) */
@@ -383,19 +384,29 @@ static void connector_name(char *out, size_t cap)
 static void touch_start(const struct proto_hello *h, unsigned w, unsigned hgt, const struct edid_params *ep)
 {
 	if (touchdev) { touch_close(touchdev); touchdev = NULL; }
+	if (pendev) { pen_close(pendev); pendev = NULL; }
 	input_rx_init(&inrx);
-	if (C.no_touch || C.insecure || !(h->device_caps & PROTO_CAP_TOUCH)) {
+	if (C.no_touch || C.insecure || !(h->device_caps & (PROTO_CAP_TOUCH | PROTO_CAP_STYLUS))) {
 		LOG("no touchscreen: %s", C.no_touch ? "disabled with -T" : C.insecure ? "not without security (-I)" : "the phone has none");
 		return;
 	}
 	struct touch_config tc = { .name = "pdisp touchscreen", .width = w, .height = hgt, .dpi = h->density_dpi,
 				   .slots = h->max_touch_points ? (h->max_touch_points > TOUCH_MAX_SLOTS ? TOUCH_MAX_SLOTS : h->max_touch_points) : 1 };
-	int e = touch_open(&tc, &touchdev);
-	if (e) { LOG("cannot create the touchscreen: %s (touch needs write access to /dev/uinput)", strerror(-e)); touchdev = NULL; return; }
+	int e = 0;
+	if (h->device_caps & PROTO_CAP_TOUCH) {
+		e = touch_open(&tc, &touchdev);
+		if (e) { LOG("cannot create the touchscreen: %s (touch needs write access to /dev/uinput)", strerror(-e)); touchdev = NULL; return; }
+	}
+	struct pen_config pc = { .name = "pdisp stylus", .width = w, .height = hgt, .dpi = h->density_dpi };
+	if (h->device_caps & PROTO_CAP_STYLUS) {
+		e = pen_open(&pc, &pendev);
+		if (e) { LOG("cannot create the pen tablet: %s", strerror(-e)); pendev = NULL; }
+	}
 	char out[64], id[160];
 	connector_name(out, sizeof out);
 	snprintf(id, sizeof id, "PNP(%s) %s %s", ep->pnp_id, ep->name, ep->serial_text);
-	LOG("touchscreen created: %ux%u, %u simultaneous touches, output '%s' (%s)", w, hgt, tc.slots, out[0] ? out : "unknown", id);
+	LOG("input devices created: %ux%u, %s%s%s, output '%s' (%s)", w, hgt, touchdev ? "touchscreen" : "", touchdev && pendev ? " and " : "",
+	    pendev ? "pen tablet" : "", out[0] ? out : "unknown", id);
 	if (C.touch_hook) {
 		signal(SIGCHLD, SIG_IGN); /* nobody waits for the hook */
 		pid_t pid = fork();
@@ -405,14 +416,17 @@ static void touch_start(const struct proto_hello *h, unsigned w, unsigned hgt, c
 			snprintf(hb, sizeof hb, "%u", hgt);
 			setenv("PDISP_OUTPUT", out, 1);
 			setenv("PDISP_OUTPUT_ID", id, 1);
-			setenv("PDISP_TOUCH_DEVICE", tc.name, 1);
+			setenv("PDISP_TOUCH_DEVICE", touchdev ? tc.name : "", 1);
+			setenv("PDISP_STYLUS_DEVICE", pendev ? pc.name : "", 1);
 			setenv("PDISP_WIDTH", wb, 1);
 			setenv("PDISP_HEIGHT", hb, 1);
 			execl("/bin/sh", "sh", "-c", C.touch_hook, (char *)NULL);
 			_exit(127);
 		}
 	} else {
-		LOG("the compositor must map the touchscreen to the virtual output. niri: input { touch { map-to-output \"%s\" } } (see docs/touch.md)", id);
+		LOG("the compositor must map these devices to the virtual output. niri: input { %s%s%s } (see docs/touch.md)",
+		    touchdev ? "touch { map-to-output \"" : "", touchdev ? id : "", touchdev ? "\" } " : "");
+		if (pendev) LOG("... and for the stylus: input { tablet { map-to-output \"%s\" } }", id);
 	}
 }
 
@@ -420,12 +434,20 @@ static void touch_start(const struct proto_hello *h, unsigned w, unsigned hgt, c
 static void handle_input(const uint8_t *payload, size_t len, int ufd, const struct sockaddr_in *peer)
 {
 	struct proto_input in;
-	if (!touchdev || proto_input_decode(payload, len, &in) != 0) return;
+	if (proto_input_decode(payload, len, &in) != 0) return;
 	struct proto_input_event ev[PROTO_MAX_INPUT_EVENTS];
 	int gap;
 	unsigned n = input_rx_accept(&inrx, &in, ev, &gap);
-	if (gap) { LOG("touch events were lost for good: lifting every finger"); touch_release_all(touchdev); }
-	for (unsigned i = 0; i < n; i++) { touch_event(touchdev, &ev[i]); touch_events_applied++; }
+	if (gap) {
+		LOG("input events were lost for good: lifting every finger and the pen");
+		if (touchdev) touch_release_all(touchdev);
+		if (pendev) pen_release_all(pendev);
+	}
+	for (unsigned i = 0; i < n; i++) { /* each device takes the events of its own tool and ignores the rest */
+		if (touchdev) touch_event(touchdev, &ev[i]);
+		if (pendev) pen_event(pendev, &ev[i]);
+		touch_events_applied++;
+	}
 	uint8_t body[4], pkt[PROTO_PKT_HDR_SIZE + 4];
 	if (proto_u32_encode(input_rx_acked(&inrx), body, sizeof body) == 4) {
 		int pn = vsend_make_packet(D.vs, PROTO_PKT_INPUT_ACK, body, 4, pkt, sizeof pkt);
@@ -787,6 +809,7 @@ static int run_session(double run_secs)
 	vsend_destroy(D.vs);
 	encoder_close(D.enc);
 	if (touchdev) touch_close(touchdev);
+	if (pendev) pen_close(pendev);
 	vdisplay_close(D.vd);
 	net_ctl_close(&ctl);
 	if (!C.usb) close(ufd);

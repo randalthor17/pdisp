@@ -66,7 +66,7 @@ run_case() { # run_case <name> <input loss percent> <touch script>
 	wait "$dpid" 2>/dev/null; dpid=
 	restore_niri
 	[ "$vrc" = 0 ] || fail "$name: the viewer failed (rc=$vrc)"
-	grep -q "touchscreen created" "$art/daemon.log" || fail "$name: the daemon created no touchscreen"
+	grep -q "input devices created" "$art/daemon.log" || fail "$name: the daemon created no touchscreen"
 	grep -q "touch=yes" "$art/window.log" || fail "$name: the compositor never offered touch to the window"
 	cp "$art/window.log" "$art/window-$name.log"; cp "$art/viewer.log" "$art/viewer-$name.log"; cp "$art/daemon.log" "$art/daemon-$name.log"
 }
