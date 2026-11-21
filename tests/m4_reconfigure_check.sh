@@ -31,13 +31,13 @@ output_info() { # prints "name width" of the virtual output, if present
 		| select(. != null) | "\(.key) \(.value.modes[.value.current_mode].width // 0)"'
 }
 
-"$daemon" -p "$PORT" -t "$SERIAL" -n pdisp-tablet -S 60 >"$dlog" 2>&1 &
+"$daemon" -K "$art/pc-id" -P accept -p "$PORT" -t "$SERIAL" -n pdisp-tablet -S 60 >"$dlog" 2>&1 &
 dpid=$!
 sleep 0.5
 if ! kill -0 "$dpid" 2>/dev/null; then wait "$dpid"; rc=$?; [ "$rc" = 3 ] && skip "no free evdi device"; fail "daemon exited early (rc=$rc)"; fi
 
 # the viewer rotates its display 5 s after the stream starts; the first picture is 2304x1440, the second 1440x2304
-"$viewer" 127.0.0.1 "$PORT" -W 2304 -H 1440 -r 60 -S 17 -X 5:1440x2304 -c -G -o "$art/view.png" >"$vlog" 2>&1 &
+"$viewer" 127.0.0.1 "$PORT" -i "$art/phone-id" -W 2304 -H 1440 -r 60 -S 17 -X 5:1440x2304 -c -G -o "$art/view.png" >"$vlog" 2>&1 &
 vpid=$!
 
 i=0; info=

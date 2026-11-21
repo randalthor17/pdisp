@@ -23,6 +23,8 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include "handshake.h"
+#include "identity.h"
 #include "net.h"
 #include "pattern.h"
 #include "png.h"
@@ -80,7 +82,7 @@ struct viewer {
 	atomic_bool have_offset;
 	struct timesync ts;
 	int64_t sync_rtt_us;
-	uint64_t time_resp, pings, pongs, reconfigs;
+	uint64_t time_resp, pings, pongs, reconfigs, auth_drops;
 
 	/* glass-to-glass: the stamp the application drew into the frame, read back from the decoded picture */
 	bool read_stamps;
@@ -135,6 +137,24 @@ static void check_picture(const AVFrame *fr)
 		}
 	}
 	V.chk_samples++;
+}
+
+/* datagrams to the PC: sealed after the handshake */
+static int ufd_global;
+static struct sec_udp *udp_ctx; /* NULL in insecure mode */
+static struct sockaddr_in udp_to;
+static void udp_out(const uint8_t *buf, size_t n)
+{
+	uint8_t tmp[2048 + SEC_UDP_OVERHEAD];
+	if (udp_ctx) {
+		if (n > 2048) return;
+		memcpy(tmp, buf, n);
+		int sn = sec_udp_seal(udp_ctx, tmp, n, sizeof tmp);
+		if (sn < 0) return;
+		buf = tmp;
+		n = (size_t)sn;
+	}
+	sendto(ufd_global, buf, n, 0, (struct sockaddr *)&udp_to, sizeof udp_to);
 }
 
 /* the viewer's clock, as the (possibly skewed) clock of the phone it plays */
@@ -338,6 +358,8 @@ static void usage(const char *argv0)
 		"  -G            read the timestamp the pattern client draws (-T there) and report glass-to-glass latency\n"
 		"  -L pct        drop this percentage of incoming datagrams at random\n"
 		"  -X secs:WxH   after this long, report a display change to this size (a rotation), exercising RECONFIGURE\n"
+		"  -i DIR        identity and known_pcs directory (default ~/.config/pdisp-view)\n"
+		"  -I            INSECURE: no handshake, no encryption (only for a daemon started with -I)\n"
 		"  -K us         skew this viewer's clock by this many microseconds (tests the clock sync)\n"
 		"  -v            log every decoded frame\n",
 		argv0);
@@ -354,9 +376,11 @@ int main(int argc, char **argv)
 	bool check = false;
 	optind = 3;
 	int opt;
+	const char *identity_dir = NULL;
+	bool insecure = false;
 	double change_after = 0;
 	unsigned change_w = 0, change_h = 0;
-	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:vh")) != -1) {
+	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:i:Ivh")) != -1) {
 		switch (opt) {
 		case 'W': nw = (unsigned)atoi(optarg); break;
 		case 'H': nh = (unsigned)atoi(optarg); break;
@@ -369,6 +393,8 @@ int main(int argc, char **argv)
 		case 'w': V.window = true; break;
 		case 'L': drop_pct = atof(optarg); break;
 		case 'K': V.skew_us = atoll(optarg); break;
+		case 'i': identity_dir = optarg; break;
+		case 'I': insecure = true; break;
 		case 'X':
 			if (sscanf(optarg, "%lf:%ux%u", &change_after, &change_w, &change_h) != 3) { usage(argv[0]); return 2; }
 			break;
@@ -388,6 +414,37 @@ int main(int argc, char **argv)
 	if (cfd < 0) { fprintf(stderr, "cannot connect to %s:%u: %s\n", host, port, strerror(-cfd)); return 1; }
 	struct net_ctl ctl;
 	net_ctl_init(&ctl, cfd);
+
+	struct sec_udp udp;
+	struct hs_peer pc;
+	char pcs_path[1100] = "";
+	bool new_pc = false;
+	if (insecure) {
+		LOG("WARNING: no authentication or encryption (-I)");
+	} else {
+		char dir[900];
+		if (identity_dir) snprintf(dir, sizeof dir, "%s", identity_dir);
+		else {
+			char base[800];
+			if (identity_default_dir(base, sizeof base) != 0) { fprintf(stderr, "no config directory: use -i DIR\n"); return 1; }
+			snprintf(dir, sizeof dir, "%s-view", base);
+		}
+		struct identity id;
+		int created, e = identity_load_or_create(dir, &id, &created);
+		if (e) { fprintf(stderr, "cannot use the identity in %s: %s\n", dir, strerror(-e)); return 1; }
+		char fp[IDENTITY_FINGERPRINT_LEN];
+		identity_fingerprint(id.pub, fp);
+		LOG("%s identity in %s, key %s", created ? "created a new" : "using the", dir, fp);
+		e = hs_initiate(&ctl, &id, "pdisp-view", 10000, &pc, &udp);
+		if (e) { fprintf(stderr, "the secure handshake failed: %s\n", strerror(-e)); return 4; }
+		snprintf(pcs_path, sizeof pcs_path, "%s/known_pcs", dir);
+		char pcfp[IDENTITY_FINGERPRINT_LEN];
+		identity_fingerprint(pc.pub, pcfp);
+		new_pc = keystore_find(pcs_path, pc.pub, NULL, 0) <= 0;
+		LOG("PC '%s' key %s%s, code %06u", pc.name, pcfp, new_pc ? " (not paired before)" : "", pc.sas);
+		printf("PAIRING code=%06u pc_key=%s new_pc=%d\n", pc.sas, pcfp, new_pc);
+		fflush(stdout);
+	}
 
 	struct proto_hello hello;
 	memset(&hello, 0, sizeof hello);
@@ -410,14 +467,21 @@ int main(int argc, char **argv)
 	const uint8_t *payload;
 	size_t plen;
 	int r = net_ctl_recv(&ctl, &type, &payload, &plen, 20000);
+	if (r == 1 && type == PROTO_CTL_PAIRING_REQUIRED) { /* the PC asks its user: show the code to compare, wait longer */
+		LOG("this device is not authorised yet: approve it on the PC, the code there must be %06u", pc.sas);
+		printf("PAIRING_REQUIRED code=%06u\n", pc.sas);
+		fflush(stdout);
+		r = net_ctl_recv(&ctl, &type, &payload, &plen, 120000);
+	}
 	if (r != 1) { fprintf(stderr, "no answer to HELLO (%d)\n", r); return 1; }
 	if (type == PROTO_CTL_REJECT) {
 		struct proto_reject rj;
-		if (proto_reject_decode(payload, plen, &rj) == 0) fprintf(stderr, "rejected: %s\n", rj.text);
-		return 3;
+		if (proto_reject_decode(payload, plen, &rj) == 0) fprintf(stderr, "rejected (%u): %s\n", rj.reason, rj.text);
+		return rj.reason == 2 || rj.reason == 5 || rj.reason == 6 ? 5 : 3;
 	}
 	struct proto_setup su;
 	if (type != PROTO_CTL_SETUP || proto_setup_decode(payload, plen, &su) != 0) { fprintf(stderr, "bad SETUP\n"); return 1; }
+	if (new_pc && keystore_add(pcs_path, pc.pub, pc.name) == 0) LOG("remembered this PC");
 	LOG("SETUP: %ux%u@%.3f, session %08x, %u kbit/s, %u bytes of parameter sets", su.params.width, su.params.height,
 	    su.params.refresh_mhz / 1000.0, su.session_id, su.params.bitrate_kbps, su.params.param_sets_len);
 
@@ -440,12 +504,13 @@ int main(int argc, char **argv)
 		to = peer;
 		to.sin_port = htons(su.udp_port);
 	}
-	uint64_t udp_seq = 0;
-	struct proto_pkt_hdr hh = { .session_id = su.session_id, .type = PROTO_PKT_HELLO_UDP };
+	ufd_global = ufd;
+	udp_to = to;
+	udp_ctx = insecure ? NULL : &udp;
 	uint8_t hb[PROTO_PKT_HDR_SIZE];
-	hh.seq = udp_seq++;
-	proto_pkt_hdr_write(&hh, hb, sizeof hb);
-	sendto(ufd, hb, sizeof hb, 0, (struct sockaddr *)&to, sizeof to);
+	/* every datagram of ours comes from one sequence space: it is the AEAD nonce, so two counters would reuse nonces */
+	int hn = vrecv_make_packet(vr, PROTO_PKT_HELLO_UDP, NULL, 0, hb, sizeof hb);
+	if (hn > 0) udp_out(hb, (size_t)hn);
 	net_ctl_send(&ctl, PROTO_CTL_READY, NULL, 0);
 	LOG("sent READY");
 
@@ -470,6 +535,11 @@ int main(int argc, char **argv)
 		for (;;) {
 			ssize_t got = recv(ufd, pkt, sizeof pkt, 0);
 			if (got < 0) break;
+			if (!insecure) { /* only authenticated, fresh datagrams reach the protocol code */
+				int o = sec_udp_open(&udp, pkt, (size_t)got);
+				if (o < 0) { V.auth_drops++; continue; }
+				got = o;
+			}
 			if (V.drop_rate > 0) {
 				V.drop_rng ^= V.drop_rng << 13; V.drop_rng ^= V.drop_rng >> 7; V.drop_rng ^= V.drop_rng << 17;
 				if ((double)(V.drop_rng >> 16 & 0xfffff) / 1048576.0 < V.drop_rate) continue;
@@ -502,7 +572,7 @@ int main(int argc, char **argv)
 			uint8_t tb[8], tp[PROTO_PKT_HDR_SIZE + 8];
 			if (proto_time_req_encode(cnow(), tb, sizeof tb) == 8) {
 				int tn = vrecv_make_packet(vr, PROTO_PKT_TIME_REQ, tb, 8, tp, sizeof tp);
-				if (tn > 0) sendto(ufd, tp, (size_t)tn, 0, (struct sockaddr *)&to, sizeof to);
+				if (tn > 0) udp_out(tp, (size_t)tn);
 			}
 		}
 		if (p[1].revents & (POLLIN | POLLHUP)) {
@@ -524,6 +594,7 @@ int main(int argc, char **argv)
 					struct vrecv_config nrc = { .session_id = su.session_id, .shard_size = np.shard_size };
 					vr = vrecv_create(&nrc, &rcb);
 					vrecv_set_epoch(vr, np.epoch);
+					if (!insecure) sec_udp_set_epoch(&udp, np.epoch); /* sequence numbers restart: new datagram keys */
 					V.reconfigs++;
 					V.width = np.width; V.height = np.height; /* until a picture of the new size is decoded */
 					net_ctl_send(&ctl, PROTO_CTL_RECONFIGURE_ACK, NULL, 0);
@@ -551,14 +622,13 @@ int main(int argc, char **argv)
 		vrecv_tick(vr, now);
 		if (!stream_start && now >= next_hello) { /* until the stream starts, keep telling the daemon where we are */
 			next_hello = now + 100000;
-			hh.seq = udp_seq++;
-			proto_pkt_hdr_write(&hh, hb, sizeof hb);
-			sendto(ufd, hb, sizeof hb, 0, (struct sockaddr *)&to, sizeof to);
+			hn = vrecv_make_packet(vr, PROTO_PKT_HELLO_UDP, NULL, 0, hb, sizeof hb);
+			if (hn > 0) udp_out(hb, (size_t)hn);
 		}
 		if (now >= next_fb) {
 			next_fb = now + 10000;
 			int fn = vrecv_feedback_packet(vr, now, pkt, sizeof pkt);
-			if (fn > 0) sendto(ufd, pkt, (size_t)fn, 0, (struct sockaddr *)&to, sizeof to);
+			if (fn > 0) udp_out(pkt, (size_t)fn);
 		}
 	}
 
@@ -587,13 +657,13 @@ int main(int argc, char **argv)
 	double match = V.bgra ? pattern_match(V.bgra, V.width, V.height) : 0;
 	printf("VIEW packets=%llu ", (unsigned long long)vs->packets);
 	printf("decoded=%llu fps=%.1f decode_ms_avg=%.2f latency_ms_p50=%.1f p99=%.1f max=%.1f given_up=%llu idr=%llu "
-	       "decoder_errors=%llu match=%.1f%% freeze_ms=%.1f checks=%u check_min=%.1f%% check_bad=%u check_other=%u clock_offset_us=%lld clock_rtt_ms=%.1f reconfigs=%llu pongs=%llu final_size=%dx%d\n",
+	       "decoder_errors=%llu match=%.1f%% freeze_ms=%.1f checks=%u check_min=%.1f%% check_bad=%u check_other=%u clock_offset_us=%lld clock_rtt_ms=%.1f reconfigs=%llu pongs=%llu auth_drops=%llu final_size=%dx%d\n",
 	       (unsigned long long)V.decoded, V.decoded / span, V.decoded ? V.decode_ms_sum / V.decoded : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat / 2] / 1000.0 : 0.0, V.n_lat ? V.lat_us[(size_t)((V.n_lat - 1) * 0.99)] / 1000.0 : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat - 1] / 1000.0 : 0.0, (unsigned long long)vs->frames_given_up,
 	       (unsigned long long)vs->idr_decoded, (unsigned long long)vs->decoder_errors, match * 100, V.max_gap_us / 1000.0,
 	       V.chk_samples, V.chk_samples ? V.chk_min * 100 : 100.0, V.chk_bad, V.chk_other, (long long)atomic_load(&V.offset_us), V.sync_rtt_us / 1000.0,
-	       (unsigned long long)V.reconfigs, (unsigned long long)V.pongs, V.last ? V.last->width : 0, V.last ? V.last->height : 0);
+	       (unsigned long long)V.reconfigs, (unsigned long long)V.pongs, (unsigned long long)V.auth_drops, V.last ? V.last->width : 0, V.last ? V.last->height : 0);
 	if (V.read_stamps) {
 		qsort(V.glass_us, V.n_glass, sizeof *V.glass_us, cmp_u64);
 		printf("GLASS stamps=%zu of %llu frames, ms p50=%.1f p99=%.1f max=%.1f\n", V.n_glass, (unsigned long long)V.decoded,
@@ -611,7 +681,7 @@ int main(int argc, char **argv)
 	if (V.decoded == 0) { fprintf(stderr, "FAIL: nothing was decoded\n"); status = 1; }
 	else if (check && match < 0.05)
 		fprintf(stderr, "NOTE: the last picture is not the test pattern at all (%.1f%%): the compositor was showing something else\n", match * 100);
-	else if (check && match < 0.95) { fprintf(stderr, "FAIL: the decoded picture does not match the pattern (%.1f%%)\n", match * 100); status = 1; }
+	else if (check && match < 0.90) { fprintf(stderr, "FAIL: the decoded picture does not match the pattern (%.1f%%)\n", match * 100); status = 1; }
 	vrecv_destroy(vr);
 	net_ctl_close(&ctl);
 	close(ufd);

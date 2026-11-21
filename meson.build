@@ -193,3 +193,11 @@ test('secure channels', test_secure)
 
 test_handshake = executable('test_handshake', 'tests/test_handshake.c', dependencies: [proto_dep, dependency('threads')])
 test('handshake driver', test_handshake)
+
+m6_pairing = find_program('tests/m6_pairing_check.sh')
+test('m6 pairing and authorisation', m6_pairing,
+  args: [pdispd, pdisp_view, meson.current_build_dir() / 'm6-pairing-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 300,
+  suite: 'integration')

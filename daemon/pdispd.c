@@ -24,6 +24,8 @@
 
 #include "edid.h"
 #include "encoder.h"
+#include "handshake.h"
+#include "identity.h"
 #include "net.h"
 #include "proto.h"
 #include "usblink.h"
@@ -45,6 +47,10 @@ static struct {
 	const char *name, *serial_text, *render_node;
 	uint32_t serial;
 	int card;
+	const char *config_dir;  /* identity and authorized_keys live here (default ~/.config/pdisp) */
+	int pair_mode;           /* what to do with a device that is not in authorized_keys */
+	bool insecure;           /* development only: no handshake, no encryption (the M4 behaviour) */
+	bool once;               /* serve one session and exit instead of waiting for the next device */
 	bool usb;          /* talk to a tablet over a USB cable (accessory mode) instead of listening on the network */
 	unsigned usb_vid;  /* only consider this USB vendor (0 = any) */
 } C = { .port = 47110, .max_hz_mhz = 60000, .bitrate = 12000, .max_bitrate = 40000, .name = "pdisp",
@@ -67,10 +73,13 @@ struct daemon {
 	uint64_t refresh_due_us;   /* re-encode the current screen at this time if nothing new arrived (0 = none) */
 	uint64_t frames_encoded, frames_skipped, idr_frames, submit_failures, send_errors, sent_packets, reconfigs, pongs;
 	double encode_ms_sum, encode_ms_max;
-	uint64_t t_service_us, t_poll_us;
+	uint64_t t_service_us, t_poll_us, auth_drops;
 };
 
 static struct daemon D;
+
+enum { PAIR_ASK, PAIR_ACCEPT, PAIR_DENY };
+static struct sec_udp secudp; /* datagram keys of the current session (valid when !C.insecure) */
 
 static void cb_invalidate(uint32_t lost, void *user)
 {
@@ -204,7 +213,7 @@ static void make_params(struct proto_stream_params *p)
 {
 	memset(p, 0, sizeof *p);
 	p->epoch = D.epoch;
-	p->security = PROTO_SECURITY_NONE;
+	p->security = C.insecure ? PROTO_SECURITY_NONE : PROTO_SECURITY_CHACHA20POLY1305;
 	p->width = (uint16_t)D.width;
 	p->height = (uint16_t)D.height;
 	p->refresh_mhz = D.refresh_mhz;
@@ -232,6 +241,15 @@ static int make_sender(void)
 /* a datagram to the phone: sendto() on the network, plain send() on the connected USB socket */
 static ssize_t udp_send(int fd, const void *buf, size_t n, const struct sockaddr_in *peer)
 {
+	uint8_t sealed[2048 + SEC_UDP_OVERHEAD];
+	if (!C.insecure) {
+		if (n > 2048) return -1;
+		memcpy(sealed, buf, n);
+		int sn = sec_udp_seal(&secudp, sealed, n, sizeof sealed);
+		if (sn < 0) return -1;
+		buf = sealed;
+		n = (size_t)sn;
+	}
 	if (C.usb) return send(fd, buf, n, MSG_DONTWAIT);
 	return sendto(fd, buf, n, 0, (const struct sockaddr *)peer, sizeof *peer);
 }
@@ -253,7 +271,12 @@ static void usage(const char *argv0)
 		"  -S SECS     stop streaming after this long (default: until the phone leaves)\n"
 		"  -u          serve a tablet over USB (AOA accessory mode) instead of the network; keeps waiting for the next\n"
 		"              plug-in after each session unless -S is given\n"
-		"  -V VID      with -u, only consider this USB vendor id in hex (e.g. 04e8)\n",
+		"  -V VID      with -u, only consider this USB vendor id in hex (e.g. 04e8)\n"
+		"  -K DIR      identity and authorized_keys directory (default ~/.config/pdisp)\n"
+		"  -P MODE     a device that is not authorised yet: ask (prompt on stdin, the default), accept (add it: development)\n"
+		"              or deny\n"
+		"  -I          INSECURE: no handshake and no encryption; for development only\n"
+		"  -o          serve one session and exit (default: keep waiting for the next device)\n",
 		argv0);
 }
 
@@ -263,7 +286,7 @@ int main(int argc, char **argv)
 {
 	int opt;
 	double run_secs = 0;
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:uV:h")) != -1) {
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:uV:K:P:Iho")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
 		case 'n': C.name = optarg; break;
@@ -282,6 +305,15 @@ int main(int argc, char **argv)
 		case 'd': C.card = atoi(optarg); break;
 		case 'S': run_secs = atof(optarg); break;
 		case 'u': C.usb = true; break;
+		case 'K': C.config_dir = optarg; break;
+		case 'P':
+			if (!strcmp(optarg, "ask")) C.pair_mode = PAIR_ASK;
+			else if (!strcmp(optarg, "accept")) C.pair_mode = PAIR_ACCEPT;
+			else if (!strcmp(optarg, "deny")) C.pair_mode = PAIR_DENY;
+			else { usage(argv[0]); return 2; }
+			break;
+		case 'I': C.insecure = true; break;
+		case 'o': C.once = true; break;
 		case 'V': C.usb_vid = (unsigned)strtoul(optarg, NULL, 16); break;
 		default: usage(argv[0]); return 2;
 		}
@@ -292,7 +324,7 @@ int main(int argc, char **argv)
 	signal(SIGPIPE, SIG_IGN);
 	t_start = net_now_us();
 
-	if (C.usb && run_secs <= 0) {
+	if ((C.usb || !C.once) && run_secs <= 0) {
 		/* one child per plug-in: a session leaves the evdi device, encoder and sockets in a state that is simplest to throw away */
 		while (!stop) {
 			pid_t pid = fork();
@@ -310,38 +342,123 @@ int main(int argc, char **argv)
 	return run_session(run_secs);
 }
 
+/* Waits for one line on stdin (the pairing prompt's answer). Returns its first character lowercased, 0 on end of input or error,
+ * or -1 on timeout. */
+static int read_answer(int timeout_ms)
+{
+	struct pollfd p = { .fd = 0, .events = POLLIN };
+	int c = 0, first = 1;
+	for (;;) {
+		int r = poll(&p, 1, timeout_ms);
+		if (r == 0) return -1;
+		if (r < 0) { if (errno == EINTR && !stop) continue; return 0; }
+		char ch;
+		ssize_t n = read(0, &ch, 1);
+		if (n <= 0) return first ? 0 : c;
+		if (ch == '\n') return c ? c : 'n';
+		if (first && ch != ' ') { c = (ch >= 'A' && ch <= 'Z') ? ch - 'A' + 'a' : ch; first = 0; }
+	}
+}
+
+/* Decides whether a device whose key the handshake proved may use this PC. Returns 1 to continue; otherwise the device has been
+ * told why and the caller ends the session. */
+static int authorize(struct net_ctl *ctl, const struct hs_peer *peer, const char *ks_path)
+{
+	char fp[IDENTITY_FINGERPRINT_LEN], known[64];
+	identity_fingerprint(peer->pub, fp);
+	int k = keystore_find(ks_path, peer->pub, known, sizeof known);
+	if (k > 0) { LOG("authorised device '%s' (key %s)", known, fp); return 1; }
+	if (k < 0) { LOG("cannot read %s: %s", ks_path, strerror(-k)); reject(ctl, 2, "this PC cannot read its list of authorised devices"); return 0; }
+	LOG("unknown device '%s' (key %s), pairing code %06u", peer->name, fp, peer->sas);
+	if (C.pair_mode == PAIR_DENY) { reject(ctl, 2, "this device is not authorised"); return 0; }
+	if (C.pair_mode == PAIR_ACCEPT) {
+		LOG("WARNING: -P accept: authorising '%s' without asking", peer->name);
+		int e = keystore_add(ks_path, peer->pub, peer->name);
+		if (e) LOG("could not save the key: %s", strerror(-e));
+		return 1;
+	}
+	net_ctl_send(ctl, PROTO_CTL_PAIRING_REQUIRED, NULL, 0); /* the device shows its own copy of the code */
+	fprintf(stderr, "\nA device wants to use this PC as a second monitor.\n   name: %s\n   key:  %s\n   code: %06u   (it must be the same on the device's screen)\n"
+			"Allow it?  [y] always  [o] this time only  [N] no: ", peer->name, fp, peer->sas);
+	fflush(stderr);
+	int a = read_answer(90000);
+	if (a == 'y' || a == 'o') {
+		fprintf(stderr, "\n");
+		if (a == 'y') {
+			int e = keystore_add(ks_path, peer->pub, peer->name);
+			if (e) LOG("could not save the key: %s", strerror(-e));
+			else LOG("authorised '%s' (key %s) for good", peer->name, fp);
+		} else {
+			LOG("authorised '%s' (key %s) for this session only", peer->name, fp);
+		}
+		return 1;
+	}
+	fprintf(stderr, "\n");
+	if (a == -1) { LOG("no answer: pairing with '%s' timed out", peer->name); reject(ctl, 6, "pairing timed out on the PC"); }
+	else { LOG("pairing with '%s' was denied", peer->name); reject(ctl, 5, "pairing was denied on the PC"); }
+	return 0;
+}
+
 /* One session: wait for the tablet (network or cable), set up the monitor and stream until it leaves. */
 static int run_session(double run_secs)
 {
 	t_start = net_now_us();
-	/* ---- wait for a phone and read its HELLO */
-	int cfd, usb_dgram = -1;
+	struct identity id;
+	char ks_path[1100] = "";
+	if (C.insecure) {
+		LOG("WARNING: running without authentication or encryption (-I): development only");
+	} else {
+		char cdir[900];
+		if (C.config_dir) snprintf(cdir, sizeof cdir, "%s", C.config_dir);
+		else if (identity_default_dir(cdir, sizeof cdir) != 0) { LOG("cannot work out the config directory: use -K DIR"); return 1; }
+		int created, e = identity_load_or_create(cdir, &id, &created);
+		if (e) { LOG("cannot use the identity in %s: %s", cdir, strerror(-e)); return 1; }
+		char fp[IDENTITY_FINGERPRINT_LEN];
+		identity_fingerprint(id.pub, fp);
+		LOG("%s identity in %s, key %s", created ? "created a new" : "using the", cdir, fp);
+		snprintf(ks_path, sizeof ks_path, "%s/authorized_keys", cdir);
+	}
+
+	/* ---- wait for a phone that passes the handshake, then read its HELLO */
+	int cfd, usb_dgram = -1, lfd = -1;
 	struct usblink *link = NULL;
 	struct usbmux *mux = NULL;
-	if (C.usb) {
-		LOG("waiting for a tablet on USB");
-		int rd, wr;
-		int e = usblink_open(-1, C.usb_vid, (const volatile int *)&stop, &link, &rd, &wr);
-		if (e == -ECANCELED) return 0;
-		if (e) { LOG("cannot open the USB device: %s (is the udev rule installed? see contrib/udev)", strerror(-e)); return 1; }
-		LOG("USB accessory %s", usblink_description(link));
-		e = usbmux_start(rd, wr, 0, &mux, &cfd, &usb_dgram);
-		if (e) { LOG("cannot start the USB multiplexer: %s", strerror(-e)); return 1; }
-		fcntl(usb_dgram, F_SETFL, fcntl(usb_dgram, F_GETFL) | O_NONBLOCK);
-	} else {
-		int lfd = net_tcp_listen(C.port);
+	struct net_ctl ctl;
+	struct hs_peer dev; /* the authenticated device */
+	memset(&dev, 0, sizeof dev);
+	if (!C.usb) {
+		lfd = net_tcp_listen(C.port);
 		if (lfd < 0) { fprintf(stderr, "cannot listen on %u: %s\n", C.port, strerror(-lfd)); return 1; }
 		LOG("listening on port %u", C.port);
-		struct pollfd lp = { .fd = lfd, .events = POLLIN };
-		while (!stop && poll(&lp, 1, 200) <= 0) {}
-		if (stop) return 0;
-		cfd = accept(lfd, NULL, NULL);
-		close(lfd);
-		if (cfd < 0) { perror("accept"); return 1; }
-		net_tune_tcp(cfd);
 	}
-	struct net_ctl ctl;
-	net_ctl_init(&ctl, cfd);
+	for (;;) {
+		if (C.usb) {
+			LOG("waiting for a tablet on USB");
+			int rd, wr;
+			int e = usblink_open(-1, C.usb_vid, (const volatile int *)&stop, &link, &rd, &wr);
+			if (e == -ECANCELED) return 0;
+			if (e) { LOG("cannot open the USB device: %s (is the udev rule installed? see contrib/udev)", strerror(-e)); return 1; }
+			LOG("USB accessory %s", usblink_description(link));
+			e = usbmux_start(rd, wr, 0, &mux, &cfd, &usb_dgram);
+			if (e) { LOG("cannot start the USB multiplexer: %s", strerror(-e)); return 1; }
+			fcntl(usb_dgram, F_SETFL, fcntl(usb_dgram, F_GETFL) | O_NONBLOCK);
+		} else {
+			struct pollfd lp = { .fd = lfd, .events = POLLIN };
+			while (!stop && poll(&lp, 1, 200) <= 0) {}
+			if (stop) return 0;
+			cfd = accept(lfd, NULL, NULL);
+			if (cfd < 0) { perror("accept"); return 1; }
+			net_tune_tcp(cfd);
+		}
+		net_ctl_init(&ctl, cfd);
+		if (C.insecure) break;
+		int r = hs_respond(&ctl, &id, C.name, 10000, &dev, &secudp);
+		if (r == 0) break;
+		LOG("a peer failed the handshake (%s): dropped", strerror(-r));
+		net_ctl_close(&ctl);
+		if (C.usb) return 1; /* the supervisor starts again */
+	}
+	if (lfd >= 0) close(lfd);
 
 	uint16_t type;
 	const uint8_t *payload;
@@ -354,6 +471,7 @@ static int run_session(double run_secs)
 	}
 	LOG("phone '%s': %ux%u at %u dpi, %u refresh rates", hello.device_name, hello.native_width, hello.native_height,
 	    hello.density_dpi, hello.n_refresh);
+	if (!C.insecure && !authorize(&ctl, &dev, ks_path)) return 1;
 	if (hello.proto_min > PROTO_VERSION || hello.proto_max < PROTO_VERSION)
 		return reject(&ctl, 1, "no common protocol version");
 	int has_hevc = 0;
@@ -398,6 +516,7 @@ static int run_session(double run_secs)
 			struct sockaddr_in from;
 			socklen_t fl = sizeof from;
 			ssize_t n = recvfrom(ufd, b, sizeof b, 0, (struct sockaddr *)&from, &fl);
+			if (n > 0 && !C.insecure) { int o = sec_udp_open(&secudp, b, (size_t)n); n = o < 0 ? -1 : o; D.auth_drops += o < 0; }
 			struct proto_pkt_hdr h;
 			if (n >= PROTO_PKT_HDR_SIZE && proto_pkt_hdr_read(b, (size_t)n, &h) == 0 && h.session_id == D.session_id &&
 			    h.type == PROTO_PKT_HELLO_UDP) {
@@ -446,6 +565,11 @@ static int run_session(double run_secs)
 			socklen_t fl = sizeof from;
 			ssize_t n = recvfrom(ufd, pkt, sizeof pkt, 0, (struct sockaddr *)&from, &fl);
 			if (n < 0) break;
+			if (!C.insecure) { /* anything that does not authenticate (or is a replay) never reaches the protocol code */
+				int o = sec_udp_open(&secudp, pkt, (size_t)n);
+				if (o < 0) { D.auth_drops++; continue; }
+				n = o;
+			}
 			if (!C.usb && (from.sin_addr.s_addr != peer.sin_addr.s_addr || from.sin_port != peer.sin_port)) continue;
 			last_rx = now;
 			struct proto_pkt_hdr ph;
@@ -498,6 +622,7 @@ static int run_session(double run_secs)
 						D.refresh_due_us = 0;
 						if (bring_up(&nep, &nt, nedid) != 0 || ++D.epoch == 0) { LOG("reconfiguration failed"); stop = 1; break; }
 						if (make_sender() != 0) { stop = 1; break; }
+						if (!C.insecure) sec_udp_set_epoch(&secudp, D.epoch); /* sequence numbers restart: new datagram keys */
 						struct proto_stream_params rp;
 						make_params(&rp);
 						uint8_t rb[1400];
@@ -551,11 +676,11 @@ static int run_session(double run_secs)
 
 	const struct vsend_stats *st = vsend_stats(D.vs);
 	printf("DAEMON frames=%llu skipped=%llu idr=%llu packets=%llu repair_packets=%llu nacks=%llu frames_lost=%llu "
-	       "encode_ms_avg=%.2f encode_ms_max=%.2f reconfigs=%llu pongs=%llu\n",
+	       "encode_ms_avg=%.2f encode_ms_max=%.2f reconfigs=%llu pongs=%llu auth_drops=%llu\n",
 	       (unsigned long long)D.frames_encoded, (unsigned long long)D.frames_skipped, (unsigned long long)D.idr_frames,
 	       (unsigned long long)st->packets, (unsigned long long)st->repair_packets, (unsigned long long)st->nacks,
 	       (unsigned long long)st->frames_lost, D.frames_encoded ? D.encode_ms_sum / D.frames_encoded : 0.0, D.encode_ms_max,
-	       (unsigned long long)D.reconfigs, (unsigned long long)D.pongs);
+	       (unsigned long long)D.reconfigs, (unsigned long long)D.pongs, (unsigned long long)D.auth_drops);
 	uint8_t cb[64];
 	struct proto_close cl;
 	memset(&cl, 0, sizeof cl);

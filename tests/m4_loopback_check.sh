@@ -32,12 +32,12 @@ cleanup() {
 trap cleanup EXIT
 fail() { echo "FAIL: $*"; echo "--- daemon:"; grep -v '^\[libevdi\]\|^libva' "$dlog" | tail -15; echo "--- viewer:"; tail -8 "$vlog"; exit 1; }
 
-"$daemon" -p "$PORT" -t "$SERIAL" -n pdisp-tablet -S 40 >"$dlog" 2>&1 &
+"$daemon" -K "$art/pc-id" -P accept -p "$PORT" -t "$SERIAL" -n pdisp-tablet -S 40 >"$dlog" 2>&1 &
 dpid=$!
 sleep 0.5
 if ! kill -0 "$dpid" 2>/dev/null; then wait "$dpid"; rc=$?; [ "$rc" = 3 ] && skip "no free evdi device"; fail "daemon exited early (rc=$rc)"; fi
 
-"$viewer" 127.0.0.1 "$PORT" -W 2304 -H 1440 -r 60 -S 10 -c -G -o "$art/view.png" "$@" >"$vlog" 2>&1 &
+"$viewer" 127.0.0.1 "$PORT" -i "$art/phone-id" -W 2304 -H 1440 -r 60 -S 10 -c -G -o "$art/view.png" "$@" >"$vlog" 2>&1 &
 vpid=$!
 
 name=
