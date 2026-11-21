@@ -32,6 +32,8 @@ enum proto_ctl_type {
 	PROTO_CTL_SETUP = 0x0002,
 	PROTO_CTL_REJECT = 0x0003,
 	PROTO_CTL_READY = 0x0004,
+	PROTO_CTL_HANDSHAKE = 0x0005,        /* one Noise handshake message (the only frames sent before the channel is encrypted) */
+	PROTO_CTL_PAIRING_REQUIRED = 0x0006, /* PC to phone: this phone is not authorised yet; approve it on the PC (compare the codes) */
 	PROTO_CTL_RECONFIGURE = 0x0010,
 	PROTO_CTL_RECONFIGURE_ACK = 0x0011,
 	PROTO_CTL_DISPLAY_CHANGED = 0x0012,
@@ -95,7 +97,7 @@ struct proto_setup {
 };
 
 struct proto_reject {
-	uint16_t reason; /* 1 no common version, 2 not authorised, 3 busy, 4 unsupported display */
+	uint16_t reason; /* 1 no common version, 2 not authorised, 3 busy, 4 unsupported display, 5 pairing denied, 6 pairing timed out */
 	char text[PROTO_TEXT_MAX];
 };
 

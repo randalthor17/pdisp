@@ -46,6 +46,8 @@ Unknown message types are skipped by length. Receivers must never read past `len
 | 0x0002 | SETUP | PC to phone |
 | 0x0003 | REJECT | PC to phone |
 | 0x0004 | READY | phone to PC |
+| 0x0005 | HANDSHAKE | both (one Noise message) |
+| 0x0006 | PAIRING_REQUIRED | PC to phone |
 | 0x0010 | RECONFIGURE | PC to phone |
 | 0x0011 | RECONFIGURE_ACK | phone to PC |
 | 0x0012 | DISPLAY_CHANGED | phone to PC |
@@ -90,7 +92,7 @@ extension TLVs (`u16 type, u16 length, value`); unknown TLVs are skipped, which 
     bytes parameter_sets                 VPS, SPS and PPS, Annex B (codec-specific data for MediaCodec)
     ... TLVs
 
-**REJECT**: `u16 reason` (1 no common version, 2 not authorised, 3 busy, 4 unsupported display), `string text`.
+**REJECT**: `u16 reason` (1 no common version, 2 not authorised, 3 busy, 4 unsupported display, 5 pairing denied, 6 pairing timed out), `string text`.
 **READY**: empty. The phone has opened its UDP socket and configured its decoder; the PC then starts video with an IDR.
 
 **RECONFIGURE** (PC to phone): the fields of SETUP from `epoch` on, with the `epoch` incremented, new parameter sets and
