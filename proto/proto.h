@@ -213,6 +213,8 @@ struct proto_input_event {
 
 struct proto_input {
 	uint8_t count;
+	uint8_t has_lost;   /* the sender had to drop events that were not superseded moves; see lost_upto */
+	uint32_t lost_upto; /* events up to this sequence number may be missing for good: release every finger */
 	struct proto_input_event events[PROTO_MAX_INPUT_EVENTS];
 };
 

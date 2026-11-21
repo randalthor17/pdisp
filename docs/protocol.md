@@ -264,7 +264,7 @@ Latest wins; loss is harmless. Positions are sent at the cursor event rate, at m
 
 Touch and stylus events are an ordered, reliable stream carried by redundancy, never by retransmission delay:
 
-    u8  count
+    u8  count           low 7 bits: number of events; bit 7: a lost_upto follows the events
     ... per event, oldest first:
         u32 event_seq       1, 2, 3, ... per session
         u8  kind            0 down, 1 move, 2 up, 3 cancel, 4 hover (stylus), 5 button (stylus)
@@ -276,7 +276,13 @@ Touch and stylus events are an ordered, reliable stream carried by redundancy, n
         i8  tilt_x, tilt_y  degrees
         u32 time_us         phone clock
 
-Each INPUT packet repeats every event not yet acknowledged (up to 32, oldest dropped as a last resort). The PC applies events in
+    u32 lost_upto       only when bit 7 of count is set (see below)
+
+Each INPUT packet repeats every event not yet acknowledged (up to 32). When the queue is full the sender first discards a move that
+a later move of the same finger replaces, which leaves a harmless skip in the sequence numbers (the receiver applies what it gets and
+counts the skipped numbers as delivered). Only if nothing like that can be discarded does it drop the oldest event, and then it sets
+bit 7 and `lost_upto` in every packet until that event's number is acknowledged: a receiver that has not yet passed `lost_upto`
+releases every finger it believes is down before applying the packet, because a finger-up may be among the lost events. The PC applies events in
 `event_seq` order, ignores ones it has seen, and acknowledges with INPUT_ACK `{u32 input_acked}` (also carried in
 KEEPALIVE). The phone stops repeating acknowledged events. A lost packet therefore never leaves a finger stuck down, and input
 never queues behind video.

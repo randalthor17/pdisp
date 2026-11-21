@@ -496,7 +496,7 @@ int proto_input_encode(const struct proto_input *m, uint8_t *out, size_t cap)
 {
 	if (m->count > PROTO_MAX_INPUT_EVENTS) return -EINVAL;
 	struct wr w = { out, cap, 0, 0 };
-	w8(&w, m->count);
+	w8(&w, (uint8_t)(m->count | (m->has_lost ? 0x80 : 0))); /* bit 7: a lost_upto follows the events */
 	for (int i = 0; i < m->count; i++) {
 		const struct proto_input_event *e = &m->events[i];
 		w32(&w, e->seq);
@@ -511,6 +511,7 @@ int proto_input_encode(const struct proto_input *m, uint8_t *out, size_t cap)
 		w8(&w, (uint8_t)e->tilt_y);
 		w32(&w, e->time_us);
 	}
+	if (m->has_lost) w32(&w, m->lost_upto);
 	return wfinish(&w);
 }
 
@@ -518,7 +519,9 @@ int proto_input_decode(const uint8_t *buf, size_t len, struct proto_input *m)
 {
 	struct rd r = { buf, len, 0, 0 };
 	memset(m, 0, sizeof *m);
-	m->count = r8(&r);
+	uint8_t first = r8(&r);
+	m->count = first & 0x7f;
+	m->has_lost = first >> 7;
 	if (!r.err && m->count > PROTO_MAX_INPUT_EVENTS) r.err = -EMSGSIZE;
 	for (int i = 0; i < m->count && !r.err; i++) {
 		struct proto_input_event *e = &m->events[i];
@@ -536,6 +539,7 @@ int proto_input_decode(const uint8_t *buf, size_t len, struct proto_input *m)
 		if (!r.err && e->kind > PROTO_IN_BUTTON) r.err = -EINVAL;
 		if (!r.err && e->tool > PROTO_TOOL_ERASER) r.err = -EINVAL;
 	}
+	if (m->has_lost) m->lost_upto = r32(&r);
 	return rfinish(&r);
 }
 

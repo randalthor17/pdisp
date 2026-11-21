@@ -109,7 +109,7 @@ test('loss recovery', find_program('tests/loss_recovery_check.sh'),
 
 mc_inc = include_directories('third_party/monocypher')
 monocypher = static_library('monocypher', 'third_party/monocypher/monocypher.c', c_args: ['-w'])
-proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', 'proto/usbmux.c', 'proto/crypto.c', 'proto/noise.c', 'proto/identity.c', 'proto/secure.c', 'proto/handshake.c', include_directories: [inc, mc_inc], link_with: monocypher)
+proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', 'proto/usbmux.c', 'proto/crypto.c', 'proto/noise.c', 'proto/identity.c', 'proto/secure.c', 'proto/handshake.c', 'proto/inputseq.c', include_directories: [inc, mc_inc], link_with: monocypher)
 proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
 test_proto = executable('test_proto', 'tests/test_proto.c', dependencies: proto_dep)
 test('proto wire format', test_proto)
@@ -203,3 +203,6 @@ test('m6 pairing and authorisation', m6_pairing,
   timeout: 300,
   suite: 'integration')
 
+
+test_inputseq = executable('test_inputseq', 'tests/test_inputseq.c', dependencies: proto_dep)
+test('input event stream', test_inputseq)

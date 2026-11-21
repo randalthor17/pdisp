@@ -72,6 +72,18 @@ static void test_vectors(void)
 	static const uint8_t want_in[21] = { 0x01, 0x07, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x80,
 					     0x00, 0x40, 0xff, 0xff, 0xff, 0x05, 0x00, 0x10, 0x00, 0x00 };
 	CHECK(bytes_equal(b, proto_input_encode(&in, b, sizeof b), want_in, sizeof want_in));
+	/* the same with a loss marker: bit 7 of the count byte, and the u32 lost_upto after the events */
+	in.has_lost = 1;
+	in.lost_upto = 0x01020304;
+	uint8_t lostb[40];
+	int ln = proto_input_encode(&in, lostb, sizeof lostb);
+	CHECK(ln == 25 && lostb[0] == 0x81 && memcmp(lostb + 1, want_in + 1, 20) == 0 && lostb[21] == 0x04 && lostb[22] == 0x03 &&
+	      lostb[23] == 0x02 && lostb[24] == 0x01);
+	struct proto_input back;
+	CHECK(proto_input_decode(lostb, 25, &back) == 0 && back.count == 1 && back.has_lost && back.lost_upto == 0x01020304);
+	CHECK(proto_input_decode(lostb, 24, &back) != 0); /* a marker without its number is cut short */
+	in.has_lost = 0;
+	in.lost_upto = 0;
 
 	/* REJECT: reason 3, text "busy": u16 3, u16 4, "busy" */
 	struct proto_reject rj = { .reason = 3 };
