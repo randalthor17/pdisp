@@ -70,7 +70,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - Pass: the file plays in `mpv` and `ffprobe` reports the expected stream. Encode time per frame is logged. The keyframe size stays near the largest P-frame size under the chosen CBR settings.
 
 **M4: Protocol, Wi-Fi transport, desktop test client, network emulation, latency harness**
-- A written protocol spec with test vectors, and the shared C library: framing, handshake, packetisation, FEC, NACK, pacing, congestion feedback, reassembly. Fuzz and round-trip tests.
+- The protocol spec (`docs/protocol.md`, draft 0 awaiting review) with test vectors, and the shared C library: framing, handshake, packetisation, FEC, NACK, pacing, congestion feedback, reassembly. Fuzz and round-trip tests.
 - TCP control plus UDP video and input. The encoder side uses `encoder_invalidate_from`, frame skipping before encode and bitrate adaptation.
 - A desktop test client that decodes, shows the stream and enforces the "do not decode frames with a missing reference" rule.
 - A network emulation harness: `netem` inside an unprivileged user and network namespace (verified in M0) for random and bursty loss, jitter, bandwidth caps and bufferbloat.
