@@ -168,3 +168,11 @@ test('m7 monitor over a USB cable', m7_usb,
   is_parallel: false,
   timeout: 240,
   suite: 'integration')
+
+m5_rotate = find_program('tests/m5_rotate_check.sh')
+test('m5 rotation follows the phone', m5_rotate,
+  args: [pdispd, pdisp_pattern, meson.current_build_dir() / 'm5-rotate-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 180,
+  suite: 'integration')
