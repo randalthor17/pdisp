@@ -25,9 +25,23 @@ fail() { echo "FAIL: $*"; grep -v '^\[libevdi\|^libva' "$dlog" | tail -12; exit 
 
 adb shell am force-stop dev.pdisp; adb shell input keyevent KEYCODE_HOME
 adb shell svc usb setFunctions mtp >/dev/null; sleep 4 # leave accessory mode: the daemon must switch the device again
+# Android asks "Open pdisp to handle pdisp second monitor?" on a plug-in (some phones every time): answer it without ticking "Always"
+tap_prompt() {
+	adb shell uiautomator dump /sdcard/pdisp_ui.xml >/dev/null 2>&1
+	local xml; xml=$(adb shell cat /sdcard/pdisp_ui.xml 2>/dev/null)
+	echo "$xml" | grep -q "pdisp second monitor" || return 1
+	local label c
+	for label in "Only this time" "OK"; do
+		c=$(echo "$xml" | tr '>' '\n' | grep "text=\"$label\"" | grep -o 'bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' | head -1 | tr -cs '0-9' ' ' | awk '{ printf "%d %d", ($1 + $3) / 2, ($2 + $4) / 2 }')
+		[ -n "$c" ] && { adb shell input tap $c; return 0; }
+	done
+	return 1
+}
+
 "$daemon" -u -P accept -K "$art/pc-id" >"$dlog" 2>&1 &
 dpid=$!
 i=0; while [ $i -lt 120 ] && ! grep -q "streaming to" "$dlog"; do
+	[ $((i % 6)) = 4 ] && tap_prompt
 	kill -0 "$dpid" 2>/dev/null || { wait "$dpid"; [ $? = 3 ] && skip "no free evdi device"; fail "daemon exited early"; }
 	sleep 0.5; i=$((i + 1)); done
 grep -q "USB accessory" "$dlog" || fail "the daemon never found the tablet on USB"
