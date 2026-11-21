@@ -86,7 +86,7 @@ Intra refresh and "no keyframe spikes" were not tested; `-g 120` IDR intervals a
 
 ## Not yet verified
 
-- AOA on a real phone (none attached).
+- AOA: done, see `m0-aoa.md` (works; app-side parts still need M5/M7).
 - evdi + niri under heavier load than a 720p test pattern (compositor copy cost, higher resolutions and refresh rates).
 - HEVC intra refresh / per-frame size spikes at keyframes (matters for Wi-Fi latency).
 - Touch binding (`uinput` is available, `/dev/uinput` group `uinput`, user is a member).
