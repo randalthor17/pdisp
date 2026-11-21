@@ -352,13 +352,20 @@ static void stop_decoder(void)
 }
 
 /* "tap:X,Y swipe:X1,Y1:X2,Y2 pinch:CX,CY:R1:R2 hold:MS": fractions of the screen, as in tools/pdisp-touch-demo.c */
+static void sched_add_tool(uint64_t at, uint8_t kind, uint8_t id, double x, double y, uint8_t tool, double pressure, int8_t tilt, uint8_t buttons);
 static void sched_add(uint64_t at, uint8_t kind, uint8_t id, double x, double y)
+{
+	sched_add_tool(at, kind, id, x, y, PROTO_TOOL_FINGER, 0.46, 0, 0);
+}
+
+static void sched_add_tool(uint64_t at, uint8_t kind, uint8_t id, double x, double y, uint8_t tool, double pressure, int8_t tilt, uint8_t buttons)
 {
 	static size_t cap;
 	if (V.n_sched == cap) { cap = cap ? cap * 2 : 256; V.sched = realloc(V.sched, cap * sizeof *V.sched); }
 	struct proto_input_event e;
 	memset(&e, 0, sizeof e);
-	e.kind = kind; e.pointer_id = id; e.pressure = 30000;
+	e.kind = kind; e.pointer_id = id; e.tool = tool; e.buttons = buttons; e.tilt_x = tilt; e.tilt_y = (int8_t)-tilt;
+	e.pressure = (uint16_t)(pressure < 0 ? 0 : pressure > 1 ? 65535 : pressure * 65535 + 0.5);
 	e.x = (uint16_t)(x < 0 ? 0 : x > 1 ? 65535 : x * 65535 + 0.5);
 	e.y = (uint16_t)(y < 0 ? 0 : y > 1 ? 65535 : y * 65535 + 0.5);
 	V.sched[V.n_sched++] = (struct sched_ev){ at, e };
@@ -384,6 +391,14 @@ static int parse_touch_script(const char *script)
 				t += 8000; sched_add(t, PROTO_IN_MOVE, 0, a - rr, b); sched_add(t, PROTO_IN_MOVE, 1, a + rr, b);
 			}
 			sched_add(t, PROTO_IN_UP, 0, a - d, b); sched_add(t, PROTO_IN_UP, 1, a + d, b);
+		} else if (sscanf(step, "pen:%lf,%lf:%lf,%lf", &a, &b, &c, &d) == 4 || sscanf(step, "erase:%lf,%lf:%lf,%lf", &a, &b, &c, &d) == 4) {
+			/* hover, press, a stroke with rising pressure and the barrel button held for its second half, lift, leave */
+			uint8_t tool = step[0] == 'e' ? PROTO_TOOL_ERASER : PROTO_TOOL_STYLUS;
+			sched_add_tool(t, PROTO_IN_HOVER, 0, a, b, tool, 0.5, 20, 0); t += 40000;
+			sched_add_tool(t, PROTO_IN_DOWN, 0, a, b, tool, 0.1, 20, 0);
+			for (int i = 1; i <= 20; i++) { t += 8000; sched_add_tool(t, PROTO_IN_MOVE, 0, a + (c - a) * i / 20, b + (d - b) * i / 20, tool, 0.1 + 0.9 * i / 20, (int8_t)(20 + i), i > 10 ? 1 : 0); }
+			sched_add_tool(t, PROTO_IN_UP, 0, c, d, tool, 0, 40, 0); t += 40000;
+			sched_add_tool(t, PROTO_IN_CANCEL, 0, c, d, tool, 0, 0, 0);
 		} else if (sscanf(step, "hold:%d", &ms) == 1) {
 			t += (uint64_t)ms * 1000;
 			continue;
@@ -510,7 +525,7 @@ int main(int argc, char **argv)
 	memset(&hello, 0, sizeof hello);
 	hello.proto_min = hello.proto_max = PROTO_VERSION;
 	snprintf(hello.device_name, sizeof hello.device_name, "pdisp-view");
-	hello.device_caps = PROTO_CAP_TOUCH;
+	hello.device_caps = PROTO_CAP_TOUCH | PROTO_CAP_STYLUS;
 	hello.native_width = (uint16_t)nw; hello.native_height = (uint16_t)nh; hello.density_dpi = (uint16_t)dpi;
 	for (char *s = (char *)rates, *e; *s && hello.n_refresh < PROTO_MAX_RATES; s = *e ? e + 1 : e) {
 		hello.refresh_mhz[hello.n_refresh++] = (uint32_t)(strtod(s, &e) * 1000 + 0.5);

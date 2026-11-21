@@ -16,10 +16,13 @@ import android.util.Log
 import android.hardware.usb.UsbManager
 import android.net.wifi.WifiManager
 import android.os.Build
+import kotlin.math.cos
+import kotlin.math.sin
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
+import android.view.InputDevice
 import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.SurfaceView
@@ -85,6 +88,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         surfaceView = SurfaceView(this).also {
             it.holder.addCallback(this)
             it.setOnTouchListener { v, ev -> if (handle != 0L) { sendTouch(v, ev); true } else false }
+            it.setOnHoverListener { v, ev -> if (handle != 0L) { sendHover(v, ev); true } else false }
         }
         root.addView(surfaceView)
 
@@ -139,11 +143,25 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private val lastSent = HashMap<Int, Pair<Int, Int>>() // pointer id -> last position sent, so a still finger sends nothing
+    private var penNear = false
 
-    /** Touches on the stream go to the PC as the events of a touchscreen (the PC's compositor does the gestures). */
+    /** Does this phone or tablet have a pen digitiser (an S Pen, a Pixel Tablet pen, ...)? Then the PC also gets a pen tablet. */
+    private fun hasStylus(): Boolean = InputDevice.getDeviceIds().any { id ->
+        val d = InputDevice.getDevice(id)
+        d != null && (d.sources and InputDevice.SOURCE_STYLUS) == InputDevice.SOURCE_STYLUS
+    }
+
+    private fun deviceCaps(): Int = 1 /* touch */ or (if (hasStylus()) 2 else 0)
+
+    /** Contacts bigger than this are a palm: about 25 mm at this screen's density. */
+    private fun palmSizePx(): Int = (25f / 25.4f * resources.displayMetrics.densityDpi).toInt()
+
+    /** Touches and pen events on the stream go to the PC as the events of a touchscreen and a pen tablet; the PC's compositor does the
+     *  gestures. Palm rejection happens in the native session before anything is sent. */
     private fun sendTouch(v: View, ev: MotionEvent) {
         val w = v.width.toFloat().coerceAtLeast(1f)
         val h = v.height.toFloat().coerceAtLeast(1f)
+        val canceled = (ev.flags and 0x20) != 0 // MotionEvent.FLAG_CANCELED (API 33)
         fun px(i: Int) = (ev.getX(i) / w * 65535f).toInt().coerceIn(0, 65535)
         fun py(i: Int) = (ev.getY(i) / h * 65535f).toInt().coerceIn(0, 65535)
         fun pr(i: Int) = (ev.getPressure(i).coerceIn(0f, 1f) * 65535f).toInt()
@@ -152,18 +170,54 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             MotionEvent.TOOL_TYPE_ERASER -> 2
             else -> 0
         }
+        fun flags(i: Int) = (if (ev.getToolType(i) == 5 /* TOOL_TYPE_PALM, API 33 */) 1 else 0) or (if (canceled) 2 else 0)
+        fun buttons() = (if ((ev.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) 1 else 0) or
+            (if ((ev.buttonState and MotionEvent.BUTTON_STYLUS_SECONDARY) != 0) 2 else 0)
+        // the pen's tilt, as the two angles a pen tablet reports: AXIS_TILT is the angle from vertical, AXIS_ORIENTATION its direction
+        fun tiltX(i: Int) = Math.toDegrees(ev.getAxisValue(MotionEvent.AXIS_TILT, i).toDouble() * sin(ev.getOrientation(i).toDouble())).toInt()
+        fun tiltY(i: Int) = Math.toDegrees(ev.getAxisValue(MotionEvent.AXIS_TILT, i).toDouble() * cos(ev.getOrientation(i).toDouble())).toInt()
         fun send(kind: Int, i: Int) {
             val id = ev.getPointerId(i)
             val x = px(i); val y = py(i)
-            if (kind == 1 && lastSent[id] == Pair(x, y)) return
+            val t = tool(i)
+            if (kind == 1 && t == 0 && lastSent[id] == Pair(x, y)) return
             lastSent[id] = Pair(x, y)
-            PdispNative.nativeTouch(handle, kind, id, x, y, pr(i), tool(i))
+            val pen = t != 0
+            PdispNative.nativeTouch(
+                handle, kind, id, x, y, pr(i), t, if (pen) buttons() else 0, if (pen) tiltX(i) else 0, if (pen) tiltY(i) else 0,
+                (ev.getTouchMajor(i)).toInt(), flags(i),
+            )
         }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> send(0, ev.actionIndex)
             MotionEvent.ACTION_MOVE -> for (i in 0 until ev.pointerCount) send(1, i)
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> { send(2, ev.actionIndex); lastSent.remove(ev.getPointerId(ev.actionIndex)) }
             MotionEvent.ACTION_CANCEL -> { for (i in 0 until ev.pointerCount) send(3, i); lastSent.clear() }
+        }
+    }
+
+    /** The pen hovering over the screen (not touching): the PC's pen tablet reports it in proximity with its distance. */
+    private fun sendHover(v: View, ev: MotionEvent) {
+        val i = 0
+        val t = when (ev.getToolType(i)) { MotionEvent.TOOL_TYPE_STYLUS -> 1; MotionEvent.TOOL_TYPE_ERASER -> 2; else -> return }
+        val w = v.width.toFloat().coerceAtLeast(1f)
+        val h = v.height.toFloat().coerceAtLeast(1f)
+        val x = (ev.getX(i) / w * 65535f).toInt().coerceIn(0, 65535)
+        val y = (ev.getY(i) / h * 65535f).toInt().coerceIn(0, 65535)
+        val buttons = (if ((ev.buttonState and MotionEvent.BUTTON_STYLUS_PRIMARY) != 0) 1 else 0) or
+            (if ((ev.buttonState and MotionEvent.BUTTON_STYLUS_SECONDARY) != 0) 2 else 0)
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> {
+                val distance = (ev.getAxisValue(MotionEvent.AXIS_DISTANCE, i).coerceIn(0f, 1f) * 65535f).toInt()
+                val tilt = Math.toDegrees(ev.getAxisValue(MotionEvent.AXIS_TILT, i).toDouble())
+                val o = ev.getOrientation(i).toDouble()
+                penNear = true
+                PdispNative.nativeTouch(handle, 4, ev.getPointerId(i), x, y, distance, t, buttons, (tilt * sin(o)).toInt(), (tilt * cos(o)).toInt(), 0, 0)
+            }
+            MotionEvent.ACTION_HOVER_EXIT -> {
+                if (penNear) PdispNative.nativeTouch(handle, 3, ev.getPointerId(i), x, y, 0, t, 0, 0, 0, 0, 0) // the pen left
+                penNear = false
+            }
         }
     }
 
@@ -213,7 +267,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val d = displayInfo()
         handle = PdispNative.nativeStartUsb(
             pfd.detachFd(), surfaceView.holder.surface, d.width, d.height, resources.displayMetrics.densityDpi, d.rates, Build.MODEL,
-            filesDir.absolutePath,
+            filesDir.absolutePath, deviceCaps(),
         )
         sessionStarted()
     }
@@ -250,13 +304,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val d = displayInfo()
         handle = PdispNative.nativeStart(
             host, 47110, surfaceView.holder.surface, d.width, d.height, resources.displayMetrics.densityDpi, d.rates, Build.MODEL,
-            filesDir.absolutePath,
+            filesDir.absolutePath, deviceCaps(),
         )
         sessionStarted()
     }
 
     private fun sessionStarted() {
         if (handle == 0L) return
+        PdispNative.nativeSetPalmRejection(handle, true, palmSizePx())
         // match the panel's refresh to the stream: 60 fps on a 90 Hz panel lands on uneven vsync slots
         window.attributes = window.attributes.also { it.preferredRefreshRate = 60f }
         // Wi-Fi power save batches packets for tens of milliseconds, which shows up as stutter

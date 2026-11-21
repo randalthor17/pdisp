@@ -28,6 +28,7 @@
 #include "identity.h"
 #include "inputseq.h"
 #include "net.h"
+#include "palm.h"
 #include "proto.h"
 #include "timesync.h"
 #include "usbmux.h"
@@ -49,6 +50,8 @@ struct session {
 
 	pthread_mutex_t in_mu;      /* guards in_tx: touches arrive on the UI thread, the session thread sends them */
 	struct input_tx in_tx;
+	struct palm_filter palm;    /* guarded by in_mu too */
+	unsigned device_caps;       /* PROTO_CAP_TOUCH, plus PROTO_CAP_STYLUS if the screen has a digitiser pen */
 	uint64_t touch_pushed, touch_acked;
 	pthread_mutex_t status_mu;
 	char status[256];
@@ -289,7 +292,7 @@ static int send_hello(struct session *s, struct net_ctl *ctl, uint16_t type)
 	memset(&h, 0, sizeof h);
 	h.proto_min = h.proto_max = PROTO_VERSION;
 	snprintf(h.device_name, sizeof h.device_name, "%s", s->name);
-	h.device_caps = PROTO_CAP_TOUCH;
+	h.device_caps = s->device_caps;
 	h.native_width = (uint16_t)s->width;
 	h.native_height = (uint16_t)s->height;
 	h.orientation = s->height > s->width ? 1 : 0;
@@ -572,7 +575,7 @@ out:
 }
 
 static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, jobject surface, jint width, jint height, jint dpi,
-			  jintArray rates, jstring name, jstring identity_dir)
+			  jintArray rates, jstring name, jstring identity_dir, jint caps)
 {
 	struct session *s = calloc(1, sizeof *s);
 	if (!s) return 0;
@@ -580,6 +583,8 @@ static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, job
 	pthread_mutex_init(&s->status_mu, NULL);
 	pthread_mutex_init(&s->in_mu, NULL);
 	input_tx_init(&s->in_tx);
+	palm_init(&s->palm, &(struct palm_config){ .enabled = 1 });
+	s->device_caps = (unsigned)caps;
 	{
 		const char *d = (*env)->GetStringUTFChars(env, identity_dir, NULL);
 		snprintf(s->identity_dir, sizeof s->identity_dir, "%s", d);
@@ -606,18 +611,18 @@ static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, job
 }
 
 JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStart(JNIEnv *env, jclass cls, jstring host, jint port, jobject surface,
-							      jint width, jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir)
+							      jint width, jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir, jint caps)
 {
 	(void)cls;
-	return start_common(env, host, port, -1, surface, width, height, dpi, rates, name, identity_dir);
+	return start_common(env, host, port, -1, surface, width, height, dpi, rates, name, identity_dir, caps);
 }
 
 /* `fd` is the descriptor of the open USB accessory; ownership passes to the native side. */
 JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStartUsb(JNIEnv *env, jclass cls, jint fd, jobject surface, jint width,
-								 jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir)
+								 jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir, jint caps)
 {
 	(void)cls;
-	return start_common(env, NULL, 0, fd, surface, width, height, dpi, rates, name, identity_dir);
+	return start_common(env, NULL, 0, fd, surface, width, height, dpi, rates, name, identity_dir, caps);
 }
 
 JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeStop(JNIEnv *env, jclass cls, jlong handle)
@@ -660,24 +665,46 @@ JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeDisplayChanged(JNIEnv *e
 	atomic_store(&s->pending_w, (unsigned)width);
 }
 
-/* One touch event from the UI thread: kind 0 down, 1 move, 2 up, 3 cancel; x and y are fractions of the screen scaled to 0..65535. */
-JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeTouch(JNIEnv *env, jclass cls, jlong handle, jint kind, jint pointer_id, jint x, jint y,
-							     jint pressure, jint tool)
+/* Palm rejection settings: on or off, and the contact size (in pixels) above which a contact is a palm. */
+JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeSetPalmRejection(JNIEnv *env, jclass cls, jlong handle, jboolean enabled, jint palm_size_px)
 {
 	(void)env; (void)cls;
 	struct session *s = (struct session *)(intptr_t)handle;
-	if (!s || kind < 0 || kind > 3 || pointer_id < 0 || pointer_id > 255) return;
-	struct proto_input_event e;
-	memset(&e, 0, sizeof e);
-	e.kind = (uint8_t)kind;
-	e.pointer_id = (uint8_t)pointer_id;
-	e.tool = (uint8_t)(tool >= 0 && tool <= 2 ? tool : 0);
-	e.x = (uint16_t)(x < 0 ? 0 : x > 65535 ? 65535 : x);
-	e.y = (uint16_t)(y < 0 ? 0 : y > 65535 ? 65535 : y);
-	e.pressure = (uint16_t)(pressure < 0 ? 0 : pressure > 65535 ? 65535 : pressure);
-	e.time_us = (uint32_t)net_now_us();
+	if (!s) return;
 	pthread_mutex_lock(&s->in_mu);
-	input_tx_push(&s->in_tx, e);
-	s->touch_pushed++;
+	s->palm.cfg.enabled = enabled ? 1 : 0;
+	s->palm.cfg.palm_size_px = palm_size_px > 0 ? (unsigned)palm_size_px : 0;
+	pthread_mutex_unlock(&s->in_mu);
+}
+
+/* One contact event from the UI thread. kind: 0 down, 1 move, 2 up, 3 cancel, 4 hover (pen near, `pressure` = distance), 5 button;
+ * x and y are fractions of the screen scaled to 0..65535; tool: 0 finger, 1 stylus, 2 eraser; buttons: bit 0 barrel, bit 1 second;
+ * tilt in degrees; size_px is the contact's major axis; flags: 1 palm tool, 2 cancelled. */
+JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeTouch(JNIEnv *env, jclass cls, jlong handle, jint kind, jint pointer_id, jint x, jint y,
+							     jint pressure, jint tool, jint buttons, jint tilt_x, jint tilt_y, jint size_px, jint flags)
+{
+	(void)env; (void)cls;
+	struct session *s = (struct session *)(intptr_t)handle;
+	if (!s || kind < 0 || kind > 5 || pointer_id < 0 || pointer_id > 255) return;
+	struct palm_input in;
+	memset(&in, 0, sizeof in);
+	struct proto_input_event *e = &in.ev;
+	e->kind = (uint8_t)kind;
+	e->pointer_id = (uint8_t)pointer_id;
+	e->tool = (uint8_t)(tool >= 0 && tool <= 2 ? tool : 0);
+	e->buttons = (uint8_t)(buttons & 3);
+	e->x = (uint16_t)(x < 0 ? 0 : x > 65535 ? 65535 : x);
+	e->y = (uint16_t)(y < 0 ? 0 : y > 65535 ? 65535 : y);
+	e->pressure = (uint16_t)(pressure < 0 ? 0 : pressure > 65535 ? 65535 : pressure);
+	e->tilt_x = (int8_t)(tilt_x < -90 ? -90 : tilt_x > 90 ? 90 : tilt_x);
+	e->tilt_y = (int8_t)(tilt_y < -90 ? -90 : tilt_y > 90 ? 90 : tilt_y);
+	e->time_us = (uint32_t)net_now_us();
+	in.size_px = size_px > 0 ? (unsigned)size_px : 0;
+	in.flags = (unsigned)flags;
+	in.now_us = net_now_us();
+	struct proto_input_event out[PALM_MAX_OUT];
+	pthread_mutex_lock(&s->in_mu);
+	unsigned n = palm_filter(&s->palm, &in, out);
+	for (unsigned i = 0; i < n; i++) { input_tx_push(&s->in_tx, out[i]); s->touch_pushed++; }
 	pthread_mutex_unlock(&s->in_mu);
 }

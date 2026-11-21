@@ -8,20 +8,28 @@ object PdispNative {
 
     external fun nativeStart(
         host: String, port: Int, surface: Surface,
-        width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String, identityDir: String,
+        width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String, identityDir: String, caps: Int,
     ): Long
 
     /** Same session over a USB accessory file descriptor (ownership passes to the native side). */
     external fun nativeStartUsb(
         fd: Int, surface: Surface,
-        width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String, identityDir: String,
+        width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String, identityDir: String, caps: Int,
     ): Long
 
     /** The display size changed (rotation): the session reports it to the PC. */
     external fun nativeDisplayChanged(handle: Long, width: Int, height: Int)
 
-    /** One touch: kind 0 down, 1 move, 2 up, 3 cancel; x, y in 0..65535 across the screen; tool 0 finger, 1 stylus, 2 eraser. */
-    external fun nativeTouch(handle: Long, kind: Int, pointerId: Int, x: Int, y: Int, pressure: Int, tool: Int)
+    /** One contact: kind 0 down, 1 move, 2 up, 3 cancel (for a pen: it left), 4 hover (pressure = distance); x, y in 0..65535 across the
+     *  screen; tool 0 finger, 1 stylus, 2 eraser; buttons bit 0 barrel, bit 1 second; tilt in degrees; sizePx the contact's major axis;
+     *  flags 1 = the system calls it a palm, 2 = the system cancelled it. */
+    external fun nativeTouch(
+        handle: Long, kind: Int, pointerId: Int, x: Int, y: Int, pressure: Int, tool: Int,
+        buttons: Int, tiltX: Int, tiltY: Int, sizePx: Int, flags: Int,
+    )
+
+    /** Palm rejection on or off, and the contact size in pixels above which a contact is a palm. */
+    external fun nativeSetPalmRejection(handle: Long, enabled: Boolean, palmSizePx: Int)
 
     external fun nativeStop(handle: Long)
     external fun nativeStatus(handle: Long): String
