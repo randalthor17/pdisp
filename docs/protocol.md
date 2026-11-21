@@ -217,6 +217,10 @@ oldest frames are given up.
     u16 decode_ms_x10          recent average decode time
 
 The PC answers a NACK by sending `need` new parity shards (indices beyond the initial parity) with the retransmission flag set.
+`need = 255` means the phone saw nothing of that block, so it cannot say how many shards are missing. The PC then sends
+`data_shards` shards of its choice for the block. A block has at most 200 data shards and shard indices run to 254, so for a
+large block only the indices from `data_shards + parity_shards` up are free for new parity (117 for a 125-shard block with 13
+parity): the answer must include original data shards, with repair parity making up the rest.
 A frame the phone has given up on appears in `held_bitmap` as not held once `held_base` has passed it.
 
 ### 3.6 KEEPALIVE (PC to phone)

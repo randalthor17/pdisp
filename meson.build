@@ -107,9 +107,11 @@ test('loss recovery', find_program('tests/loss_recovery_check.sh'),
   timeout: 120,
   suite: 'integration')
 
-proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', include_directories: inc)
+proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', include_directories: inc)
 proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
 test_proto = executable('test_proto', 'tests/test_proto.c', dependencies: proto_dep)
 test('proto wire format', test_proto)
 test_fec = executable('test_fec', 'tests/test_fec.c', dependencies: proto_dep)
 test('fec reed-solomon', test_fec)
+test_video = executable('test_video', 'tests/test_video.c', dependencies: proto_dep)
+test('video packetiser and reassembler', test_video, timeout: 120)
