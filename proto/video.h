@@ -56,6 +56,9 @@ unsigned vtx_frame_packets(const struct vtx_frame *f);
  * PROTO_PKT_HDR_SIZE + PROTO_VIDEO_HDR_SIZE + shard_size bytes. Returns its length, or a negative errno. */
 int vtx_packet(const struct vtx_frame *f, uint32_t session_id, uint64_t seq, unsigned block, unsigned shard,
 	       uint8_t pkt_flags, uint8_t *out, size_t cap);
+/* The same, stamping the packet with the sender's clock (`send_us`, low 32 bits of microseconds) for delay measurement. */
+int vtx_packet_at(const struct vtx_frame *f, uint32_t session_id, uint64_t seq, uint32_t send_us, unsigned block, unsigned shard,
+		  uint8_t pkt_flags, uint8_t *out, size_t cap);
 
 /* ---- receiver */
 

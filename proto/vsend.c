@@ -53,6 +53,10 @@ struct vsend {
 	uint64_t last_adjust_us;
 	unsigned congested; /* consecutive reports with a standing queue */
 	uint64_t last_idr_request_us, last_idr_submit_us;
+	uint64_t rtt_us; /* smoothed: first packet sent to the frame being reported held */
+	uint64_t last_progress_us; /* when the receiver last reported seeing a newer frame than before */
+	uint32_t fb_newest;
+	bool fb_newest_set;
 };
 
 static bool q_push(struct vs_queue *q, struct vs_job j)
@@ -83,6 +87,7 @@ struct vsend *vsend_create(const struct vsend_config *cfg, const struct vsend_ca
 	if (!vs->cfg.pace_factor_percent) vs->cfg.pace_factor_percent = 150;
 	if (!vs->cfg.keepalive_us) vs->cfg.keepalive_us = 100000;
 	if (!vs->cfg.repair_gap_us) vs->cfg.repair_gap_us = 8000;
+	if (!vs->cfg.pace_burst_us) vs->cfg.pace_burst_us = 2000;
 	if (!vs->cfg.max_resend_bytes) vs->cfg.max_resend_bytes = 64 * 1024;
 	if (!vs->cfg.min_bitrate_kbps) vs->cfg.min_bitrate_kbps = 1000;
 	if (!vs->cfg.max_bitrate_kbps) vs->cfg.max_bitrate_kbps = 100000;
@@ -168,7 +173,7 @@ int vsend_next_packet(struct vsend *vs, uint64_t now_us, uint8_t *out, size_t ca
 		struct vs_frame *f = frame_for(vs, j.frame_id);
 		if (!f) continue; /* the frame was overwritten in the ring before this job came up */
 		if ((j.flags & PROTO_PKT_FLAG_REPAIR) && f->held) continue; /* no longer needed */
-		int n = vtx_packet(&f->vf, vs->cfg.session_id, vs->seq, j.block, j.shard, j.flags, out, cap);
+		int n = vtx_packet_at(&f->vf, vs->cfg.session_id, vs->seq, (uint32_t)now_us, j.block, j.shard, j.flags, out, cap);
 		if (n < 0) continue;
 		vs->seq++;
 		if (!f->first_send_us) f->first_send_us = now_us ? now_us : 1;
@@ -176,7 +181,10 @@ int vsend_next_packet(struct vsend *vs, uint64_t now_us, uint8_t *out, size_t ca
 		vs->st.packets++;
 		vs->st.bytes += (uint64_t)n;
 		if (j.flags & PROTO_PKT_FLAG_REPAIR) vs->st.repair_packets++;
-		uint64_t start = vs->next_send_us > now_us ? vs->next_send_us : now_us;
+		/* A late wake-up may catch up by up to pace_burst_us of credit, so timer granularity does not cap the rate: waking
+		 * every millisecond must not mean one packet per millisecond. */
+		uint64_t floor_us = now_us > vs->cfg.pace_burst_us ? now_us - vs->cfg.pace_burst_us : 0;
+		uint64_t start = vs->next_send_us > floor_us ? vs->next_send_us : floor_us;
 		vs->next_send_us = start + (uint64_t)n * 8 * 1000000 / pace_bps(vs);
 		return n;
 	}
@@ -214,6 +222,31 @@ size_t vsend_queued_bytes(const struct vsend *vs)
 uint64_t vsend_queue_delay_us(const struct vsend *vs)
 {
 	return (uint64_t)vsend_queued_bytes(vs) * 8 * 1000000 / pace_bps(vs);
+}
+
+unsigned vsend_unresolved(const struct vsend *vs)
+{
+	if (!vs->have_frame || !vs->base_valid) return 0;
+	int32_t n = (int32_t)(vs->newest_id - vs->base);
+	return n > 0 ? (unsigned)n : 0;
+}
+
+uint64_t vsend_rtt_us(const struct vsend *vs) { return vs->rtt_us; }
+
+bool vsend_must_idr(const struct vsend *vs, uint64_t now_us)
+{
+	/* a healthy link leaves about rtt / frame interval frames in flight: allow twice that, and never fewer than 8 */
+	unsigned limit = 8;
+	if (vs->rtt_us) {
+		unsigned rtt_frames = (unsigned)(2 * vs->rtt_us / 16667) + 4;
+		if (rtt_frames > limit) limit = rtt_frames;
+	}
+	uint64_t last_idr = vs->last_idr_request_us > vs->last_idr_submit_us ? vs->last_idr_request_us : vs->last_idr_submit_us;
+	if (last_idr && now_us < last_idr + 150000) return false;
+	/* a keyframe cannot help while nothing reaches the receiver (a blackout): its newest frame id stops advancing. Wait
+	 * until frames get through again. */
+	if (!vs->last_progress_us || now_us > vs->last_progress_us + 100000) return false;
+	return vsend_unresolved(vs) > limit;
 }
 
 uint32_t vsend_bitrate_kbps(const struct vsend *vs) { return vs->target_kbps; }
@@ -283,6 +316,11 @@ int vsend_on_packet(struct vsend *vs, const uint8_t *pkt, size_t len, uint64_t n
 	rc = proto_feedback_decode(pkt + PROTO_PKT_HDR_SIZE, len - PROTO_PKT_HDR_SIZE, &fb);
 	if (rc != 0) return rc;
 	vs->st.feedback++;
+	if (!vs->fb_newest_set || (int32_t)(fb.newest_frame_id - vs->fb_newest) > 0) {
+		vs->fb_newest = fb.newest_frame_id;
+		vs->fb_newest_set = true;
+		vs->last_progress_us = now_us ? now_us : 1;
+	}
 
 	/* frames the receiver has resolved since the last report: held, or given up */
 	if (vs->base_valid && (int32_t)(fb.held_base - vs->base) > 0) {
@@ -294,7 +332,13 @@ int vsend_on_packet(struct vsend *vs, const uint8_t *pkt, size_t len, uint64_t n
 			struct vs_frame *f = frame_for(vs, id);
 			if (held) {
 				vs->st.frames_held++;
-				if (f) f->held = true;
+				if (f) {
+					f->held = true;
+					if (f->first_send_us && now_us > f->first_send_us) {
+						uint64_t s = now_us - f->first_send_us;
+						vs->rtt_us = vs->rtt_us ? (vs->rtt_us * 7 + s) / 8 : s;
+					}
+				}
 			} else {
 				vs->st.frames_lost++;
 				if (f) f->lost = true;

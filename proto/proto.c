@@ -393,6 +393,7 @@ int proto_video_hdr_write(const struct proto_video_hdr *h, uint8_t *out, size_t 
 	w32(&w, h->frame_id);
 	w32(&w, h->ref_frame_id);
 	w64(&w, h->capture_us);
+	w32(&w, h->send_us);
 	w32(&w, h->frame_bytes);
 	w8(&w, h->epoch);
 	w8(&w, h->block_index);
@@ -411,6 +412,7 @@ int proto_video_hdr_read(const uint8_t *buf, size_t len, struct proto_video_hdr 
 	h->frame_id = r32(&r);
 	h->ref_frame_id = r32(&r);
 	h->capture_us = r64(&r);
+	h->send_us = r32(&r);
 	h->frame_bytes = r32(&r);
 	h->epoch = r8(&r);
 	h->block_index = r8(&r);

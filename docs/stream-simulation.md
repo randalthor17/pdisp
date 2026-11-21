@@ -59,3 +59,27 @@ in process: a simulated clock, a seeded generator, no sockets. It is the main re
 - The decoder is a model: it assumes a decoder that decodes exactly the frames it is given, with the references the sender
   signalled. Real MediaCodec behaviour is checked at M5.
 - Congestion control is intentionally simple. A stronger algorithm can replace `adapt()` without changing the wire format.
+
+## Found by the real loopback run (not by the simulation)
+
+The first run of `pdispd` and `pdisp-view` through the real compositor, encoder and sockets (`tests/m4_loopback_check.sh`)
+decoded 40 fps with 44 frames given up and a collapsed bitrate. Three causes, none of which the simulator showed:
+
+- **The delay signal included the sender's own encode time.** The one-way delay was measured from the frame's capture time,
+  so a 19 ms encode looked like network queueing and the controller cut the bitrate. Every video packet now carries `send_us`,
+  the sender's clock when the packet left the pacer, and the receiver measures network delay from that (video header is
+  32 bytes, overhead 64 bytes per 1200-byte shard).
+- **A doomed reference chain.** When an IDR is damaged, the sender keeps encoding on its newest frame, which it still thinks
+  is valid because the loss report has not arrived yet; the next report always lags the newest frame, so the chain never
+  breaks and nothing is ever decoded again. Reproduced in the simulation (10 Mbit/s cap with a 187 KB first IDR, zero frames
+  decoded in 13 s). `vsend_must_idr()` forces an IDR when too many frames are unresolved (more than 8, or about twice the
+  round trip in frames), with a 150 ms cooldown, and not while the receiver's newest frame id has stopped advancing (a dead
+  forward path, where a keyframe cannot help).
+- **The pacer sent one packet per wake-up.** The next send time was `max(next_due, now)`, so waking late forfeited the
+  accumulated credit; at millisecond timer granularity that caps the rate near 10 Mbit/s whatever the target. The pacer now
+  allows catching up by 2 ms of credit. The simulation now services the sender once per 500 us step like a real loop, so
+  this is tested.
+
+After the fixes, on the real pipeline (2304x1440 at 60 Hz, loopback, animated pattern, 10 s): 580 frames decoded at 58 fps,
+nothing given up, one IDR, 82 repair packets, capture-to-decode latency p50 20 ms, p99 31 ms (software decode averages
+7.75 ms per frame), decoded picture matching the pattern.

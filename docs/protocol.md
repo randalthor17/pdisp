@@ -80,7 +80,7 @@ extension TLVs (`u16 type, u16 length, value`); unknown TLVs are skipped, which 
     u32 refresh_mhz
     u8  codec                            1 = HEVC Main 8-bit
     u8  color_range, color_primaries, color_transfer, color_matrix    H.273 codes; v1: 0 (limited), 1, 13, 1
-    u16 shard_size                       bytes of video payload per UDP packet, at most max_udp_payload minus 60
+    u16 shard_size                       bytes of video payload per UDP packet, at most max_udp_payload minus 64
     u8  fec_percent                      initial parity overhead
     u32 bitrate_kbps, min_bitrate_kbps, max_bitrate_kbps
     u8  dpb_frames                       references the encoder retains (7 in v1, so up to 5 lost frames recover without an IDR)
@@ -130,7 +130,7 @@ because SETUP carries the real mode; the compositor modeset takes about a second
     u64 seq           per sender and per session, increments by one for every packet sent, never reused; used as the AEAD nonce
 
 Datagrams with a wrong `session_id`, an unknown `type`, or a `seq` already seen (replay window of 1024) are dropped.
-Maximum datagram size is `shard_size + 60`.
+Maximum datagram size is `shard_size + 64`.
 
 Example, a VIDEO packet header with session 0x11223344 and seq 1:
 `44 33 22 11 01 00 00 00 01 00 00 00 00 00 00 00`.
@@ -157,6 +157,7 @@ of the `data_shards + parity_shards` shards of a block reconstruct it.
     u32 frame_id        0, 1, 2, ... within the session; every encoded frame consumes one id (skipped captures do not)
     u32 ref_frame_id    the frame this one predicts from, or 0xFFFFFFFF for an IDR
     u64 capture_us      sender clock, microseconds, when the frame was captured
+    u32 send_us         low 32 bits of the sender clock when this packet left the pacer (delay measurement)
     u32 frame_bytes     length of the access unit without padding
     u8  epoch
     u8  block_index
@@ -211,7 +212,7 @@ oldest frames are given up.
     u8  nack_count
     ... per NACK: u32 frame_id, u8 block_index, u8 need     shards still missing to reconstruct that block
     u16 loss_permille          packets lost since the last report, after FEC
-    i32 queue_delay_us         queueing delay estimate: median recent one-way delay minus its minimum over about 2 s (clock offset cancels)
+    i32 queue_delay_us         queueing delay estimate: median recent one-way network delay (from each frame's first packet's `send_us`) minus its minimum over about 2 s (clock offset cancels)
     u32 recv_kbps              received rate over the report interval
     u32 jitter_us
     u16 decode_ms_x10          recent average decode time
@@ -318,7 +319,7 @@ seconds. Sent every second. Used to turn `capture_us` into glass-to-glass latenc
 
 ## 8. Decisions (settled in review)
 
-1. **Packet overhead**: kept as specified (60 bytes per 1200-byte shard, 5%). Compaction can come later as a version-1 TLV-free change
+1. **Packet overhead**: kept as specified (64 bytes per 1200-byte shard, 5.3%). Compaction can come later as a version-1 TLV-free change
    only if measurements show it matters.
 2. **FEC defaults**: 10% parity initially, adaptive between 0 and 30% from `loss_permille`.
 3. **Shard size**: 1200 bytes.

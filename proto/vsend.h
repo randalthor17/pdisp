@@ -24,6 +24,7 @@ struct vsend_config {
 	unsigned pace_factor_percent;  /* send rate as a percentage of the target bitrate, default 150 */
 	uint64_t keepalive_us;         /* KEEPALIVE after this long without video, default 100 ms */
 	uint64_t repair_gap_us;        /* minimum time between repairs for the same block, default 8 ms */
+	uint64_t pace_burst_us;        /* how far behind schedule the pacer may catch up in one go, default 2 ms */
 	uint32_t max_resend_bytes;     /* largest frame resent in answer to a whole-frame NACK, default 64 KiB */
 };
 
@@ -64,6 +65,16 @@ int vsend_on_packet(struct vsend *vs, const uint8_t *pkt, size_t len, uint64_t n
  * skips a capture before encoding when this is above about one frame interval. */
 size_t vsend_queued_bytes(const struct vsend *vs);
 uint64_t vsend_queue_delay_us(const struct vsend *vs);
+
+/* The reference chain can no longer be trusted: more frames are unresolved (neither confirmed held nor reported lost) than a
+ * healthy link would leave in flight, so the newest frames may all depend on a frame the receiver never got. The caller must
+ * then encode an IDR. Returns false for 150 ms after an IDR, so one keyframe is not followed by a storm of them, and while the receiver's newest
+ * frame id has not advanced for 100 ms, since a keyframe cannot get through a dead forward path. */
+bool vsend_must_idr(const struct vsend *vs, uint64_t now_us);
+
+/* Frames submitted but not yet resolved by the receiver, and the smoothed round trip (0 until measured). */
+unsigned vsend_unresolved(const struct vsend *vs);
+uint64_t vsend_rtt_us(const struct vsend *vs);
 
 /* Rate adaptation output: the encoder's target bitrate and the FEC overhead to use for the next frames. */
 uint32_t vsend_bitrate_kbps(const struct vsend *vs);

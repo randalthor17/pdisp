@@ -216,6 +216,7 @@ static void encode_frame(struct sim *s, uint32_t size_hint)
 	if (vsend_queue_delay_us(s->vs) > 20000) { s->m.frames_skipped++; return; }
 	uint32_t id = s->next_id;
 	if (id >= MAXFRAMES) return;
+	if (vsend_must_idr(s->vs, s->now)) s->need_idr = true; /* the reference chain may be doomed */
 	uint32_t ref = PROTO_NO_REF;
 	if (!s->need_idr)
 		for (uint32_t back = 1; back <= DPB_BACK && back <= id; back++)
@@ -294,14 +295,10 @@ static struct sim *run(const struct scenario *sc)
 		if (sc->decoder_break_us && !broke && s->now >= sc->decoder_break_us) { s->decoder_broken = true; broke = true; }
 
 		int n;
-		/* like a real event loop, wake the sender at each packet's due time, not just once per simulation step */
-		for (int guard = 0; guard < 64; guard++) {
-			uint64_t due = vsend_next_due_us(s->vs, s->now);
-			if (due >= s->now + 500) break;
-			n = vsend_next_packet(s->vs, due, buf, sizeof buf);
-			if (n <= 0) break;
-			link_send(&s->fwd, due, buf, (size_t)n);
-		}
+		/* A real event loop wakes at timer granularity, not at each packet's due time: the sender is serviced once per
+		 * 500 us step, and the pacer's burst allowance must let it keep up with its rate (it once sent one packet per
+		 * wake-up, about 10 Mbit/s whatever the target was). */
+		while ((n = vsend_next_packet(s->vs, s->now, buf, sizeof buf)) > 0) link_send(&s->fwd, s->now, buf, (size_t)n);
 		size_t len;
 		while (link_pop(&s->fwd, s->now, buf, &len)) vrecv_on_packet(s->vr, buf, len, s->now);
 		vrecv_tick(s->vr, s->now);
@@ -450,7 +447,7 @@ static void test_blackouts(void)
 	CHECK(s->m.corrupt == 0);
 	CHECK(s->m.first_display_after_us && s->m.first_display_after_us - sc2.probe_us < 100000);
 	CHECK(s->m.max_gap_us < 700000);
-	CHECK(s->m.idr_sent >= 2 && s->m.idr_sent <= 3); /* too long for any retained reference, but no IDR storm */
+	CHECK(s->m.idr_sent >= 2 && s->m.idr_sent <= 3); /* too long for any retained reference, but no IDR storm into a dead link */
 	destroy(s);
 }
 

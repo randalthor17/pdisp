@@ -66,6 +66,15 @@ int vdisplay_connect(struct vdisplay *vd, const uint8_t edid[EDID_SIZE], unsigne
 void vdisplay_disconnect(struct vdisplay *vd);
 bool vdisplay_is_connected(const struct vdisplay *vd);
 
+/* For callers with their own poll loop: the descriptor to wait on, and a non-blocking step that delivers every ready
+ * update and dispatches pending events. */
+int vdisplay_event_fd(const struct vdisplay *vd);
+void vdisplay_service(struct vdisplay *vd);
+
+/* The most recent screen contents, even if no update is pending (a static screen sends none). Returns false until the first
+ * update has been received. The pixels stay valid until the next update is grabbed. `rects` is not filled. */
+bool vdisplay_current_frame(const struct vdisplay *vd, struct vdisplay_frame *out);
+
 /* Run the event loop once: deliver every update that is ready, then wait up to `timeout_ms` for more events and
  * dispatch them. Returns early when events were handled. Call it repeatedly. */
 void vdisplay_pump(struct vdisplay *vd, int timeout_ms);

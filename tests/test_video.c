@@ -326,7 +326,7 @@ static void test_rejects(void)
 		CHECK(vtx_packet(&h, SESSION, s, 0, s, 0, pk, PKT) == (int)PKT);
 		if (s >= 3) { /* claim a frame size that needs only 3 shards while sending 5 */
 			uint32_t fb = 3000;
-			memcpy(pk + PROTO_PKT_HDR_SIZE + 16, &fb, 4);
+			memcpy(pk + PROTO_PKT_HDR_SIZE + 20, &fb, 4); /* frame_bytes follows send_us */
 		}
 		int rc = vrx_push(rx, pk, PKT, 0, &out);
 		if (rc == 1) done++;

@@ -54,6 +54,8 @@ struct vrecv {
 	/* link statistics for feedback */
 	uint64_t highest_seq, prev_highest_seq, got_in_interval, bytes_in_interval, last_fb_us;
 	bool have_seq;
+	bool owd_base_set;
+	uint32_t owd_base; /* first (arrival - send_us) difference: later samples are relative to it, so clocks need not agree */
 	struct owd samples[OWD_SAMPLES];
 	unsigned n_samples;
 	struct min_bucket buckets[MIN_BUCKETS];
@@ -232,15 +234,19 @@ static void resolve_pending(struct vrecv *vr)
 	advance_base(vr);
 }
 
-/* One-way delay of a frame's first packet: pure queueing (no pacing spread, no repair wait). */
-static void add_owd_sample(struct vrecv *vr, uint64_t now_us, uint64_t capture_us)
+/* One-way delay of a frame's first packet, from the sender's send time stamped on the packet: pure network queueing (no
+ * encode time, no pacing wait, no repair wait). Only changes in it matter, so it is relative to the first sample. */
+static void add_owd_sample(struct vrecv *vr, uint64_t now_us, uint32_t send_us)
 {
+	uint32_t d = (uint32_t)now_us - send_us;
+	if (!vr->owd_base_set) { vr->owd_base = d; vr->owd_base_set = true; }
+	int64_t rel = (int32_t)(d - vr->owd_base);
 	if (vr->n_samples < OWD_SAMPLES) vr->n_samples++;
 	memmove(vr->samples + 1, vr->samples, (OWD_SAMPLES - 1) * sizeof *vr->samples);
-	vr->samples[0] = (struct owd){ now_us, (int64_t)now_us - (int64_t)capture_us };
+	vr->samples[0] = (struct owd){ now_us, rel };
 	struct min_bucket *b = &vr->buckets[(now_us / 100000) % MIN_BUCKETS];
-	if (!b->used || b->id != now_us / 100000) *b = (struct min_bucket){ now_us / 100000, vr->samples[0].owd_us, true };
-	else if (vr->samples[0].owd_us < b->min_owd) b->min_owd = vr->samples[0].owd_us;
+	if (!b->used || b->id != now_us / 100000) *b = (struct min_bucket){ now_us / 100000, rel, true };
+	else if (rel < b->min_owd) b->min_owd = rel;
 }
 
 static void on_complete(struct vrecv *vr, const struct vrx_frame *f, uint64_t now_us)
@@ -302,7 +308,7 @@ int vrecv_on_packet(struct vrecv *vr, const uint8_t *pkt, size_t len, uint64_t n
 	    proto_video_hdr_read(pkt + PROTO_PKT_HDR_SIZE, len - PROTO_PKT_HDR_SIZE, &vh) != 0)
 		return -EINVAL;
 	note_frame(vr, vh.frame_id, now_us);
-	if (vh.block_index == 0 && vh.shard_index == 0 && !(h.flags & PROTO_PKT_FLAG_REPAIR)) add_owd_sample(vr, now_us, vh.capture_us);
+	if (vh.block_index == 0 && vh.shard_index == 0 && !(h.flags & PROTO_PKT_FLAG_REPAIR)) add_owd_sample(vr, now_us, vh.send_us);
 	struct entry *e = ent(vr, vh.frame_id);
 	if (!e->used || e->id != vh.frame_id) return 0; /* older than everything resolved */
 	e->seen_packet = true;

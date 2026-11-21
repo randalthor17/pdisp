@@ -107,7 +107,7 @@ test('loss recovery', find_program('tests/loss_recovery_check.sh'),
   timeout: 120,
   suite: 'integration')
 
-proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', include_directories: inc)
+proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', include_directories: inc)
 proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
 test_proto = executable('test_proto', 'tests/test_proto.c', dependencies: proto_dep)
 test('proto wire format', test_proto)
@@ -117,3 +117,16 @@ test_video = executable('test_video', 'tests/test_video.c', dependencies: proto_
 test('video packetiser and reassembler', test_video, timeout: 120)
 test_stream = executable('test_stream', 'tests/test_stream.c', dependencies: proto_dep)
 test('video stream over a simulated link', test_stream, timeout: 300)
+
+# the daemon and the desktop test client
+pdispd = executable('pdispd', 'daemon/pdispd.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep])
+libav_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libswscale')]
+pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads')] + libav_deps)
+
+m4_loopback = find_program('tests/m4_loopback_check.sh')
+test('m4 loopback through the real pipeline', m4_loopback,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm4-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
+  suite: 'integration')

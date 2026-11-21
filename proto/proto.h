@@ -143,9 +143,9 @@ enum proto_pkt_type {
 };
 
 #define PROTO_PKT_HDR_SIZE 16
-#define PROTO_VIDEO_HDR_SIZE 28
+#define PROTO_VIDEO_HDR_SIZE 32
 #define PROTO_AEAD_TAG_SIZE 16
-#define PROTO_PKT_OVERHEAD (PROTO_PKT_HDR_SIZE + PROTO_VIDEO_HDR_SIZE + PROTO_AEAD_TAG_SIZE) /* 60 */
+#define PROTO_PKT_OVERHEAD (PROTO_PKT_HDR_SIZE + PROTO_VIDEO_HDR_SIZE + PROTO_AEAD_TAG_SIZE) /* 64 */
 #define PROTO_NO_REF 0xffffffffu /* ref_frame_id of an IDR */
 
 enum { PROTO_PKT_FLAG_REPAIR = 1 };
@@ -162,6 +162,7 @@ struct proto_video_hdr {
 	uint32_t frame_id;
 	uint32_t ref_frame_id;
 	uint64_t capture_us;
+	uint32_t send_us; /* low 32 bits of the sender's clock when this packet left the pacer; the receiver only uses differences */
 	uint32_t frame_bytes;
 	uint8_t epoch;
 	uint8_t block_index, block_count;

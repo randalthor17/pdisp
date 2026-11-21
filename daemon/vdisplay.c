@@ -168,6 +168,28 @@ static void dispatch(struct vdisplay *vd)
 	evdi_handle_events(vd->handle, &ctx);
 }
 
+bool vdisplay_current_frame(const struct vdisplay *vd, struct vdisplay_frame *out)
+{
+	if (!vd->have_buffer || vd->seq == 0) return false;
+	memset(out, 0, sizeof *out);
+	out->data = vd->pixels;
+	out->width = vd->buffer.width;
+	out->height = vd->buffer.height;
+	out->stride = vd->buffer.stride;
+	out->seq = vd->seq;
+	return true;
+}
+
+int vdisplay_event_fd(const struct vdisplay *vd)
+{
+	return evdi_get_event_ready(vd->handle);
+}
+
+void vdisplay_service(struct vdisplay *vd)
+{
+	vdisplay_pump(vd, 0);
+}
+
 void vdisplay_pump(struct vdisplay *vd, int timeout_ms)
 {
 	struct pollfd pfd = { .fd = evdi_get_event_ready(vd->handle), .events = POLLIN };

@@ -61,6 +61,12 @@ static void load_data_shard(const struct vtx_frame *f, unsigned index, uint8_t *
 int vtx_packet(const struct vtx_frame *f, uint32_t session_id, uint64_t seq, unsigned block, unsigned shard,
 	       uint8_t pkt_flags, uint8_t *out, size_t cap)
 {
+	return vtx_packet_at(f, session_id, seq, 0, block, shard, pkt_flags, out, cap);
+}
+
+int vtx_packet_at(const struct vtx_frame *f, uint32_t session_id, uint64_t seq, uint32_t send_us, unsigned block, unsigned shard,
+		  uint8_t pkt_flags, uint8_t *out, size_t cap)
+{
 	if (block >= f->block_count || shard > FEC_MAX_INDEX) return -EINVAL;
 	const unsigned k = f->blocks[block].data_shards;
 	const size_t total = PROTO_PKT_HDR_SIZE + PROTO_VIDEO_HDR_SIZE + f->shard_size;
@@ -68,7 +74,7 @@ int vtx_packet(const struct vtx_frame *f, uint32_t session_id, uint64_t seq, uns
 
 	struct proto_pkt_hdr ph = { .session_id = session_id, .type = PROTO_PKT_VIDEO, .flags = pkt_flags, .seq = seq };
 	struct proto_video_hdr vh = { .frame_id = f->frame_id, .ref_frame_id = f->ref_frame_id, .capture_us = f->capture_us,
-				      .frame_bytes = f->size, .epoch = f->epoch, .block_index = (uint8_t)block,
+				      .send_us = send_us, .frame_bytes = f->size, .epoch = f->epoch, .block_index = (uint8_t)block,
 				      .block_count = (uint8_t)f->block_count, .shard_index = (uint8_t)shard,
 				      .data_shards = (uint8_t)k, .parity_shards = f->blocks[block].parity_shards,
 				      .vflags = f->vflags };

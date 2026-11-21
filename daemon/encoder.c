@@ -46,6 +46,7 @@ struct encoder {
 		int poc;
 	} pics[NUM_RECON];     /* the picture in recon[i] */
 	bool force_idr_next;   /* every retained picture was invalidated */
+	bool rc_dirty;         /* the bitrate changed: send new rate control parameters with the next picture */
 
 	uint8_t *out;
 	size_t out_cap;
@@ -129,6 +130,29 @@ static int create_misc(struct encoder *e, VAEncMiscParameterType type, const voi
 	memcpy(p->data, payload, len);
 	VA_OK(vaUnmapBuffer(e->dpy, *id));
 	return 0;
+}
+
+static unsigned level_idc(unsigned w, unsigned h, unsigned fps);
+
+static struct hevc_params make_hevc_params(const struct encoder *e)
+{
+	return (struct hevc_params){ .width = e->cfg.width, .height = e->cfg.height, .fps = e->cfg.fps,
+				     .level_idc = level_idc(e->cfg.width, e->cfg.height, e->cfg.fps), .init_qp = 26,
+				     .dpb_size = NUM_RECON, .full_range = false, .colour_primaries = 1,
+				     .transfer_characteristics = 13, .matrix_coefficients = 1 };
+}
+
+size_t encoder_parameter_sets(const struct encoder *e, uint8_t *out, size_t cap)
+{
+	struct hevc_params hp = make_hevc_params(e);
+	return hevc_write_parameter_sets(&hp, out, cap);
+}
+
+void encoder_set_bitrate(struct encoder *e, unsigned bitrate_kbps)
+{
+	if (bitrate_kbps == 0 || bitrate_kbps == e->cfg.bitrate_kbps) return;
+	e->cfg.bitrate_kbps = bitrate_kbps;
+	e->rc_dirty = true;
 }
 
 static unsigned level_idc(unsigned w, unsigned h, unsigned fps)
@@ -348,6 +372,24 @@ static int encode_picture(struct encoder *e, bool idr, int cur_slot, const struc
 		seq.max_transform_hierarchy_depth_intra = 3;
 		if (create_buffer(e, e->enc_ctx, VAEncSequenceParameterBufferType, sizeof seq, &seq, &bufs[nb++])) return -EIO;
 
+		VAEncMiscParameterFrameRate fr;
+		memset(&fr, 0, sizeof fr);
+		fr.framerate = e->cfg.fps;
+		if (create_misc(e, VAEncMiscParameterTypeFrameRate, &fr, sizeof fr, &bufs[nb++])) return -EIO;
+
+		/* VPS, SPS and PPS: the driver does not write them, so they travel as a packed sequence header */
+		struct hevc_params hp = make_hevc_params(e);
+		uint8_t ps[512];
+		size_t ps_len = hevc_write_parameter_sets(&hp, ps, sizeof ps);
+		if (!ps_len) return -EINVAL;
+		VAEncPackedHeaderParameterBuffer ph = { .type = VAEncPackedHeaderSequence, .bit_length = (uint32_t)(ps_len * 8),
+							.has_emulation_bytes = 1 };
+		if (create_buffer(e, e->enc_ctx, VAEncPackedHeaderParameterBufferType, sizeof ph, &ph, &bufs[nb++])) return -EIO;
+		if (create_buffer(e, e->enc_ctx, VAEncPackedHeaderDataBufferType, (unsigned)ps_len, ps, &bufs[nb++])) return -EIO;
+	}
+
+	if (idr || e->rc_dirty) {
+		/* rate control and the HRD buffer: with every IDR, and whenever the target bitrate changes */
 		VAEncMiscParameterRateControl rc;
 		memset(&rc, 0, sizeof rc);
 		rc.bits_per_second = e->cfg.bitrate_kbps * 1000;
@@ -363,22 +405,7 @@ static int encode_picture(struct encoder *e, bool idr, int cur_slot, const struc
 		hrd.initial_buffer_fullness = hrd.buffer_size / 2;
 		if (create_misc(e, VAEncMiscParameterTypeHRD, &hrd, sizeof hrd, &bufs[nb++])) return -EIO;
 
-		VAEncMiscParameterFrameRate fr;
-		memset(&fr, 0, sizeof fr);
-		fr.framerate = e->cfg.fps;
-		if (create_misc(e, VAEncMiscParameterTypeFrameRate, &fr, sizeof fr, &bufs[nb++])) return -EIO;
-
-		/* VPS, SPS and PPS: the driver does not write them, so they travel as a packed sequence header */
-		struct hevc_params hp = { .width = w, .height = h, .fps = e->cfg.fps, .level_idc = seq.general_level_idc,
-					  .init_qp = 26, .dpb_size = NUM_RECON, .full_range = false, .colour_primaries = 1,
-					  .transfer_characteristics = 13, .matrix_coefficients = 1 };
-		uint8_t ps[512];
-		size_t ps_len = hevc_write_parameter_sets(&hp, ps, sizeof ps);
-		if (!ps_len) return -EINVAL;
-		VAEncPackedHeaderParameterBuffer ph = { .type = VAEncPackedHeaderSequence, .bit_length = (uint32_t)(ps_len * 8),
-							.has_emulation_bytes = 1 };
-		if (create_buffer(e, e->enc_ctx, VAEncPackedHeaderParameterBufferType, sizeof ph, &ph, &bufs[nb++])) return -EIO;
-		if (create_buffer(e, e->enc_ctx, VAEncPackedHeaderDataBufferType, (unsigned)ps_len, ps, &bufs[nb++])) return -EIO;
+		e->rc_dirty = false;
 	}
 
 	VAPictureHEVC invalid = { .picture_id = VA_INVALID_ID, .flags = VA_PICTURE_HEVC_INVALID };

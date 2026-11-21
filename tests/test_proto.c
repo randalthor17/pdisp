@@ -55,13 +55,13 @@ static void test_vectors(void)
 					     0x00, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00 };
 	CHECK(bytes_equal(b, proto_keepalive_encode(&ka, b, sizeof b), want_ka, sizeof want_ka));
 
-	/* VIDEO header: frame 5 predicting from 4, 1000 us, 3000 bytes, epoch 1, block 0 of 1, shard 2 of 3+1, IDR */
-	struct proto_video_hdr v = { .frame_id = 5, .ref_frame_id = 4, .capture_us = 1000, .frame_bytes = 3000, .epoch = 1,
+	/* VIDEO header: frame 5 predicting from 4, captured at 1000 us, sent at 2000 us, 3000 bytes, epoch 1, block 0 of 1, shard 2 of 3+1, IDR */
+	struct proto_video_hdr v = { .frame_id = 5, .ref_frame_id = 4, .capture_us = 1000, .send_us = 2000, .frame_bytes = 3000, .epoch = 1,
 				     .block_index = 0, .block_count = 1, .shard_index = 2, .data_shards = 3,
 				     .parity_shards = 1, .vflags = PROTO_VFLAG_IDR };
-	static const uint8_t want_v[28] = { 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xe8, 0x03, 0x00, 0x00,
-					    0x00, 0x00, 0x00, 0x00, 0xb8, 0x0b, 0x00, 0x00, 0x01, 0x00, 0x01, 0x02,
-					    0x03, 0x01, 0x01, 0x00 };
+	static const uint8_t want_v[32] = { 0x05, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0xe8, 0x03, 0x00, 0x00,
+					    0x00, 0x00, 0x00, 0x00, 0xd0, 0x07, 0x00, 0x00, 0xb8, 0x0b, 0x00, 0x00,
+					    0x01, 0x00, 0x01, 0x02, 0x03, 0x01, 0x01, 0x00 };
 	CHECK(bytes_equal(b, proto_video_hdr_write(&v, b, sizeof b), want_v, sizeof want_v));
 
 	/* INPUT with one event: seq 7, down, pointer 1, finger, x 0x8000, y 0x4000, pressure 0xffff, tilt -1/5, t 0x1000 */
@@ -187,7 +187,7 @@ static void test_roundtrips(void)
 
 	struct proto_video_hdr v, v2;
 	memset(&v, 0, sizeof v);
-	v.frame_id = 70000; v.ref_frame_id = PROTO_NO_REF; v.capture_us = 0x123456789abcdefull; v.frame_bytes = 250000;
+	v.frame_id = 70000; v.ref_frame_id = PROTO_NO_REF; v.capture_us = 0x123456789abcdefull; v.send_us = 0xfedcba98u; v.frame_bytes = 250000;
 	v.epoch = 2; v.block_index = 1; v.block_count = 2; v.shard_index = 200; v.data_shards = 200; v.parity_shards = 55;
 	v.vflags = PROTO_VFLAG_IDR | PROTO_VFLAG_NEW_EPOCH;
 	n = proto_video_hdr_write(&v, b, sizeof b);

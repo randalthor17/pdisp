@@ -32,6 +32,7 @@
           wayland
           wayland-protocols
           zlib
+          ffmpeg-headless
         ];
       };
     };

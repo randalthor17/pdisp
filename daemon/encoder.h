@@ -42,6 +42,13 @@ struct encoder_packet {
 /* Returns 0, or -errno / -EIO. `*out` is set on success. */
 int encoder_open(const struct encoder_config *cfg, struct encoder **out);
 
+/* The VPS, SPS and PPS the stream uses (Annex B), for the receiver's decoder configuration. Returns the length, or 0 if
+ * `cap` is too small. */
+size_t encoder_parameter_sets(const struct encoder *enc, uint8_t *out, size_t cap);
+
+/* Changes the target bitrate (CBR rate, or the VBR peak) from the next frame on. */
+void encoder_set_bitrate(struct encoder *enc, unsigned bitrate_kbps);
+
 /* Name of the VA driver in use, for logs. */
 const char *encoder_description(const struct encoder *enc);
 
