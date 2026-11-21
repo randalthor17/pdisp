@@ -107,7 +107,7 @@ test('loss recovery', find_program('tests/loss_recovery_check.sh'),
   timeout: 120,
   suite: 'integration')
 
-proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', include_directories: inc)
+proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', 'proto/usbmux.c', include_directories: inc)
 proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
 test_proto = executable('test_proto', 'tests/test_proto.c', dependencies: proto_dep)
 test('proto wire format', test_proto)
@@ -141,6 +141,9 @@ test('m4 netem loss jitter and bandwidth caps', m4_netem,
 
 test_timesync = executable('test_timesync', 'tests/test_timesync.c', dependencies: proto_dep)
 test('clock offset estimator', test_timesync)
+
+test_usbmux = executable('test_usbmux', 'tests/test_usbmux.c', dependencies: [proto_dep, dependency('threads')])
+test('usbmux over a byte pipe', test_usbmux)
 
 test('m4 clock sync with a skewed viewer clock', m4_loopback,
   args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm4-skew-artifacts', '-K', '7654321'],

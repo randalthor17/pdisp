@@ -19,8 +19,11 @@ All integers are little-endian. "PC" is the daemon, "phone" is the Android app (
   UDP address from that packet (firewall and NAT friendly) and answers from the same socket.
 - Control is low volume and reliable, so TCP head-of-line blocking does not matter. Video, input and feedback are
   loss-tolerant and latency-critical, so they never share a TCP stream.
-- Over AOA (USB), both channels are carried on the reliable bulk endpoints: control messages and UDP packets are each
-  prefixed with a `u16` length. FEC, NACK and retransmission stay idle there (the receiver still acknowledges frames).
+- Over AOA (USB), both channels share the one reliable bulk pipe pair, as link frames `u32 length` (little-endian, bytes after
+  this field), `u8 kind` (0 = control stream bytes, chunked as read; 1 = one datagram), payload (`proto/usbmux.c`). Each side
+  turns them back into a stream socket and a datagram socket, so everything above the transport is unchanged. FEC, NACK and
+  retransmission have nothing to repair there but keep working (the receiver still acknowledges frames). The first datagram
+  from the phone (HELLO_UDP) and READY are sent as on Wi-Fi.
 - Security (milestone M6) wraps both channels: a handshake authenticated by the phone's key, then per-packet
   authenticated encryption on UDP (section 3.4). Milestone M4 uses a `security = none` mode that exists for development only.
 
