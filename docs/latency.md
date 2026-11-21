@@ -93,3 +93,31 @@ The daemon's stats line now also shows the worst queue delay, decode time and lo
 
 Still open on the tablet: the decoder's periodic 100+ ms stalls (not the cause of the collapse above), and a hang reported with the S Pen side
 button (docs/touch.md).
+
+
+### Tablet decoder stalls: the operating rate (2026-11-22)
+Cause of the periodic 100-150 ms stalls on the Tab S9 FE (Exynos `c2.exynos.hevc.decoder`): not our receive loop (it collects pictures every 3-8 ms; `SLOW`
+log lines say so) but the decoder itself, which held up to 4 frames in flight at 60-70 ms each. At 1440x2304 and 60 fps it ran with no headroom,
+because the app asked for `operating-rate` 120, which the tablet refuses ("Failed to get real time resource"), and then dropped the rate
+altogether. The operating rate is how the vendor clocks the decoder, and a rate the hardware can reserve makes a large difference
+(heavy 60 fps pattern, steady state, over USB):
+
+| operating rate | started? | decode p50 / p95 / p99 | frames > 60 ms |
+|---|---|---|---|
+| none (120 refused) | priority only | 19-22 / 57-69 / 70-80 ms | 60+ per minute |
+| 60 | yes | 20 / 47-69 / 71-79 ms | 60+ |
+| 90 | yes | 14.6 / 22 / 24-27 ms | 0 |
+| 100 | yes | 13.3-15 / 17-21 / 18-27 ms | 0 |
+| 110, 120 | refused | as "none" | |
+
+Now the app tries 120, 110, 100, 90, 80, 70 and keeps the highest the decoder accepts (this tablet: 100); under real content decode is p50 15-16,
+p99 27-35 ms and no slow frames. Two details that matter:
+- Rates are probed with throwaway decoders that have **no display surface**, then the real decoder is created once. A start that fails with the real
+  Surface attached leaves the next decoder dead (it never delivers a picture; seen after two refusals, 120 and 110, then a success at 100).
+- `setprop debug.pdisp.oprate N` forces one rate (-1 = the ladder, 0 = none) for experiments.
+Not checked: the Pixel with the new ladder (it accepted 120 on the first try before, so it should be unchanged).
+
+### Reconnecting after the app is restarted over USB
+The first connection after the app was force-stopped sometimes fails its handshake ("Connection timed out", or "the PC does not use the secure
+protocol", probably bytes left over from the previous session in the pipe) and succeeds on the retry about 10 s later. The EPROTO case used to
+end the session for good; over USB it is now retried. Why the first attempt fails is not understood yet.

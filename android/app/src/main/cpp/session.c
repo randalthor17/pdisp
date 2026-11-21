@@ -15,6 +15,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <pthread.h>
+#include <sys/system_properties.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -61,6 +62,7 @@ struct session {
 	AMediaCodec *codec;
 	atomic_bool decoder_failed;
 	uint64_t decoded, rendered, input_refused, dropped_in_drain;
+	uint64_t last_drain_us, outputs, slow_logged; /* for the slow-frame log */
 	uint64_t frame_ns, next_slot_ns; /* the presentation grid: one slot per frame interval */
 
 	/* render cadence: intervals between presented pictures, for the periodic report */
@@ -152,7 +154,7 @@ static void close_codec(struct session *s)
 
 /* Tries to start a decoder for a stream: the parameter sets go in as codec-specific data, output goes to the window.
  * `hints` asks for real-time scheduling, which some vendors (Exynos) refuse; the caller then retries without. */
-static int try_codec(struct session *s, const struct proto_stream_params *p, int hints)
+static int try_codec(struct session *s, const struct proto_stream_params *p, int hints, int rate, bool probe)
 {
 	AMediaFormat *f = AMediaFormat_new();
 	AMediaFormat_setString(f, AMEDIAFORMAT_KEY_MIME, "video/hevc");
@@ -161,26 +163,40 @@ static int try_codec(struct session *s, const struct proto_stream_params *p, int
 	AMediaFormat_setBuffer(f, "csd-0", p->param_sets, p->param_sets_len);
 	AMediaFormat_setInt32(f, "low-latency", 1); /* no output reordering delay */
 	if (hints & 1) AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_PRIORITY, 0); /* real-time */
-	if (hints & 2) AMediaFormat_setInt32(f, "operating-rate", 120);        /* clocks the decoder for this many frames a second */
+	if ((hints & 2) && rate > 0) AMediaFormat_setInt32(f, "operating-rate", rate); /* clocks the decoder for this many frames a second */
 	s->codec = AMediaCodec_createDecoderByType("video/hevc");
 	if (!s->codec) { AMediaFormat_delete(f); LOGE("no HEVC decoder"); return -1; }
-	media_status_t st = AMediaCodec_configure(s->codec, f, s->window, NULL, 0);
+	media_status_t st = AMediaCodec_configure(s->codec, f, probe ? NULL : s->window, NULL, 0);
 	AMediaFormat_delete(f);
 	if (st == AMEDIA_OK) st = AMediaCodec_start(s->codec);
-	if (st != AMEDIA_OK) { LOGE("cannot start the decoder (hints %d): %d", hints, (int)st); close_codec(s); return -1; }
+	if (st != AMEDIA_OK) { LOGI("decoder refused hints %d rate %d: %d", hints, rate, (int)st); close_codec(s); return -1; }
+	if (probe) close_codec(s); /* it only had to start */
 	return 0;
 }
 
 static int open_codec(struct session *s, const struct proto_stream_params *p)
 {
 	close_codec(s);
-	/* vendors accept different subsets of the real-time hints (Exynos refuses the priority): take the most we can get */
-	static const int order[] = { 3, 2, 1, 0 };
-	int ok = -1;
-	for (unsigned i = 0; i < sizeof order / sizeof order[0] && ok < 0; i++)
-		if (try_codec(s, p, order[i]) == 0) ok = order[i];
+	/* The operating rate tells the decoder how fast to clock itself, and it matters a great deal: a 1440x2304 stream at 60 fps decoded in
+	 * 20 ms (p95 60-70 ms, with 4 frames in flight) on a Galaxy Tab S9 FE with no rate, and 14 ms (p95 22 ms) with 90-100. But vendors refuse
+	 * a rate above what they can reserve in real time (that tablet: 110 and 120 fail, 100 works), so ask for the highest and step down.
+	 * The priority hint (real-time) is separate; some vendors refuse that too. `setprop debug.pdisp.oprate N` forces one rate (experiments). */
+	static const int ladder[] = { 120, 110, 100, 90, 80, 70 };
+	char v[PROP_VALUE_MAX] = "";
+	int forced = __system_property_get("debug.pdisp.oprate", v) > 0 ? atoi(v) : -1;
+	int ok = -1, ok_rate = 0;
+	/* Which rates start is found with throwaway decoders that have no display surface: a start that fails with the real Surface attached
+	 * leaves the decoder that follows it dead (no picture is ever delivered; measured on the Tab S9 FE after two refusals). */
+	if (forced > 0) {
+		if (try_codec(s, p, 3, forced, true) == 0 && try_codec(s, p, 3, forced, false) == 0) { ok = 3; ok_rate = forced; }
+	} else if (forced < 0) {
+		for (unsigned i = 0; i < sizeof ladder / sizeof ladder[0] && ok < 0; i++)
+			if (try_codec(s, p, 3, ladder[i], true) == 0 && try_codec(s, p, 3, ladder[i], false) == 0) { ok = 3; ok_rate = ladder[i]; }
+	}
+	if (ok < 0 && try_codec(s, p, 1, 0, true) == 0 && try_codec(s, p, 1, 0, false) == 0) ok = 1;
+	if (ok < 0 && try_codec(s, p, 0, 0, false) == 0) ok = 0;
 	if (ok < 0) return -1;
-	LOGI("decoder started with hints %d (1 = priority, 2 = operating rate)", ok);
+	LOGI("decoder started: real-time priority %s, operating rate %d", (ok & 1) ? "yes" : "no", ok_rate);
 	atomic_store(&s->decoder_failed, false);
 	s->frame_ns = p->refresh_mhz ? 1000000000000ull / p->refresh_mhz : 16666667;
 	s->next_slot_ns = 0;
@@ -243,6 +259,8 @@ static void drain_output(struct session *s)
 {
 	if (!s->codec) return;
 	AMediaCodecBufferInfo info;
+	uint64_t drain_now_us = net_now_us(), since_drain_us = s->last_drain_us ? drain_now_us - s->last_drain_us : 0;
+	s->last_drain_us = drain_now_us;
 	for (int guard = 0; guard < 16; guard++) {
 		ssize_t idx = AMediaCodec_dequeueOutputBuffer(s->codec, &info, 0);
 		if (idx == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED || idx == AMEDIACODEC_INFO_OUTPUT_BUFFERS_CHANGED) continue;
@@ -254,7 +272,14 @@ static void drain_output(struct session *s)
 		}
 		for (unsigned k = 0; k < 64; k++) /* when did this picture go in? */
 			if (s->in_pts[k] == (uint64_t)info.presentationTimeUs && s->in_time_us[k]) {
-				if (s->n_dec < 1024) s->dec_us[s->n_dec++] = (uint32_t)(net_now_us() - s->in_time_us[k]);
+				uint32_t took = (uint32_t)(net_now_us() - s->in_time_us[k]);
+				if (s->n_dec < 1024) s->dec_us[s->n_dec++] = took;
+				s->outputs++;
+				if (took > 60000 && s->slow_logged < 60) { /* which is slow: the decoder, or whoever collects its pictures? */
+					s->slow_logged++;
+					LOGI("SLOW decode %.1f ms, previous drain %.1f ms ago, %llu frames in flight", took / 1000.0, since_drain_us / 1000.0,
+					     (unsigned long long)(s->decoded - s->outputs));
+				}
 				s->in_time_us[k] = 0;
 				break;
 			}
@@ -355,7 +380,13 @@ static void *run(void *arg)
 		set_status(s, "securing the connection");
 		e = hs_initiate(&ctl, &id, s->name, 10000, &pc, &udp);
 		pc_wipe(&id, sizeof id);
-		if (e == -EPROTO) { set_status(s, "the PC does not use the secure protocol: update pdispd"); atomic_store(&s->end_kind, 2); goto out; }
+		if (e == -EPROTO) {
+			set_status(s, "the PC does not use the secure protocol: update pdispd");
+			/* Over USB the first bytes after a reconnect can be left over from the previous session (seen after the app was restarted):
+			 * the next attempt starts clean, so retry. Over the network a PC that does not speak the protocol will not start to. */
+			atomic_store(&s->end_kind, s->usb_fd >= 0 ? 1 : 2);
+			goto out;
+		}
 		if (e) { set_status(s, "the secure handshake failed: %s", strerror(-e)); goto out; }
 		snprintf(pcs_path, sizeof pcs_path, "%s/known_pcs", s->identity_dir);
 		new_pc = keystore_find(pcs_path, pc.pub, NULL, 0) <= 0;
