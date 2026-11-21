@@ -4,7 +4,9 @@
  *   pdisp-touch-demo W H [-d DPI] [-w SECS] [-s SCRIPT]
  *
  * SCRIPT is a list of steps separated by spaces: tap:X,Y (a finger down and up at the fraction X,Y of the screen, 0..1),
- * swipe:X1,Y1:X2,Y2, pinch:CX,CY:R1:R2 (two fingers around CX,CY moving from distance R1 to R2), hold:MS. The default is one tap in the
+ * swipe:X1,Y1:X2,Y2, pinch:CX,CY:R1:R2 (two fingers around CX,CY moving from distance R1 to R2), hold:MS, and with the stylus:
+ * pen:X1,Y1:X2,Y2 (hover, press, a stroke with rising pressure, lift, leave), erase:X1,Y1:X2,Y2 (the same with the eraser end), pencil:X,Y
+ * (hover only, then leave). The default is one tap in the
  * middle. Prints "injected ..." for each step. Waits SECS (default 1) before the first one so a client can set itself up.
  */
 #include <stdio.h>
@@ -15,8 +17,18 @@
 
 #include "touch.h"
 
+static struct pendev *pen;
+
 static void nap(int ms) { nanosleep(&(struct timespec){ ms / 1000, (ms % 1000) * 1000000L }, NULL); }
 static uint16_t n16(double f) { return (uint16_t)(f < 0 ? 0 : f > 1 ? 65535 : f * 65535 + 0.5); }
+
+static void stylus(uint8_t tool, uint8_t kind, double x, double y, double pressure, int8_t tilt)
+{
+	struct proto_input_event e;
+	memset(&e, 0, sizeof e);
+	e.kind = kind; e.tool = tool; e.x = n16(x); e.y = n16(y); e.pressure = n16(pressure); e.tilt_x = tilt; e.tilt_y = (int8_t)-tilt;
+	pen_event(pen, &e);
+}
 
 static void send(struct touchdev *t, uint8_t kind, uint8_t id, double x, double y)
 {
@@ -41,7 +53,10 @@ int main(int argc, char **argv)
 	struct touchdev *t;
 	int r = touch_open(&cfg, &t);
 	if (r) { fprintf(stderr, "cannot create the touch device: %s\n", strerror(-r)); return 1; }
-	printf("created a %ux%u touchscreen\n", w, h);
+	struct pen_config pc = { .name = "pdisp stylus", .width = w, .height = h, .dpi = dpi };
+	r = pen_open(&pc, &pen);
+	if (r) { fprintf(stderr, "cannot create the pen device: %s\n", strerror(-r)); return 1; }
+	printf("created a %ux%u touchscreen and pen tablet\n", w, h);
 	fflush(stdout);
 	nap((int)(wait * 1000));
 
@@ -62,6 +77,17 @@ int main(int argc, char **argv)
 				nap(8); send(t, PROTO_IN_MOVE, 0, a - rr, b); send(t, PROTO_IN_MOVE, 1, a + rr, b);
 			}
 			send(t, PROTO_IN_UP, 0, a - d, b); send(t, PROTO_IN_UP, 1, a + d, b);
+		} else if (sscanf(step, "pen:%lf,%lf:%lf,%lf", &a, &b, &c, &d) == 4 || sscanf(step, "erase:%lf,%lf:%lf,%lf", &a, &b, &c, &d) == 4) {
+			uint8_t tool = step[0] == 'e' ? PROTO_TOOL_ERASER : PROTO_TOOL_STYLUS;
+			stylus(tool, PROTO_IN_HOVER, a, b, 0.5, 20); nap(40);
+			stylus(tool, PROTO_IN_DOWN, a, b, 0.1, 20);
+			for (int i = 1; i <= 20; i++) { nap(8); stylus(tool, PROTO_IN_MOVE, a + (c - a) * i / 20, b + (d - b) * i / 20, 0.1 + 0.9 * i / 20, 20 + i); }
+			stylus(tool, PROTO_IN_UP, c, d, 0, 40); nap(40);
+			stylus(tool, PROTO_IN_CANCEL, c, d, 0, 0);
+		} else if (sscanf(step, "pencil:%lf,%lf", &a, &b) == 2) {
+			stylus(PROTO_TOOL_STYLUS, PROTO_IN_HOVER, a, b, 0.2, 0); nap(100);
+			stylus(PROTO_TOOL_STYLUS, PROTO_IN_HOVER, a + 0.01, b, 0.1, 0); nap(100);
+			stylus(PROTO_TOOL_STYLUS, PROTO_IN_CANCEL, a, b, 0, 0);
 		} else if (sscanf(step, "hold:%d", &ms) == 1) {
 			nap(ms);
 			continue;
@@ -73,5 +99,6 @@ int main(int argc, char **argv)
 	free(copy);
 	nap(500);
 	touch_close(t);
+	pen_close(pen);
 	return 0;
 }

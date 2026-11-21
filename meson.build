@@ -221,3 +221,6 @@ test('m8 touch reaches the virtual output', m8_touch,
   suite: 'integration')
 
 pdisp_evdump = executable('pdisp-evdump', 'tools/pdisp-evdump.c')
+
+test_inputdev = executable('test_inputdev', 'tests/test_inputdev.c', 'daemon/touch.c', dependencies: proto_dep)
+test('touchscreen and pen devices', test_inputdev)
