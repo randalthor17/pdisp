@@ -13,4 +13,5 @@ object PdispNative {
 
     external fun nativeStop(handle: Long)
     external fun nativeStatus(handle: Long): String
+    external fun nativeFinished(handle: Long): Boolean
 }

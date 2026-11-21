@@ -33,8 +33,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private val poll = object : Runnable {
         override fun run() {
             if (handle != 0L) {
-                status.text = PdispNative.nativeStatus(handle)
-                ui.postDelayed(this, 500)
+                val text = PdispNative.nativeStatus(handle)
+                if (PdispNative.nativeFinished(handle)) { stopSession(); status.text = text } // it ended or failed: keep its message
+                else { status.text = text; ui.postDelayed(this, 500) }
             }
         }
     }

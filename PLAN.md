@@ -77,7 +77,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - A latency harness that stamps frames and measures glass-to-glass on the desktop.
 - Pass: live view on the desktop. Under 2% bursty loss, 15 ms jitter and a 40 Mbit/s cap there is no persistent corruption, the picture recovers within a bounded time, and latency does not grow. Latency numbers recorded for the baseline.
 
-**M5: Android app skeleton**
+**M5: Android app skeleton** (done 2026-11-21: the Tab S9 FE shows the monitor at 2304x1440, 60 fps over Wi-Fi; see `docs/spikes/m5-android.md`)
 - Kotlin app: TCP connect, handshake with real resolution, density and refresh rates, `MediaCodec` surface decode.
 - Pass: the phone shows the virtual monitor at its native resolution.
 

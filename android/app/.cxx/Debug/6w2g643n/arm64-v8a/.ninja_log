@@ -7,3 +7,7 @@
 0	431	1795267717925416424	CMakeFiles/pdispnative.dir/session.c.o	45499ed4e0e40b04
 1	440	1795267717934416730	CMakeFiles/pdispnative.dir/home/rand/git-repos/virt-monitor/proto/vrecv.c.o	c43bdf758e5fd360
 440	452	1795267717946417141	/home/rand/git-repos/virt-monitor/android/app/build/intermediates/cxx/Debug/6w2g643n/obj/arm64-v8a/libpdispnative.so	f3ff7cb9706b9246
+1	69	1795267934656815945	CMakeFiles/pdispnative.dir/session.c.o	45499ed4e0e40b04
+69	80	1795267934668816355	/home/rand/git-repos/virt-monitor/android/app/build/intermediates/cxx/Debug/6w2g643n/obj/arm64-v8a/libpdispnative.so	f3ff7cb9706b9246
+0	62	1795267992060774163	CMakeFiles/pdispnative.dir/session.c.o	45499ed4e0e40b04
+62	73	1795267992072774573	/home/rand/git-repos/virt-monitor/android/app/build/intermediates/cxx/Debug/6w2g643n/obj/arm64-v8a/libpdispnative.so	f3ff7cb9706b9246

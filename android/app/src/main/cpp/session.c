@@ -30,7 +30,7 @@
 
 struct session {
 	pthread_t thread;
-	atomic_bool stop;
+	atomic_bool stop, finished;
 	ANativeWindow *window;
 	char host[128], name[PROTO_NAME_MAX];
 	unsigned port, width, height, dpi, n_rates, rates_mhz[PROTO_MAX_RATES];
@@ -63,24 +63,33 @@ static void close_codec(struct session *s)
 	s->codec = NULL;
 }
 
-/* Creates the decoder for a stream: the parameter sets go in as codec-specific data, output goes to the window. */
-static int open_codec(struct session *s, const struct proto_stream_params *p)
+/* Tries to start a decoder for a stream: the parameter sets go in as codec-specific data, output goes to the window.
+ * `hints` asks for real-time scheduling, which some vendors (Exynos) refuse; the caller then retries without. */
+static int try_codec(struct session *s, const struct proto_stream_params *p, int hints)
 {
-	close_codec(s);
 	AMediaFormat *f = AMediaFormat_new();
 	AMediaFormat_setString(f, AMEDIAFORMAT_KEY_MIME, "video/hevc");
 	AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_WIDTH, p->width);
 	AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_HEIGHT, p->height);
 	AMediaFormat_setBuffer(f, "csd-0", p->param_sets, p->param_sets_len);
-	AMediaFormat_setInt32(f, "low-latency", 1);            /* no output reordering delay */
-	AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_PRIORITY, 0); /* real-time */
-	AMediaFormat_setInt32(f, "operating-rate", 120);
+	AMediaFormat_setInt32(f, "low-latency", 1); /* no output reordering delay */
+	if (hints) {
+		AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_PRIORITY, 0); /* real-time */
+		AMediaFormat_setInt32(f, "operating-rate", 120);
+	}
 	s->codec = AMediaCodec_createDecoderByType("video/hevc");
 	if (!s->codec) { AMediaFormat_delete(f); LOGE("no HEVC decoder"); return -1; }
 	media_status_t st = AMediaCodec_configure(s->codec, f, s->window, NULL, 0);
 	AMediaFormat_delete(f);
 	if (st == AMEDIA_OK) st = AMediaCodec_start(s->codec);
-	if (st != AMEDIA_OK) { LOGE("cannot start the decoder: %d", (int)st); close_codec(s); return -1; }
+	if (st != AMEDIA_OK) { LOGE("cannot start the decoder (hints %d): %d", hints, (int)st); close_codec(s); return -1; }
+	return 0;
+}
+
+static int open_codec(struct session *s, const struct proto_stream_params *p)
+{
+	close_codec(s);
+	if (try_codec(s, p, 1) != 0 && try_codec(s, p, 0) != 0) return -1;
 	atomic_store(&s->decoder_failed, false);
 	return 0;
 }
@@ -155,7 +164,7 @@ static void *run(void *arg)
 	struct session *s = arg;
 	set_status(s, "connecting to %s:%u", s->host, s->port);
 	int cfd = net_tcp_connect(s->host, s->port);
-	if (cfd < 0) { set_status(s, "cannot connect to %s:%u: %s", s->host, s->port, strerror(-cfd)); return NULL; }
+	if (cfd < 0) { set_status(s, "cannot connect to %s:%u: %s", s->host, s->port, strerror(-cfd)); atomic_store(&s->finished, true); return NULL; }
 	net_tune_tcp(cfd);
 	struct net_ctl ctl;
 	net_ctl_init(&ctl, cfd);
@@ -289,6 +298,7 @@ out:
 	if (vr) vrecv_destroy(vr);
 	if (ufd >= 0) close(ufd);
 	net_ctl_close(&ctl);
+	atomic_store(&s->finished, true);
 	return NULL;
 }
 
@@ -339,4 +349,11 @@ JNIEXPORT jstring JNICALL Java_dev_pdisp_PdispNative_nativeStatus(JNIEnv *env, j
 		pthread_mutex_unlock(&s->status_mu);
 	}
 	return (*env)->NewStringUTF(env, copy);
+}
+
+JNIEXPORT jboolean JNICALL Java_dev_pdisp_PdispNative_nativeFinished(JNIEnv *env, jclass cls, jlong handle)
+{
+	(void)env; (void)cls;
+	struct session *s = (struct session *)(intptr_t)handle;
+	return !s || atomic_load(&s->finished);
 }
