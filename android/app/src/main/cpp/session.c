@@ -41,6 +41,8 @@
 struct session {
 	pthread_t thread;
 	atomic_bool stop, finished;
+	atomic_int close_reason; /* what to tell the PC when we leave: 0 on purpose, 1 the screen locked, 3 error */
+	atomic_int end_kind;     /* why the session ended: 0 we stopped it, 1 the link failed (try again), 2 refused or impossible (do not retry) */
 	ANativeWindow *window;
 	char host[128], name[PROTO_NAME_MAX];
 	atomic_uint pending_w, pending_h; /* a new display size reported by the UI thread, sent by the session thread */
@@ -349,11 +351,11 @@ static void *run(void *arg)
 	{
 		struct identity id;
 		int created, e = identity_load_or_create(s->identity_dir, &id, &created);
-		if (e) { set_status(s, "cannot use this device's key: %s", strerror(-e)); goto out; }
+		if (e) { set_status(s, "cannot use this device's key: %s", strerror(-e)); atomic_store(&s->end_kind, 2); goto out; }
 		set_status(s, "securing the connection");
 		e = hs_initiate(&ctl, &id, s->name, 10000, &pc, &udp);
 		pc_wipe(&id, sizeof id);
-		if (e == -EPROTO) { set_status(s, "the PC does not use the secure protocol: update pdispd"); goto out; }
+		if (e == -EPROTO) { set_status(s, "the PC does not use the secure protocol: update pdispd"); atomic_store(&s->end_kind, 2); goto out; }
 		if (e) { set_status(s, "the secure handshake failed: %s", strerror(-e)); goto out; }
 		snprintf(pcs_path, sizeof pcs_path, "%s/known_pcs", s->identity_dir);
 		new_pc = keystore_find(pcs_path, pc.pub, NULL, 0) <= 0;
@@ -380,12 +382,13 @@ static void *run(void *arg)
 		struct proto_reject rj;
 		if (proto_reject_decode(payload, plen, &rj) == 0) set_status(s, "the PC refused: %s", rj.text);
 		else set_status(s, "the PC refused the connection");
+		atomic_store(&s->end_kind, 2);
 		goto out;
 	}
 	struct proto_setup su;
 	if (type != PROTO_CTL_SETUP || proto_setup_decode(payload, plen, &su) != 0) { set_status(s, "bad SETUP from the PC"); goto out; }
 	if (new_pc) keystore_add(pcs_path, pc.pub, pc.name); /* the PC let us in: remember it */
-	if (open_codec(s, &su.params) != 0) { set_status(s, "this device cannot decode the stream"); goto out; }
+	if (open_codec(s, &su.params) != 0) { set_status(s, "this device cannot decode the stream"); atomic_store(&s->end_kind, 2); goto out; }
 
 	struct vrecv_config rc = { .session_id = su.session_id, .shard_size = su.params.shard_size };
 	struct vrecv_callbacks rcb = { .decode = decode_cb, .user = s };
@@ -560,11 +563,13 @@ static void *run(void *arg)
 	{
 		struct proto_close cl;
 		memset(&cl, 0, sizeof cl);
+		cl.reason = (uint16_t)atomic_load(&s->close_reason);
 		uint8_t cb[64];
 		int cn = proto_close_encode(&cl, cb, sizeof cb);
 		if (cn > 0) net_ctl_send(&ctl, PROTO_CTL_CLOSE, cb, (size_t)cn);
 	}
 out:
+	if (atomic_load(&s->stop)) atomic_store(&s->end_kind, 0); /* we asked for it: the app decides what happens next */
 	close_codec(s);
 	if (vr) vrecv_destroy(vr);
 	if (ufd >= 0) close(ufd);
@@ -582,6 +587,7 @@ static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, job
 	s->usb_fd = usb_fd;
 	pthread_mutex_init(&s->status_mu, NULL);
 	pthread_mutex_init(&s->in_mu, NULL);
+	atomic_store(&s->end_kind, 1);
 	input_tx_init(&s->in_tx);
 	palm_init(&s->palm, &(struct palm_config){ .enabled = 1 });
 	s->device_caps = (unsigned)caps;
@@ -625,11 +631,21 @@ JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStartUsb(JNIEnv *env, j
 	return start_common(env, NULL, 0, fd, surface, width, height, dpi, rates, name, identity_dir, caps);
 }
 
-JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeStop(JNIEnv *env, jclass cls, jlong handle)
+/* Why the session ended on its own: 0 we stopped it, 1 the link failed (the app should try again), 2 it was refused or cannot work (it should not). */
+JNIEXPORT jint JNICALL Java_dev_pdisp_PdispNative_nativeEndKind(JNIEnv *env, jclass cls, jlong handle)
+{
+	(void)env; (void)cls;
+	struct session *s = (struct session *)(intptr_t)handle;
+	return s ? atomic_load(&s->end_kind) : 0;
+}
+
+/* Stops the session and tells the PC why: reason 0 on purpose, 1 the screen locked, 3 error. */
+JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeStop(JNIEnv *env, jclass cls, jlong handle, jint reason)
 {
 	(void)env; (void)cls;
 	struct session *s = (struct session *)(intptr_t)handle;
 	if (!s) return;
+	atomic_store(&s->close_reason, reason);
 	atomic_store(&s->stop, true);
 	pthread_join(s->thread, NULL);
 	ANativeWindow_release(s->window);

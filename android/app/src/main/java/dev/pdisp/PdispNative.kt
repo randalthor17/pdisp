@@ -31,7 +31,11 @@ object PdispNative {
     /** Palm rejection on or off, and the contact size in pixels above which a contact is a palm. */
     external fun nativeSetPalmRejection(handle: Long, enabled: Boolean, palmSizePx: Int)
 
-    external fun nativeStop(handle: Long)
+    /** Stops the session and tells the PC why: 0 on purpose, 1 the screen locked, 3 error. */
+    external fun nativeStop(handle: Long, reason: Int)
+
+    /** Why a finished session ended: 0 we stopped it, 1 the link failed (try again), 2 refused or impossible (do not retry). */
+    external fun nativeEndKind(handle: Long): Int
     external fun nativeStatus(handle: Long): String
     external fun nativeFinished(handle: Long): Boolean
 }

@@ -15,7 +15,9 @@ import android.media.MediaFormat
 import android.util.Log
 import android.hardware.usb.UsbManager
 import android.net.wifi.WifiManager
+import android.app.KeyguardManager
 import android.os.Build
+import android.os.PowerManager
 import kotlin.math.cos
 import kotlin.math.sin
 import android.os.Bundle
@@ -50,6 +52,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private var handle = 0L
     private var surfaceReady = false
     private var pendingAccessory: UsbAccessory? = null
+
+    // What the user wants, which outlives any one session: while wantConnected is set the app keeps (re)connecting to `target`
+    private sealed class Target { class Host(val host: String) : Target(); object Usb : Target() }
+    private var wantConnected = false
+    private var target: Target? = null
+    private var attempts = 0
+    private val reconnect = Runnable { connectNow() }
     private val ui = Handler(Looper.getMainLooper())
     private val usb by lazy { getSystemService(Context.USB_SERVICE) as UsbManager }
 
@@ -57,8 +66,14 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         override fun run() {
             if (handle != 0L) {
                 val text = PdispNative.nativeStatus(handle)
-                if (PdispNative.nativeFinished(handle)) { stopSession(); status.text = text } // it ended or failed: keep its message
-                else { status.text = text; showOverlay(!streamingText.containsMatchIn(text)); ui.postDelayed(this, 500) }
+                if (PdispNative.nativeFinished(handle)) sessionEnded(text)
+                else {
+                    status.text = text
+                    val streaming = streamingText.containsMatchIn(text)
+                    if (streaming) attempts = 0
+                    showOverlay(!streaming)
+                    ui.postDelayed(this, 500)
+                }
             }
         }
     }
@@ -69,7 +84,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     private fun showOverlay(show: Boolean) { overlay.visibility = if (show) View.VISIBLE else View.GONE }
 
     override fun onBackPressed() {
-        if (handle != 0L) { stopSession(); showOverlay(true) } else super.onBackPressed() // Back ends the stream first, then leaves the app
+        if (handle != 0L || wantConnected) { disconnect() } else super.onBackPressed() // Back ends the stream first, then leaves the app
     }
 
     private val permissionReceiver = object : BroadcastReceiver() {
@@ -252,6 +267,8 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun connectUsb(acc: UsbAccessory) {
+        wantConnected = true
+        target = Target.Usb
         if (handle != 0L) return
         if (!usb.hasPermission(acc)) {
             val flags = PendingIntent.FLAG_MUTABLE // the system adds the result extras
@@ -279,7 +296,50 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
     }
 
     private fun toggle() {
-        if (handle != 0L) stopSession() else startSession()
+        if (handle != 0L || wantConnected) disconnect() else startSession()
+    }
+
+    /** The user ends the connection: no reconnecting, and the PC removes the monitor at once. */
+    private fun disconnect() {
+        wantConnected = false
+        ui.removeCallbacks(reconnect)
+        stopSession(0)
+    }
+
+    /** Why we are leaving, as the PC should hear it: the screen locking or turning off is not the same as the user ending the stream. */
+    private fun closeReason(): Int {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        return if (!pm.isInteractive || km.isKeyguardLocked) 1 else 0
+    }
+
+    /** (Re)connects to what the user last asked for; called at start, on resume and by the retry timer. */
+    private fun connectNow() {
+        if (!wantConnected || handle != 0L || !surfaceReady) return
+        when (val t = target) {
+            is Target.Host -> startHostSession(t.host)
+            Target.Usb -> usb.accessoryList?.firstOrNull()?.let { connectUsb(it) } ?: run { status.text = "waiting for the USB cable"; scheduleReconnect() }
+            null -> {}
+        }
+    }
+
+    private fun scheduleReconnect() {
+        ui.removeCallbacks(reconnect)
+        attempts++
+        ui.postDelayed(reconnect, minOf(1000L * attempts, 5000L))
+    }
+
+    /** The native session ended by itself: tidy up, and try again if the link failed and the user still wants the connection. */
+    private fun sessionEnded(message: String) {
+        val kind = PdispNative.nativeEndKind(handle)
+        stopSession(3)
+        if (wantConnected && kind == 1) {
+            status.text = "lost the PC, reconnecting (attempt $attempts): $message"
+            scheduleReconnect()
+        } else {
+            if (kind == 2) wantConnected = false // refused or impossible: retrying would only repeat it
+            status.text = message
+        }
     }
 
     private class DisplayInfo(val width: Int, val height: Int, val rates: IntArray)
@@ -301,6 +361,13 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val host = hostField.text.toString().trim()
         if (host.isEmpty() || !surfaceReady) return
         getPreferences(Context.MODE_PRIVATE).edit().putString("host", host).apply()
+        wantConnected = true
+        target = Target.Host(host)
+        attempts = 0
+        startHostSession(host)
+    }
+
+    private fun startHostSession(host: String) {
         val d = displayInfo()
         handle = PdispNative.nativeStart(
             host, 47110, surfaceView.holder.surface, d.width, d.height, resources.displayMetrics.densityDpi, d.rates, Build.MODEL,
@@ -321,10 +388,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         ui.post(poll)
     }
 
-    private fun stopSession() {
+    private fun stopSession(reason: Int) {
         val h = handle
         handle = 0
-        if (h != 0L) PdispNative.nativeStop(h)
+        if (h != 0L) PdispNative.nativeStop(h, reason)
         wifiLock?.let { if (it.isHeld) it.release() }
         wifiLock = null
         button.text = "Connect"
@@ -334,10 +401,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
 
     override fun surfaceCreated(holder: SurfaceHolder) {
         surfaceReady = true
-        pendingAccessory?.let { connectUsb(it) }
+        pendingAccessory?.let { connectUsb(it) } ?: connectNow() // coming back to the app (after the screen was off): pick up where we were
     }
     override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {}
-    override fun surfaceDestroyed(holder: SurfaceHolder) { surfaceReady = false; stopSession() }
+    /** Leaving the screen (the screen turned off, a lock, another app): end the stream, saying why, but remember that we want it back. */
+    override fun surfaceDestroyed(holder: SurfaceHolder) {
+        surfaceReady = false
+        ui.removeCallbacks(reconnect)
+        stopSession(closeReason())
+    }
     override fun onWindowFocusChanged(hasFocus: Boolean) { super.onWindowFocusChanged(hasFocus); if (hasFocus) hideSystemBars() }
 
     companion object { private const val ACTION_USB_PERMISSION = "dev.pdisp.USB_PERMISSION" }
