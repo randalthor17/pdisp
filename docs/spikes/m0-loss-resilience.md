@@ -74,8 +74,39 @@ the slot first and falls back to an IDR if no reference remains. `tests/loss_rec
 - A static screen produces no frames, so loss would go unnoticed. The sender needs a periodic keepalive with the latest
   frame id, and a repair path for the final frame.
 
-## Observed, not isolated
+## Encode-time spikes: cause isolated
 
-While mpv decoded and rendered fullscreen on the same GPU, encoder time rose from 2 to 4 ms to 7 to 8 ms per frame with
-spikes above 100 ms (`encode_ms max=122`). Likely GPU contention with the compositor and video decode. This matters when
-the main monitor is busy (a game). Needs its own measurement, including whether queue priority can be raised.
+Earlier, with mpv playing on the virtual output, encode time reached 100+ ms. Isolated with `enc_synth -W 2304 -H 1440
+-p 60` (paced like a 60 Hz source, per-stage timing) and the real capture pipeline (`pdisp-encode -v`, per-frame log).
+Budget is 16.7 ms per frame for upload + convert + encode.
+
+| Scenario | encode p50 / p99 / max (ms) | convert max (ms) | frames over budget |
+|---|---|---|---|
+| Idle | 1.8 / 2.3 / 2.5 | 1.1 | 0 of 599 |
+| VCN decode only (`mpv --vo=null --hwdec=vaapi`, noisy 150 Mbit/s 90 fps clip) | 3.9 / 4.2 / 4.4 | 1.9 | 0 of 599 |
+| 3D render only (glmark2) | 3.7 / 3.9 / 3.9 | 1.1 | 0 of 599 |
+| Decode + 3D | 3.7 / 4.0 / 4.7 | 2.1 | 0 of 599 |
+| mpv software decode on the virtual output (compositor rendering into evdi) | 3.9 / 4.5 / 6.1 | 4.1 | 1 of 787 |
+| mpv **hardware** decode of the extreme clip on the **virtual output** | 2.0 / 16.3 / 60.0 | 60.5 | 10 of 650 |
+| mpv hardware decode of the extreme clip on the **main monitor**, virtual output shows only the pattern | 1.9 / 18.6 / 61.6 | 5.4 | 18 of 688 |
+| mpv hardware decode of a **realistic** 4K60 20 Mbit/s clip on the main monitor | 1.8 / 5.0 / 16.2 | 3.6 | 2 of 695 |
+
+Conclusions:
+
+- The stalls come from **hardware video decode running at the same time on the same GPU**, not from compositing, 3D load or
+  evdi. Decode and encode appear to share the video engine and are time-sliced without preemption, so one large decode job
+  delays the encode by up to about 60 ms. The first frame of every run also includes about 13 ms of one-time setup.
+- The extreme clip (noise, 150 Mbit/s, 90 fps) is a worst case. A realistic 4K60 20 Mbit/s clip gives p99 5 ms and
+  one 16 ms outlier; nearly all frames stay in budget.
+- `AMD_PRIORITY=high` removed the colour-conversion spikes (max 60.5 to 4.1 ms) but not the encode ones (p99 24 ms, max 59 ms)
+  in the worst case. Conversion runs on the shader queue, which priority helps; encode waits on the video engine, which it does not.
+- Encoding on the iGPU (`-r /dev/dri/renderD129`, which has its own HEVC encoder) removes the 60 ms stalls (max 15 ms) but its
+  shaders are weaker: conversion 4.8 ms and encode 4.8 ms, average total about 12.7 ms. Too tight for 60 Hz and not enough for
+  90 Hz as it is. Converting on the CPU would free it up; not tried.
+- Encode time is bimodal, about 1.9 ms in some runs and about 3.8 ms in others, independent of the load (idle runs show both).
+  Likely a power or clock state; not chased.
+
+Design consequences: the encoder must be allowed to stall for up to a few frames, so the daemon needs pipelined encoding
+(M10) and frame skipping before encode when a frame is still in flight, and it should log encode latency. The render node is a
+configuration option (`encoder_config.render_node`, `-r` in the tools); switching to the iGPU or adding CPU conversion are
+options if real use shows contention.

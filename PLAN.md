@@ -134,7 +134,7 @@ Later: other compositors (sway, KDE, GNOME), audio, clipboard, multiple phones.
 - Decoder behaviour on missing references differs by vendor. ffmpeg rejects every frame after one lost reference; Android MediaCodec is unknown until M5. The receiver rule above and reference invalidation avoid depending on concealment.
 - Intra refresh is accepted by the driver and costs about 4 times the bits on moving content, but whether a decoder heals from it could not be checked with ffmpeg. It is a fallback, not the plan. Temporal layers are disabled by the driver when intra refresh is on, and are not used.
 - The reference buffer holds 7 pictures, so loss windows beyond 5 frames (about 83 ms at 60 fps) need an IDR.
-- GPU contention: encode time rose from 2 to 4 ms to 7 to 8 ms (spikes above 100 ms) while mpv decoded and rendered on the same GPU. Not isolated; matters when the main monitor runs a game.
+- GPU contention: hardware video decode running on the same GPU stalls hardware encode (it is time-sliced on the video engine): up to about 60 ms with an extreme 150 Mbit/s clip, negligible with a realistic 4K60 20 Mbit/s one (see `docs/spikes/m0-loss-resilience.md`). Compositing, 3D load and evdi are not the cause. The encoder must tolerate stalls (pipelining and frame skipping, M10). Using the iGPU encoder is possible but its conversion is slow.
 - Keyframes on desktop content are about 7 times a P-frame unless rate control is constrained. Intra refresh is advertised but untested.
 - AOA behavior varies by phone vendor firmware. The permission prompt and auto-launch on Android 16 are untested until the app exists.
 - Touch-to-output binding may fail on compositors without a binding mechanism.
