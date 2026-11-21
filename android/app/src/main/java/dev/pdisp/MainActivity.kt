@@ -8,6 +8,11 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.graphics.Color
 import android.hardware.usb.UsbAccessory
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaCodecList
+import android.media.MediaFormat
+import android.util.Log
 import android.hardware.usb.UsbManager
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -19,6 +24,8 @@ import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
 import android.view.WindowManager
+import android.view.inputmethod.EditorInfo
+import android.view.inputmethod.InputMethodManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
@@ -73,6 +80,15 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             setText(getPreferences(Context.MODE_PRIVATE).getString("host", ""))
             setSingleLine()
             setTextColor(Color.WHITE); setHintTextColor(Color.GRAY)
+            // no full-screen keyboard (it hides the rest of the UI in landscape), and its Go key connects
+            imeOptions = EditorInfo.IME_ACTION_GO or EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            setOnEditorActionListener { v, actionId, _ ->
+                if (actionId == EditorInfo.IME_ACTION_GO) {
+                    (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(v.windowToken, 0)
+                    if (handle == 0L) startSession()
+                    true
+                } else false
+            }
         }
         status = TextView(this).apply { setTextColor(Color.WHITE); textSize = 14f }
         button = Button(this).apply { text = "Connect"; setOnClickListener { toggle() } }
@@ -88,7 +104,25 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
         val filter = IntentFilter(ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(permissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(permissionReceiver, filter)
+        logDecoders()
         handleIntent(intent)
+    }
+
+    /** One-time diagnostics: which HEVC decoders exist, whether they claim low latency, and their vendor parameters. */
+    private fun logDecoders() {
+        for (info in MediaCodecList(MediaCodecList.ALL_CODECS).codecInfos) {
+            if (info.isEncoder || !info.supportedTypes.contains("video/hevc")) continue
+            val caps = info.getCapabilitiesForType("video/hevc")
+            Log.i("pdisp", "decoder ${info.name} hw=${info.isHardwareAccelerated} lowLatency=${caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)} " +
+                "maxInstances=${caps.maxSupportedInstances} 2304x1440@60=${caps.videoCapabilities.areSizeAndRateSupported(2304, 1440, 60.0)}")
+            if (Build.VERSION.SDK_INT >= 33 && info.isHardwareAccelerated) {
+                try {
+                    val c = MediaCodec.createByCodecName(info.name)
+                    Log.i("pdisp", "  vendor params: ${c.supportedVendorParameters}")
+                    c.release()
+                } catch (e: Exception) { Log.i("pdisp", "  vendor params: $e") }
+            }
+        }
     }
 
     override fun onNewIntent(intent: Intent) {

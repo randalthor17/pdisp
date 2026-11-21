@@ -26,6 +26,7 @@
 
 #include "net.h"
 #include "proto.h"
+#include "timesync.h"
 #include "usbmux.h"
 #include "vrecv.h"
 
@@ -59,6 +60,15 @@ struct session {
 	uint64_t in_time_us[64], in_pts[64];
 	uint32_t dec_us[1024];
 	unsigned n_dec;
+	/* clock sync with the PC and the end-to-end latency it makes measurable: PC capture time to the picture being ready and to the
+	 * vsync it was scheduled for */
+	struct timesync ts;
+	atomic_llong offset_us; /* server_time = phone_time + offset */
+	atomic_bool have_offset;
+	int64_t sync_rtt_us;
+	uint64_t time_resp;
+	uint32_t lat_ready_us[1024], lat_present_us[1024];
+	unsigned n_lat;
 	uint64_t last_arrival_us;
 	uint32_t arrivals_us[1024];
 	unsigned n_arrivals;
@@ -91,6 +101,16 @@ static void report_cadence(struct session *s)
 		LOGI("DECODE n=%u latency_ms p50=%.1f p95=%.1f p99=%.1f max=%.1f", m, s->dec_us[m / 2] / 1000.0,
 		     s->dec_us[m * 95 / 100] / 1000.0, s->dec_us[m * 99 / 100] / 1000.0, s->dec_us[m - 1] / 1000.0);
 	}
+	if (s->n_lat >= 10) {
+		qsort(s->lat_ready_us, s->n_lat, sizeof s->lat_ready_us[0], cmp_u32);
+		qsort(s->lat_present_us, s->n_lat, sizeof s->lat_present_us[0], cmp_u32);
+		unsigned m = s->n_lat;
+		LOGI("LATENCY n=%u capture_to_decoded_ms p50=%.1f p95=%.1f p99=%.1f  capture_to_vsync_ms p50=%.1f p95=%.1f p99=%.1f max=%.1f  clock_rtt_ms=%.1f",
+		     m, s->lat_ready_us[m / 2] / 1000.0, s->lat_ready_us[m * 95 / 100] / 1000.0, s->lat_ready_us[m * 99 / 100] / 1000.0,
+		     s->lat_present_us[m / 2] / 1000.0, s->lat_present_us[m * 95 / 100] / 1000.0, s->lat_present_us[m * 99 / 100] / 1000.0,
+		     s->lat_present_us[m - 1] / 1000.0, s->sync_rtt_us / 1000.0);
+	}
+	s->n_lat = 0;
 	s->n_dec = 0;
 	s->n_arrivals = 0;
 	s->n_intervals = 0;
@@ -197,7 +217,7 @@ static int decode_cb(const struct vrecv_frame *f, void *user)
 /* Presents decoded pictures on a regular grid of display times. A picture that is ready is not shown "now" (the display then
  * takes it at whatever refresh comes next, and a second picture ready in the same moment replaces it): each gets the next free
  * slot, one frame interval after the previous, and SurfaceFlinger shows it at the vsync at or after that time. Only when the
- * backlog is more than three frames deep (the decoder was stalled and caught up) are the oldest pictures dropped. */
+ * backlog is more than one frame deep (the decoder was stalled and caught up) are the oldest pictures dropped. */
 static uint64_t mono_ns(void)
 {
 	struct timespec t;
@@ -226,12 +246,20 @@ static void drain_output(struct session *s)
 			}
 		uint64_t now = mono_ns(), step = s->frame_ns ? s->frame_ns : 16666667;
 		uint64_t slot = s->next_slot_ns > now ? s->next_slot_ns : now;
-		if (slot > now + 3 * step) { /* too far behind: skip this picture and let the grid catch up */
+		if (slot > now + step + step / 2) { /* more than one frame behind: skip this picture so the grid catches up (latency over smoothness) */
 			AMediaCodec_releaseOutputBuffer(s->codec, (size_t)idx, false);
 			s->dropped_in_drain++;
 			continue;
 		}
 		AMediaCodec_releaseOutputBufferAtTime(s->codec, (size_t)idx, (int64_t)slot);
+		if (atomic_load(&s->have_offset) && s->n_lat < 1024) {
+			int64_t off = atomic_load(&s->offset_us), cap = info.presentationTimeUs;
+			int64_t ready = (int64_t)net_now_us() + off - cap, vsync = (int64_t)(slot / 1000) + off - cap;
+			if (ready > 0 && ready < 5000000 && vsync > 0) {
+				s->lat_ready_us[s->n_lat] = (uint32_t)ready;
+				s->lat_present_us[s->n_lat++] = (uint32_t)vsync;
+			}
+		}
 		s->next_slot_ns = slot + step;
 		s->rendered++;
 		uint64_t t = slot / 1000;
@@ -336,7 +364,8 @@ static void *run(void *arg)
 	net_ctl_send(&ctl, PROTO_CTL_READY, NULL, 0);
 
 	uint64_t t0 = net_now_us(), next_fb = t0 + 10000, next_hello = t0 + 100000, next_ping = t0 + 1000000, last_stat = t0;
-	uint64_t last_rx = t0, last_rendered = 0, last_pong = t0, last_cadence = t0;
+	uint64_t last_rx = t0, last_rendered = 0, last_pong = t0, last_cadence = t0, next_time = 0;
+	timesync_init(&s->ts);
 	bool streaming = false;
 	unsigned width = su.params.width, height = su.params.height;
 	set_status(s, "connected, waiting for video");
@@ -349,6 +378,21 @@ static void *run(void *arg)
 			if (got < 0) break;
 			last_rx = now;
 			streaming = true;
+			struct proto_pkt_hdr ph;
+			if (got >= PROTO_PKT_HDR_SIZE + 24 && proto_pkt_hdr_read(pkt, (size_t)got, &ph) == 0 && ph.type == PROTO_PKT_TIME_RESP) {
+				struct proto_time_resp tr;
+				uint64_t t4 = net_now_us();
+				if (proto_time_resp_decode(pkt + PROTO_PKT_HDR_SIZE, (size_t)got - PROTO_PKT_HDR_SIZE, &tr) == 0) {
+					timesync_add(&s->ts, tr.t1, tr.t2, tr.t3, t4);
+					int64_t off, rtt;
+					if (timesync_estimate(&s->ts, &off, &rtt)) {
+						atomic_store(&s->offset_us, off);
+						atomic_store(&s->have_offset, true);
+						s->sync_rtt_us = rtt;
+					}
+					s->time_resp++;
+				}
+			}
 			vrecv_on_packet(vr, pkt, (size_t)got, now);
 		}
 		if (p[1].revents & (POLLIN | POLLHUP)) {
@@ -388,6 +432,14 @@ static void *run(void *arg)
 			hh.seq = udp_seq++;
 			proto_pkt_hdr_write(&hh, hb, sizeof hb);
 			DSEND(hb, sizeof hb);
+		}
+		if (streaming && now >= next_time) { /* ask for the PC's clock: every 100 ms at first to settle, then once a second */
+			next_time = now + (s->time_resp < 5 ? 100000 : 1000000);
+			uint8_t tb[8], tp[PROTO_PKT_HDR_SIZE + 8];
+			if (proto_time_req_encode(net_now_us(), tb, sizeof tb) == 8) {
+				int tn = vrecv_make_packet(vr, PROTO_PKT_TIME_REQ, tb, 8, tp, sizeof tp);
+				if (tn > 0) DSEND(tp, (size_t)tn);
+			}
 		}
 		if (now >= next_fb) {
 			next_fb = now + 10000;

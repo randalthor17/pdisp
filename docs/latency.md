@@ -47,3 +47,23 @@ in software. These are the numbers to compare the phone against at M5; the phone
 
 A display change (rotation) rebuilds the virtual output, encoder and sender in a new epoch. In the real run the stream was
 back with the longest interruption between 110 and 380 ms (it varies with how quickly the compositor reacts to the new EDID).
+
+## On the phone (Pixel 8a, Android 17, 2400x1080 at 60 Hz, Wi-Fi, app statistics in logcat tag `pdisp`)
+
+The app syncs its clock with the PC (same protocol as the viewer, 100 ms apart at first, then once a second; round trip 2.5 to 3.8 ms)
+and measures, per picture, PC capture time to "decoded" and to the vsync the picture was scheduled for. The scheduled time is the
+display slot handed to `releaseOutputBufferAtTime`; actual scanout follows within about one vsync.
+
+| Presentation backlog allowed | Capture to decoded p50 | Capture to vsync p50 / p95 | Pictures dropped per 300 | Late frames (> 25 ms apart) per 300 |
+|---|---|---|---|---|
+| 3 frames (first version) | 22 ms | 56 to 62 / 61 to 68 ms | about 0 | 0 to 5 |
+| 1 frame | 21 to 23 ms | 26 to 31 / 37 to 44 ms | 14 to 24 | 9 to 13 |
+| **1.5 frames (kept)** | 22 ms | 33 to 40 / 35 to 55 ms | 0 to 10 (30 to 50 in the first seconds) | 0 to 4, one window with 23 |
+
+The backlog is a jitter buffer: the grid of display slots advances one frame per frame, so without a limit it stays as far behind as the
+worst bunching it ever saw. Frame arrival (PC pacing plus Wi-Fi) has a p95 spread of 20 to 35 ms around the nominal 16.7 ms, which is what
+the buffer absorbs. A smoothness/latency setting belongs in M10.
+
+Decode in the hardware decoder: Pixel 8a (Tensor G3, `c2.exynos.hevc.decoder`) 9 to 12 ms p50 and 15 to 24 ms p95; Galaxy Tab S9 FE
+(Exynos 1380, same decoder name, 3.3 MP) 48 to 60 ms p50. The decoder lists vendor parameters (`vendor.sec-dec-output.display-delay`,
+`decode-order`, `dpb-num`, ...) that were not tried yet.
