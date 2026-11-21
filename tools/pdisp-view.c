@@ -429,6 +429,7 @@ static void usage(const char *argv0)
 		"  -j SCRIPT     play these touches to the PC (after a second): tap:X,Y swipe:X1,Y1:X2,Y2 pinch:CX,CY:R1:R2 hold:MS, X and Y\n"
 		"                as fractions of the screen\n"
 		"  -J secs       start the touch script this long after the stream starts (default 1)\n"
+		"  -C reason     the reason in the CLOSE sent at the end: 0 on purpose (default), 1 the screen locked, 3 error\n"
 		"  -q pct        drop this percentage of the INPUT datagrams we send (tests the repeat-until-acknowledged stream)\n"
 		"  -i DIR        identity and known_pcs directory (default ~/.config/pdisp-view)\n"
 		"  -I            INSECURE: no handshake, no encryption (only for a daemon started with -I)\n"
@@ -450,10 +451,11 @@ int main(int argc, char **argv)
 	int opt;
 	const char *identity_dir = NULL, *touch_script = NULL;
 	double input_drop_pct = 0, touch_delay = 1;
+	int close_reason = 0;
 	bool insecure = false;
 	double change_after = 0;
 	unsigned change_w = 0, change_h = 0;
-	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:i:j:J:q:Ivh")) != -1) {
+	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:i:j:J:q:C:Ivh")) != -1) {
 		switch (opt) {
 		case 'W': nw = (unsigned)atoi(optarg); break;
 		case 'H': nh = (unsigned)atoi(optarg); break;
@@ -470,6 +472,7 @@ int main(int argc, char **argv)
 		case 'j': touch_script = optarg; break;
 		case 'q': input_drop_pct = atof(optarg); break;
 		case 'J': touch_delay = atof(optarg); break;
+		case 'C': close_reason = atoi(optarg); break;
 		case 'I': insecure = true; break;
 		case 'X':
 			if (sscanf(optarg, "%lf:%ux%u", &change_after, &change_w, &change_h) != 3) { usage(argv[0]); return 2; }
@@ -784,6 +787,7 @@ int main(int argc, char **argv)
 	uint8_t cb[64];
 	struct proto_close cl;
 	memset(&cl, 0, sizeof cl);
+	cl.reason = (uint16_t)close_reason;
 	int cn = proto_close_encode(&cl, cb, sizeof cb);
 	if (cn > 0) net_ctl_send(&ctl, PROTO_CTL_CLOSE, cb, (size_t)cn);
 	int status = 0;

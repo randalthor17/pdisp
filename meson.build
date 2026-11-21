@@ -235,3 +235,11 @@ test('m8 touch gestures in a real application', m8_gesture,
   is_parallel: false,
   timeout: 240,
   suite: 'integration')
+
+m9_lifecycle = find_program('tests/m9_lifecycle_check.sh')
+test('m9 virtual monitor lifecycle', m9_lifecycle,
+  args: [pdispd, pdisp_view, meson.current_build_dir() / 'm9-lifecycle-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 400,
+  suite: 'integration')

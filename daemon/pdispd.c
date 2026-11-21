@@ -55,11 +55,12 @@ static struct {
 	bool insecure;           /* development only: no handshake, no encryption (the M4 behaviour) */
 	bool no_touch;           /* do not create a touchscreen for the phone */
 	const char *touch_hook;  /* a command run when the touchscreen exists, to bind it to the virtual output (docs/touch.md) */
+	unsigned grace_secs;     /* after a lost link, keep the virtual output this long for the phone to come back (0 = tear it down at once) */
 	bool once;               /* serve one session and exit instead of waiting for the next device */
 	bool usb;          /* talk to a tablet over a USB cable (accessory mode) instead of listening on the network */
 	unsigned usb_vid;  /* only consider this USB vendor (0 = any) */
 } C = { .port = 47110, .max_hz_mhz = 60000, .bitrate = 12000, .max_bitrate = 40000, .name = "pdisp",
-	.serial_text = "PDISP0001", .serial = 1, .card = -1 };
+	.serial_text = "PDISP0001", .serial = 1, .card = -1, .grace_secs = 30 };
 
 /* ---- the live session */
 
@@ -291,6 +292,9 @@ static void usage(const char *argv0)
 		"              (\"make model serial\" as the compositor names it), PDISP_TOUCH_DEVICE, PDISP_WIDTH, PDISP_HEIGHT set: use it\n"
 		"              to bind the touchscreen to the virtual output (see docs/touch.md)\n"
 		"  -I          INSECURE: no handshake and no encryption; for development only\n"
+		"  -g SECS     when the link to the phone is lost (cable pulled, Wi-Fi gone, phone asleep), keep the virtual monitor this long for\n"
+		"              it to come back, so windows stay where they are; then remove it (default 30, 0 = remove it at once). A phone that\n"
+		"              disconnects on purpose or locks its screen is removed at once.\n"
 		"  -o          serve one session and exit (default: keep waiting for the next device)\n",
 		argv0);
 }
@@ -301,7 +305,7 @@ int main(int argc, char **argv)
 {
 	int opt;
 	double run_secs = 0;
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:uV:K:P:H:TIho")) != -1) {
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uV:K:P:H:TIho")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
 		case 'n': C.name = optarg; break;
@@ -331,6 +335,7 @@ int main(int argc, char **argv)
 		case 'T': C.no_touch = true; break;
 		case 'H': C.touch_hook = optarg; break;
 		case 'o': C.once = true; break;
+		case 'g': C.grace_secs = (unsigned)atoi(optarg); break;
 		case 'V': C.usb_vid = (unsigned)strtoul(optarg, NULL, 16); break;
 		default: usage(argv[0]); return 2;
 		}
@@ -381,10 +386,29 @@ static void connector_name(char *out, size_t cap)
 }
 
 /* (Re)creates the phone's touchscreen for the current virtual output size, and tells the hook (if any). */
-static void touch_start(const struct proto_hello *h, unsigned w, unsigned hgt, const struct edid_params *ep)
+static struct { unsigned w, h, dpi, slots, caps; } touch_sig; /* what the current devices were made for */
+
+static void touch_stop(void)
 {
 	if (touchdev) { touch_close(touchdev); touchdev = NULL; }
 	if (pendev) { pen_close(pendev); pendev = NULL; }
+	memset(&touch_sig, 0, sizeof touch_sig);
+}
+
+static void touch_start(const struct proto_hello *h, unsigned w, unsigned hgt, const struct edid_params *ep)
+{
+	unsigned slots = h->max_touch_points ? (h->max_touch_points > TOUCH_MAX_SLOTS ? TOUCH_MAX_SLOTS : h->max_touch_points) : 1;
+	if ((touchdev || pendev) && touch_sig.w == w && touch_sig.h == hgt && touch_sig.dpi == h->density_dpi && touch_sig.slots == slots &&
+	    touch_sig.caps == (h->device_caps & (PROTO_CAP_TOUCH | PROTO_CAP_STYLUS))) {
+		/* the same phone (or one just like it) came back: the compositor keeps its binding of these devices, so they stay */
+		if (touchdev) touch_release_all(touchdev);
+		if (pendev) pen_release_all(pendev);
+		input_rx_init(&inrx);
+		return;
+	}
+	touch_stop();
+	touch_sig.w = w; touch_sig.h = hgt; touch_sig.dpi = h->density_dpi; touch_sig.slots = slots;
+	touch_sig.caps = h->device_caps & (PROTO_CAP_TOUCH | PROTO_CAP_STYLUS);
 	input_rx_init(&inrx);
 	if (C.no_touch || C.insecure || !(h->device_caps & (PROTO_CAP_TOUCH | PROTO_CAP_STYLUS))) {
 		LOG("no touchscreen: %s", C.no_touch ? "disabled with -T" : C.insecure ? "not without security (-I)" : "the phone has none");
@@ -512,101 +536,172 @@ static int authorize(struct net_ctl *ctl, const struct hs_peer *peer, const char
 	return 0;
 }
 
-/* One session: wait for the tablet (network or cable), set up the monitor and stream until it leaves. */
-static int run_session(double run_secs)
-{
-	t_start = net_now_us();
-	struct identity id;
-	char ks_path[1100] = "";
-	if (C.insecure) {
-		LOG("WARNING: running without authentication or encryption (-I): development only");
-	} else {
-		char cdir[900];
-		if (C.config_dir) snprintf(cdir, sizeof cdir, "%s", C.config_dir);
-		else if (identity_default_dir(cdir, sizeof cdir) != 0) { LOG("cannot work out the config directory: use -K DIR"); return 1; }
-		int created, e = identity_load_or_create(cdir, &id, &created);
-		if (e) { LOG("cannot use the identity in %s: %s", cdir, strerror(-e)); return 1; }
-		char fp[IDENTITY_FINGERPRINT_LEN];
-		identity_fingerprint(id.pub, fp);
-		LOG("%s identity in %s, key %s", created ? "created a new" : "using the", cdir, fp);
-		snprintf(ks_path, sizeof ks_path, "%s/authorized_keys", cdir);
-	}
+/* ================= sessions and the virtual output's life =================
+ *
+ * The virtual monitor belongs to the daemon, not to one connection. A phone that disconnects on purpose or locks its screen takes the
+ * monitor away at once; a phone that is merely lost (cable pulled, Wi-Fi gone, asleep) leaves it in place for a grace period, so the
+ * windows on it stay put and the same phone can pick up where it left off. If nobody comes back the monitor is removed and the compositor
+ * moves its windows to the other outputs. A phone coming back to a monitor of the right size reuses it without any change visible to the
+ * compositor; one that needs another size gets the monitor reconfigured in place.
+ */
 
-	/* ---- wait for a phone that passes the handshake, then read its HELLO */
-	int cfd, usb_dgram = -1, lfd = -1;
-	struct usblink *link = NULL;
-	struct usbmux *mux = NULL;
+enum end_reason {
+	END_STOP,     /* the daemon is shutting down */
+	END_USER,     /* the phone disconnected on purpose */
+	END_LOCK,     /* the phone's screen locked */
+	END_LINK,     /* the link failed: the phone may come back */
+	END_REJECTED, /* nobody was served (refused, failed setup): the monitor, if there is one, is as it was */
+	END_FATAL,    /* the daemon cannot go on */
+};
+
+struct conn {
+	int cfd, ufd;        /* the control stream and the datagram socket (over USB, the multiplexer's ends) */
+	struct usblink *link;
+	struct usbmux *mux;
 	struct net_ctl ctl;
-	struct hs_peer dev; /* the authenticated device */
-	memset(&dev, 0, sizeof dev);
-	if (!C.usb) {
-		lfd = net_tcp_listen(C.port);
-		if (lfd < 0) { fprintf(stderr, "cannot listen on %u: %s\n", C.port, strerror(-lfd)); return 1; }
-		LOG("listening on port %u", C.port);
-	}
-	for (;;) {
-		if (C.usb) {
-			LOG("waiting for a tablet on USB");
-			int rd, wr;
-			int e = usblink_open(-1, C.usb_vid, (const volatile int *)&stop, &link, &rd, &wr);
-			if (e == -ECANCELED) return 0;
-			if (e) { LOG("cannot open the USB device: %s (is the udev rule installed? see contrib/udev)", strerror(-e)); return 1; }
-			LOG("USB accessory %s", usblink_description(link));
-			e = usbmux_start(rd, wr, 0, &mux, &cfd, &usb_dgram);
-			if (e) { LOG("cannot start the USB multiplexer: %s", strerror(-e)); return 1; }
-			fcntl(usb_dgram, F_SETFL, fcntl(usb_dgram, F_GETFL) | O_NONBLOCK);
-		} else {
-			struct pollfd lp = { .fd = lfd, .events = POLLIN };
-			while (!stop && poll(&lp, 1, 200) <= 0) {}
-			if (stop) return 0;
-			cfd = accept(lfd, NULL, NULL);
-			if (cfd < 0) { perror("accept"); return 1; }
-			net_tune_tcp(cfd);
-		}
-		net_ctl_init(&ctl, cfd);
-		if (C.insecure) break;
-		int r = hs_respond(&ctl, &id, C.name, 10000, &dev, &secudp);
-		if (r == 0) break;
-		LOG("a peer failed the handshake (%s): dropped", strerror(-r));
-		net_ctl_close(&ctl);
-		if (C.usb) return 1; /* the supervisor starts again */
-	}
-	if (lfd >= 0) close(lfd);
+	struct hs_peer dev;  /* the authenticated device */
+	struct sockaddr_in peer;
+};
 
+static struct identity g_id;
+static char g_ks_path[1100];
+static int g_lfd = -1;
+static int g_exit_code;
+
+static void conn_init(struct conn *c)
+{
+	memset(c, 0, sizeof *c);
+	c->cfd = c->ufd = -1;
+	c->ctl.fd = -1;
+}
+
+static void conn_close(struct conn *c)
+{
+	net_ctl_close(&c->ctl); /* closes cfd */
+	if (c->ufd >= 0) close(c->ufd);
+	if (c->mux) usbmux_stop(c->mux);
+	if (c->link) usblink_close(c->link);
+	conn_init(c);
+}
+
+/* Removes the virtual monitor: the compositor moves its windows to the other outputs. */
+static void teardown_output(void)
+{
+	if (!D.vd && !D.enc) return;
+	LOG("removing the virtual output");
+	touch_stop();
+	if (D.vs) { vsend_destroy(D.vs); D.vs = NULL; }
+	if (D.enc) { encoder_close(D.enc); D.enc = NULL; }
+	if (D.vd) { vdisplay_close(D.vd); D.vd = NULL; }
+	D.streaming = false;
+	D.width = D.height = D.refresh_mhz = 0;
+}
+
+/* Keeps capturing while nobody is connected, so the compositor's updates to the virtual output never back up. */
+static void service_display(void)
+{
+	if (D.vd) vdisplay_service(D.vd);
+}
+
+/* Waits for a phone to connect and pass the secure handshake. `deadline_us` is when to give up (0 = never). Returns 0, -ETIMEDOUT (the
+ * grace period ran out), -ECANCELED (shutting down) or another negative errno (fatal). */
+static int acquire_peer(struct conn *c, uint64_t deadline_us)
+{
+	for (;;) {
+		conn_init(c);
+		if (C.usb) {
+			for (;;) { /* in half-second slices, so the display keeps being serviced and the deadline is honoured */
+				if (stop) return -ECANCELED;
+				if (deadline_us && net_now_us() >= deadline_us) return -ETIMEDOUT;
+				service_display();
+				int rd, wr;
+				int e = usblink_open(500, C.usb_vid, (const volatile int *)&stop, &c->link, &rd, &wr);
+				if (e == -ETIMEDOUT) continue;
+				if (e == -ECANCELED) return e;
+				if (e) { LOG("cannot open the USB device: %s (is the udev rule installed? see contrib/udev)", strerror(-e)); return e; }
+				LOG("USB accessory %s", usblink_description(c->link));
+				int usb_dgram;
+				e = usbmux_start(rd, wr, 0, &c->mux, &c->cfd, &usb_dgram);
+				if (e) { LOG("cannot start the USB multiplexer: %s", strerror(-e)); usblink_close(c->link); c->link = NULL; return e; }
+				fcntl(usb_dgram, F_SETFL, fcntl(usb_dgram, F_GETFL) | O_NONBLOCK);
+				c->ufd = usb_dgram;
+				break;
+			}
+		} else {
+			for (;;) {
+				if (stop) return -ECANCELED;
+				if (deadline_us && net_now_us() >= deadline_us) return -ETIMEDOUT;
+				struct pollfd lp[2] = { { .fd = g_lfd, .events = POLLIN }, { .fd = D.vd ? vdisplay_event_fd(D.vd) : -1, .events = POLLIN } };
+				poll(lp, 2, 200);
+				service_display();
+				if (lp[0].revents & POLLIN) {
+					c->cfd = accept(g_lfd, NULL, NULL);
+					if (c->cfd < 0) { if (errno == EINTR || errno == EAGAIN) continue; perror("accept"); return -errno; }
+					net_tune_tcp(c->cfd);
+					break;
+				}
+			}
+		}
+		net_ctl_init(&c->ctl, c->cfd);
+		if (C.insecure) return 0;
+		int r = hs_respond(&c->ctl, &g_id, C.name, 10000, &c->dev, &secudp);
+		if (r == 0) return 0;
+		LOG("a peer failed the handshake (%s): dropped", strerror(-r));
+		conn_close(c);
+	}
+}
+
+/* One phone, from its HELLO to the end of the stream. The virtual output and encoder outlive this call (see above). */
+static enum end_reason serve(struct conn *c, double run_secs)
+{
+	struct net_ctl *ctl = &c->ctl;
 	uint16_t type;
 	const uint8_t *payload;
 	size_t plen;
 	struct proto_hello hello;
-	if (net_ctl_recv(&ctl, &type, &payload, &plen, C.usb ? 120000 : 10000) != 1 || type != PROTO_CTL_HELLO ||
+	if (net_ctl_recv(ctl, &type, &payload, &plen, C.usb ? 120000 : 10000) != 1 || type != PROTO_CTL_HELLO ||
 	    proto_hello_decode(payload, plen, &hello) != 0) {
 		LOG("no valid HELLO from the phone");
-		return 1;
+		return END_REJECTED;
 	}
 	LOG("phone '%s': %ux%u at %u dpi, %u refresh rates", hello.device_name, hello.native_width, hello.native_height,
 	    hello.density_dpi, hello.n_refresh);
-	if (!C.insecure && !authorize(&ctl, &dev, ks_path)) return 1;
-	if (hello.proto_min > PROTO_VERSION || hello.proto_max < PROTO_VERSION)
-		return reject(&ctl, 1, "no common protocol version");
+	if (!C.insecure && !authorize(ctl, &c->dev, g_ks_path)) return END_REJECTED;
+	if (hello.proto_min > PROTO_VERSION || hello.proto_max < PROTO_VERSION) { reject(ctl, 1, "no common protocol version"); return END_REJECTED; }
 	int has_hevc = 0;
 	for (int i = 0; i < hello.n_codecs; i++) has_hevc |= hello.codecs[i] == PROTO_CODEC_HEVC;
-	if (!has_hevc) return reject(&ctl, 4, "the phone cannot decode HEVC");
+	if (!has_hevc) { reject(ctl, 4, "the phone cannot decode HEVC"); return END_REJECTED; }
 
 	struct edid_params ep;
 	struct edid_timing timing;
 	uint8_t edid[EDID_SIZE];
 	const char *why = "";
 	int reason = choose_mode(&hello, &ep, &timing, edid, &why);
-	if (reason) return reject(&ctl, (uint16_t)reason, why);
+	if (reason) { reject(ctl, (uint16_t)reason, why); return END_REJECTED; }
 
-	int err = bring_up(&ep, &timing, edid);
-	if (err == -ENODEV && !D.vd) { LOG("no free evdi device"); reject(&ctl, 3, "no virtual display available"); return 3; }
-	if (err) { LOG("cannot bring up the output and encoder: %s", strerror(-err)); reject(&ctl, 4, "no HEVC encoder or display"); return 1; }
+	/* the monitor: still there from before (a phone that came back in time), or new */
+	if (D.vd && D.enc && D.width == ep.width && D.height == ep.height && D.refresh_mhz == ep.refresh_mhz) {
+		LOG("the virtual output %ux%u is still there: reusing it", D.width, D.height);
+	} else {
+		int err = bring_up(&ep, &timing, edid);
+		if (err == -ENODEV && !D.vd) { LOG("no free evdi device"); reject(ctl, 3, "no virtual display available"); g_exit_code = 3; return END_FATAL; }
+		if (err) { LOG("cannot bring up the output and encoder: %s", strerror(-err)); reject(ctl, 4, "no HEVC encoder or display"); return END_REJECTED; }
+	}
 	touch_start(&hello, D.width, D.height, &ep);
+	D.epoch = 0;
+	D.awaiting_ack = false;
+	D.new_epoch_pending = false;
+	D.force_idr = true; /* the stream starts from a keyframe, whatever the encoder sent before */
+	D.refresh_due_us = 0;
 
 	/* ---- SETUP */
 	D.session_id = (uint32_t)(net_now_us() * 2654435761u) ^ (uint32_t)getpid();
-	int ufd = C.usb ? usb_dgram : net_udp_bind(C.port);
-	if (ufd < 0) { LOG("cannot bind UDP port %u: %s", C.port, strerror(-ufd)); return 1; }
+	int ufd = c->ufd;
+	if (!C.usb) {
+		ufd = net_udp_bind(C.port);
+		if (ufd < 0) { LOG("cannot bind UDP port %u: %s", C.port, strerror(-ufd)); return END_REJECTED; }
+		c->ufd = ufd;
+	}
 	struct proto_setup su;
 	memset(&su, 0, sizeof su);
 	su.proto_version = PROTO_VERSION;
@@ -615,16 +710,16 @@ static int run_session(double run_secs)
 	make_params(&su.params);
 	uint8_t sb[1400];
 	int sn = proto_setup_encode(&su, sb, sizeof sb);
-	if (sn < 0 || net_ctl_send(&ctl, PROTO_CTL_SETUP, sb, (size_t)sn) != 0) { LOG("cannot send SETUP"); return 1; }
-	if (make_sender() != 0) return 1;
+	if (sn < 0 || net_ctl_send(ctl, PROTO_CTL_SETUP, sb, (size_t)sn) != 0) { LOG("cannot send SETUP"); return END_LINK; }
+	if (make_sender() != 0) return END_FATAL;
 
 	/* ---- wait for READY (TCP) and the phone's first UDP packet */
-	struct sockaddr_in peer;
+	struct sockaddr_in *peer = &c->peer;
 	bool have_peer = C.usb, ready = false; /* over USB the datagram socket is already connected */
 	uint64_t deadline = net_now_us() + 15000000;
 	while (!stop && !(ready && have_peer) && net_now_us() < deadline) {
-		struct pollfd p[2] = { { .fd = cfd, .events = POLLIN }, { .fd = ufd, .events = POLLIN } };
-		if (poll(p, 2, 100) <= 0) continue;
+		struct pollfd p[2] = { { .fd = c->cfd, .events = POLLIN }, { .fd = ufd, .events = POLLIN } };
+		if (poll(p, 2, 100) <= 0) { service_display(); continue; }
 		if (p[1].revents & POLLIN) {
 			uint8_t b[2048];
 			struct sockaddr_in from;
@@ -634,20 +729,21 @@ static int run_session(double run_secs)
 			struct proto_pkt_hdr h;
 			if (n >= PROTO_PKT_HDR_SIZE && proto_pkt_hdr_read(b, (size_t)n, &h) == 0 && h.session_id == D.session_id &&
 			    h.type == PROTO_PKT_HELLO_UDP) {
-				peer = from;
+				*peer = from;
 				have_peer = true;
 			}
 		}
 		if (p[0].revents & POLLIN) {
-			int r = net_ctl_recv(&ctl, &type, &payload, &plen, 0);
+			int r = net_ctl_recv(ctl, &type, &payload, &plen, 0);
 			if (r == 1 && type == PROTO_CTL_READY) ready = true;
-			else if (r < 0) { LOG("phone went away during setup"); return 1; }
+			else if (r < 0) { LOG("phone went away during setup"); return END_LINK; }
 		}
 	}
-	if (!(ready && have_peer)) { LOG("the phone did not finish setting up"); return 1; }
+	if (stop) return END_STOP;
+	if (!(ready && have_peer)) { LOG("the phone did not finish setting up"); return END_LINK; }
 	char addr[64];
-	inet_ntop(AF_INET, &peer.sin_addr, addr, sizeof addr);
-	LOG("streaming to %s:%u (session %08x)", addr, ntohs(peer.sin_port), D.session_id);
+	inet_ntop(AF_INET, &peer->sin_addr, addr, sizeof addr);
+	LOG("streaming to %s:%u (session %08x)", addr, ntohs(peer->sin_port), D.session_id);
 
 	/* ---- stream: the first frame is the current screen, so a static desktop shows up at once */
 	D.streaming = true;
@@ -655,17 +751,20 @@ static int run_session(double run_secs)
 	if (vdisplay_current_frame(D.vd, &cur)) encode_and_submit(cur.data, cur.stride, net_now_us());
 	else D.refresh_due_us = net_now_us() + 100000;
 
+	enum end_reason end = END_LINK;
 	uint64_t last_rx = net_now_us(), end_us = run_secs > 0 ? net_now_us() + (uint64_t)(run_secs * 1e6) : 0;
 	uint64_t last_report = net_now_us(), next_ping = net_now_us() + 2000000, last_pong = net_now_us();
 	int evfd = vdisplay_event_fd(D.vd);
 	uint8_t pkt[2048];
-	while (!stop) {
+	int done = 0;
+	while (!done) {
+		if (stop) { end = END_STOP; break; }
 		uint64_t now = net_now_us();
-		if (end_us && now >= end_us) break;
+		if (end_us && now >= end_us) { end = END_STOP; break; }
 		uint64_t due = vsend_next_due_us(D.vs, now);
 		int timeout_ms = due <= now ? 0 : (int)((due - now + 999) / 1000);
 		if (timeout_ms > 10) timeout_ms = 10;
-		struct pollfd p[3] = { { .fd = evfd, .events = POLLIN }, { .fd = ufd, .events = POLLIN }, { .fd = cfd, .events = POLLIN } };
+		struct pollfd p[3] = { { .fd = evfd, .events = POLLIN }, { .fd = ufd, .events = POLLIN }, { .fd = c->cfd, .events = POLLIN } };
 		uint64_t t_a = net_now_us();
 		poll(p, 3, timeout_ms);
 		now = net_now_us();
@@ -684,7 +783,7 @@ static int run_session(double run_secs)
 				if (o < 0) { D.auth_drops++; continue; }
 				n = o;
 			}
-			if (!C.usb && (from.sin_addr.s_addr != peer.sin_addr.s_addr || from.sin_port != peer.sin_port)) continue;
+			if (!C.usb && (from.sin_addr.s_addr != peer->sin_addr.s_addr || from.sin_port != peer->sin_port)) continue;
 			last_rx = now;
 			struct proto_pkt_hdr ph;
 			if (n >= PROTO_PKT_HDR_SIZE + 8 && proto_pkt_hdr_read(pkt, (size_t)n, &ph) == 0 && ph.type == PROTO_PKT_TIME_REQ &&
@@ -696,13 +795,13 @@ static int run_session(double run_secs)
 					tr.t3 = net_now_us();
 					int bn = proto_time_resp_encode(&tr, body, sizeof body);
 					int rn = bn > 0 ? vsend_make_packet(D.vs, PROTO_PKT_TIME_RESP, body, (size_t)bn, rp, sizeof rp) : -1;
-					if (rn > 0) udp_send(ufd, rp, (size_t)rn, &peer);
+					if (rn > 0) udp_send(ufd, rp, (size_t)rn, peer);
 				}
 				continue;
 			}
 			struct proto_pkt_hdr ih;
 			if (proto_pkt_hdr_read(pkt, (size_t)n, &ih) == 0 && ih.type == PROTO_PKT_INPUT && ih.session_id == D.session_id) {
-				handle_input(pkt + PROTO_PKT_HDR_SIZE, (size_t)n - PROTO_PKT_HDR_SIZE, ufd, &peer);
+				handle_input(pkt + PROTO_PKT_HDR_SIZE, (size_t)n - PROTO_PKT_HDR_SIZE, ufd, peer);
 				continue;
 			}
 			vsend_on_packet(D.vs, pkt, (size_t)n, now);
@@ -711,11 +810,18 @@ static int run_session(double run_secs)
 		/* the control channel */
 		if (p[2].revents & (POLLIN | POLLHUP)) {
 			for (;;) {
-				int r = net_ctl_recv(&ctl, &type, &payload, &plen, 0);
+				int r = net_ctl_recv(ctl, &type, &payload, &plen, 0);
 				if (r == 0) break;
-				if (r < 0) { LOG("control connection closed"); stop = 1; break; }
-				if (type == PROTO_CTL_CLOSE) { LOG("the phone closed the session"); stop = 1; break; }
-				if (type == PROTO_CTL_PING) net_ctl_send(&ctl, PROTO_CTL_PONG, payload, plen);
+				if (r < 0) { LOG("control connection closed"); end = END_LINK; done = 1; break; }
+				if (type == PROTO_CTL_CLOSE) {
+					struct proto_close cl;
+					uint16_t why_closed = proto_close_decode(payload, plen, &cl) == 0 ? cl.reason : 0;
+					LOG("the phone closed the session (%s)", why_closed == 1 ? "its screen locked" : why_closed == 3 ? "error" : "on purpose");
+					end = why_closed == 1 ? END_LOCK : why_closed == 3 ? END_LINK : END_USER;
+					done = 1;
+					break;
+				}
+				if (type == PROTO_CTL_PING) net_ctl_send(ctl, PROTO_CTL_PONG, payload, plen);
 				else if (type == PROTO_CTL_PONG) { D.pongs++; last_pong = now; }
 				else if (type == PROTO_CTL_RECONFIGURE_ACK && D.awaiting_ack) {
 					D.awaiting_ack = false;
@@ -739,15 +845,15 @@ static int run_session(double run_secs)
 						LOG("the phone's display changed to %ux%u: reconfiguring", nep.width, nep.height);
 						D.streaming = false;
 						D.refresh_due_us = 0;
-						if (bring_up(&nep, &nt, nedid) != 0 || ++D.epoch == 0) { LOG("reconfiguration failed"); stop = 1; break; }
+						if (bring_up(&nep, &nt, nedid) != 0 || ++D.epoch == 0) { LOG("reconfiguration failed"); end = END_LINK; done = 1; break; }
 						touch_start(&nh, D.width, D.height, &nep); /* the coordinate range changed with the size */
-						if (make_sender() != 0) { stop = 1; break; }
+						if (make_sender() != 0) { end = END_FATAL; done = 1; break; }
 						if (!C.insecure) sec_udp_set_epoch(&secudp, D.epoch); /* sequence numbers restart: new datagram keys */
 						struct proto_stream_params rp;
 						make_params(&rp);
 						uint8_t rb[1400];
 						int rn = proto_stream_params_encode(&rp, rb, sizeof rb);
-						if (rn < 0 || net_ctl_send(&ctl, PROTO_CTL_RECONFIGURE, rb, (size_t)rn) != 0) { stop = 1; break; }
+						if (rn < 0 || net_ctl_send(ctl, PROTO_CTL_RECONFIGURE, rb, (size_t)rn) != 0) { end = END_LINK; done = 1; break; }
 						D.awaiting_ack = true;
 						D.ack_deadline_us = net_now_us() + 10000000;
 						D.reconfigs++;
@@ -755,17 +861,17 @@ static int run_session(double run_secs)
 					}
 				}
 			}
-			if (stop) break;
+			if (done) break;
 		}
-		if (D.awaiting_ack && now > D.ack_deadline_us) { LOG("the phone did not confirm the reconfiguration"); break; }
+		if (D.awaiting_ack && now > D.ack_deadline_us) { LOG("the phone did not confirm the reconfiguration"); end = END_LINK; break; }
 		if (now > next_ping) { /* liveness of the control channel itself */
 			next_ping = now + 2000000;
 			uint8_t tb[8];
-			if (proto_token_encode(now, tb, sizeof tb) == 8) net_ctl_send(&ctl, PROTO_CTL_PING, tb, 8);
+			if (proto_token_encode(now, tb, sizeof tb) == 8) net_ctl_send(ctl, PROTO_CTL_PING, tb, 8);
 		}
-		if (now - last_pong > 8000000 && D.pongs) { LOG("no PONG for 8 s: the control channel is dead"); break; }
-		if (C.usb && usblink_gone(link)) { LOG("the USB cable was unplugged"); break; }
-		if (now - last_rx > 3000000 && !D.awaiting_ack) { LOG("no packets from the phone for 3 s"); break; }
+		if (now - last_pong > 8000000 && D.pongs) { LOG("no PONG for 8 s: the control channel is dead"); end = END_LINK; break; }
+		if (C.usb && usblink_gone(c->link)) { LOG("the USB cable was unplugged"); end = END_LINK; break; }
+		if (now - last_rx > 3000000 && !D.awaiting_ack) { LOG("no packets from the phone for 3 s"); end = END_LINK; break; }
 
 		if (D.refresh_due_us && now >= D.refresh_due_us && D.streaming && vdisplay_current_frame(D.vd, &cur) &&
 		    (unsigned)cur.width == D.width && (unsigned)cur.height == D.height) {
@@ -778,7 +884,7 @@ static int run_session(double run_secs)
 			if (vsend_next_due_us(D.vs, now) > now) break;
 			int n = vsend_next_packet(D.vs, now, pkt, sizeof pkt);
 			if (n <= 0) break;
-			if (udp_send(ufd, pkt, (size_t)n, &peer) < 0) D.send_errors++;
+			if (udp_send(ufd, pkt, (size_t)n, peer) < 0) D.send_errors++;
 			else D.sent_packets++;
 		}
 
@@ -801,22 +907,75 @@ static int run_session(double run_secs)
 	       (unsigned long long)st->packets, (unsigned long long)st->repair_packets, (unsigned long long)st->nacks,
 	       (unsigned long long)st->frames_lost, D.frames_encoded ? D.encode_ms_sum / D.frames_encoded : 0.0, D.encode_ms_max,
 	       (unsigned long long)D.reconfigs, (unsigned long long)D.pongs, (unsigned long long)D.auth_drops, touch_events_applied);
-	uint8_t cb[64];
-	struct proto_close cl;
-	memset(&cl, 0, sizeof cl);
-	int cn = proto_close_encode(&cl, cb, sizeof cb);
-	if (cn > 0) net_ctl_send(&ctl, PROTO_CTL_CLOSE, cb, (size_t)cn);
-	vsend_destroy(D.vs);
-	encoder_close(D.enc);
-	if (touchdev) touch_close(touchdev);
-	if (pendev) pen_close(pendev);
-	vdisplay_close(D.vd);
-	net_ctl_close(&ctl);
-	if (!C.usb) close(ufd);
-	else {
-		close(ufd);
-		usbmux_stop(mux);
-		usblink_close(link);
+	fflush(stdout);
+	if (end == END_STOP) { /* tell the phone we are going away on purpose */
+		uint8_t cb[64];
+		struct proto_close cl;
+		memset(&cl, 0, sizeof cl);
+		int cn = proto_close_encode(&cl, cb, sizeof cb);
+		if (cn > 0) net_ctl_send(ctl, PROTO_CTL_CLOSE, cb, (size_t)cn);
 	}
-	return 0;
+	/* the session is over: no more video, fingers lifted; the monitor and encoder stay for the caller to decide about */
+	D.streaming = false;
+	if (D.vs) { vsend_destroy(D.vs); D.vs = NULL; }
+	if (touchdev) touch_release_all(touchdev);
+	if (pendev) pen_release_all(pendev);
+	return end;
+}
+
+static int run_session(double run_secs)
+{
+	t_start = net_now_us();
+	if (C.insecure) {
+		LOG("WARNING: running without authentication or encryption (-I): development only");
+	} else {
+		char cdir[900];
+		if (C.config_dir) snprintf(cdir, sizeof cdir, "%s", C.config_dir);
+		else if (identity_default_dir(cdir, sizeof cdir) != 0) { LOG("cannot work out the config directory: use -K DIR"); return 1; }
+		int created, e = identity_load_or_create(cdir, &g_id, &created);
+		if (e) { LOG("cannot use the identity in %s: %s", cdir, strerror(-e)); return 1; }
+		char fp[IDENTITY_FINGERPRINT_LEN];
+		identity_fingerprint(g_id.pub, fp);
+		LOG("%s identity in %s, key %s", created ? "created a new" : "using the", cdir, fp);
+		snprintf(g_ks_path, sizeof g_ks_path, "%s/authorized_keys", cdir);
+	}
+	if (!C.usb) {
+		g_lfd = net_tcp_listen(C.port);
+		if (g_lfd < 0) { fprintf(stderr, "cannot listen on %u: %s\n", C.port, strerror(-g_lfd)); return 1; }
+		LOG("listening on port %u", C.port);
+	} else {
+		LOG("waiting for a tablet on USB");
+	}
+
+	uint64_t grace_deadline = 0; /* while the monitor waits for a lost phone: when it gives up */
+	int exit_code = 0;
+	for (;;) {
+		struct conn c;
+		int r = acquire_peer(&c, grace_deadline);
+		if (r == -ECANCELED) break;
+		if (r == -ETIMEDOUT) {
+			LOG("the phone did not come back within %u s", C.grace_secs);
+			teardown_output();
+			grace_deadline = 0;
+			if (C.once) break;
+			continue;
+		}
+		if (r) { exit_code = 1; break; }
+		enum end_reason end = serve(&c, run_secs);
+		conn_close(&c);
+		if (end == END_FATAL) { exit_code = g_exit_code ? g_exit_code : 1; break; }
+		if (end == END_STOP) break;
+		if (end == END_REJECTED) { if (C.once) break; continue; } /* the monitor and any grace period are as they were */
+		if (C.once) break;
+		if (end == END_LINK && C.grace_secs && D.vd) {
+			grace_deadline = net_now_us() + (uint64_t)C.grace_secs * 1000000;
+			LOG("lost the phone: keeping the virtual output for %u s in case it comes back", C.grace_secs);
+		} else {
+			teardown_output(); /* on purpose, or its screen locked, or no grace period: the compositor moves the windows away now */
+			grace_deadline = 0;
+		}
+	}
+	teardown_output();
+	if (g_lfd >= 0) close(g_lfd);
+	return exit_code;
 }
