@@ -43,6 +43,9 @@ static struct {
 	struct wl_compositor *compositor;
 	struct wl_shm *shm;
 	struct xdg_wm_base *wm;
+	struct wl_seat *seat;
+	struct wl_touch *touch;
+	bool log_touch; /* -E: print every touch event the compositor delivers to this window */
 	struct output outputs[MAX_OUTPUTS];
 	int n_outputs;
 
@@ -84,6 +87,43 @@ static const struct wl_output_listener output_listener = {
 	out_geometry, out_mode, out_done, out_scale, out_name, out_description,
 };
 
+/* ---- touch (-E): what the compositor delivers, in surface coordinates, to check where a touch screen's touches land */
+static void touch_down(void *d, struct wl_touch *t, uint32_t serial, uint32_t time, struct wl_surface *s, int32_t id, wl_fixed_t x, wl_fixed_t y)
+{
+	(void)d; (void)t; (void)serial; (void)s;
+	printf("TOUCH down id=%d x=%.1f y=%.1f t=%u\n", id, wl_fixed_to_double(x), wl_fixed_to_double(y), time);
+	fflush(stdout);
+}
+static void touch_up(void *d, struct wl_touch *t, uint32_t serial, uint32_t time, int32_t id)
+{
+	(void)d; (void)t; (void)serial;
+	printf("TOUCH up id=%d t=%u\n", id, time);
+	fflush(stdout);
+}
+static void touch_motion(void *d, struct wl_touch *t, uint32_t time, int32_t id, wl_fixed_t x, wl_fixed_t y)
+{
+	(void)d; (void)t;
+	printf("TOUCH motion id=%d x=%.1f y=%.1f t=%u\n", id, wl_fixed_to_double(x), wl_fixed_to_double(y), time);
+	fflush(stdout);
+}
+static void touch_frame(void *d, struct wl_touch *t) { (void)d; (void)t; }
+static void touch_cancel(void *d, struct wl_touch *t) { (void)d; (void)t; printf("TOUCH cancel\n"); fflush(stdout); }
+static void touch_shape(void *d, struct wl_touch *t, int32_t id, wl_fixed_t major, wl_fixed_t minor) { (void)d; (void)t; (void)id; (void)major; (void)minor; }
+static void touch_orientation(void *d, struct wl_touch *t, int32_t id, wl_fixed_t o) { (void)d; (void)t; (void)id; (void)o; }
+static const struct wl_touch_listener touch_listener = { touch_down, touch_up, touch_motion, touch_frame, touch_cancel, touch_shape, touch_orientation };
+
+static void seat_caps(void *d, struct wl_seat *seat, uint32_t caps)
+{
+	(void)d;
+	if (app.log_touch) printf("SEAT capabilities=0x%x touch=%s\n", caps, caps & WL_SEAT_CAPABILITY_TOUCH ? "yes" : "no"), fflush(stdout);
+	if ((caps & WL_SEAT_CAPABILITY_TOUCH) && !app.touch) {
+		app.touch = wl_seat_get_touch(seat);
+		wl_touch_add_listener(app.touch, &touch_listener, NULL);
+	}
+}
+static void seat_name(void *d, struct wl_seat *seat, const char *name) { (void)d; (void)seat; (void)name; }
+static const struct wl_seat_listener seat_listener = { seat_caps, seat_name };
+
 /* ---- registry */
 static void wm_ping(void *d, struct xdg_wm_base *wm, uint32_t serial) { (void)d; xdg_wm_base_pong(wm, serial); }
 static const struct xdg_wm_base_listener wm_listener = { wm_ping };
@@ -98,6 +138,9 @@ static void reg_global(void *d, struct wl_registry *reg, uint32_t name, const ch
 	} else if (!strcmp(iface, xdg_wm_base_interface.name)) {
 		app.wm = wl_registry_bind(reg, name, &xdg_wm_base_interface, 1);
 		xdg_wm_base_add_listener(app.wm, &wm_listener, NULL);
+	} else if (!strcmp(iface, wl_seat_interface.name)) {
+		app.seat = wl_registry_bind(reg, name, &wl_seat_interface, version < 5 ? version : 5);
+		wl_seat_add_listener(app.seat, &seat_listener, NULL);
 	} else if (!strcmp(iface, wl_output_interface.name) && app.n_outputs < MAX_OUTPUTS) {
 		struct output *o = &app.outputs[app.n_outputs++];
 		uint32_t v = version < 4 ? version : 4;
@@ -227,11 +270,12 @@ static const struct xdg_toplevel_listener tl_listener = { tl_configure, tl_close
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s -o OUTPUT [-t SECS] [-a] [-T]\n"
+		"usage: %s -o OUTPUT [-t SECS] [-a] [-T] [-E]\n"
 		"  -o OUTPUT  connector name of the output to fullscreen on (e.g. DVI-I-1)\n"
 		"  -t SECS    exit after this many seconds (default: until SIGINT/SIGTERM)\n"
 		"  -a         animate: sweep a bar across the pattern on every frame\n"
-		"  -T         draw a timestamp into the top rows of every frame (see tools/stamp.h)\n",
+		"  -T         draw a timestamp into the top rows of every frame (see tools/stamp.h)\n"
+		"  -E         print the touch events the compositor delivers to the window (surface coordinates)\n",
 		argv0);
 }
 
@@ -240,12 +284,13 @@ int main(int argc, char **argv)
 	const char *want = NULL;
 	double secs = -1;
 	int opt;
-	while ((opt = getopt(argc, argv, "o:t:aTh")) != -1) {
+	while ((opt = getopt(argc, argv, "o:t:aTEh")) != -1) {
 		switch (opt) {
 		case 'o': want = optarg; break;
 		case 't': secs = atof(optarg); break;
 		case 'a': app.animate = true; break;
 		case 'T': app.stamp = true; break;
+		case 'E': app.log_touch = true; break;
 		default: usage(argv[0]); return 2;
 		}
 	}

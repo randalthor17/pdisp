@@ -121,7 +121,7 @@ test_stream = executable('test_stream', 'tests/test_stream.c', dependencies: pro
 test('video stream over a simulated link', test_stream, timeout: 300)
 
 # the daemon and the desktop test client
-pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')])
+pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', 'daemon/touch.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')])
 libav_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libswscale')]
 pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads'), dependency('sdl2')] + libav_deps)
 
@@ -209,3 +209,13 @@ test('input event stream', test_inputseq)
 
 test_touch = executable('test_touch', 'tests/test_touch.c', 'daemon/touch.c', dependencies: proto_dep)
 test('uinput touchscreen', test_touch)
+
+pdisp_touch_demo = executable('pdisp-touch-demo', 'tools/pdisp-touch-demo.c', 'daemon/touch.c', dependencies: proto_dep)
+
+m8_touch = find_program('tests/m8_touch_check.sh')
+test('m8 touch reaches the virtual output', m8_touch,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm8-touch-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 240,
+  suite: 'integration')

@@ -8,6 +8,7 @@
  */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <dirent.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -26,8 +27,10 @@
 #include "encoder.h"
 #include "handshake.h"
 #include "identity.h"
+#include "inputseq.h"
 #include "net.h"
 #include "proto.h"
+#include "touch.h"
 #include "usblink.h"
 #include "usbmux.h"
 #include "vdisplay.h"
@@ -50,6 +53,8 @@ static struct {
 	const char *config_dir;  /* identity and authorized_keys live here (default ~/.config/pdisp) */
 	int pair_mode;           /* what to do with a device that is not in authorized_keys */
 	bool insecure;           /* development only: no handshake, no encryption (the M4 behaviour) */
+	bool no_touch;           /* do not create a touchscreen for the phone */
+	const char *touch_hook;  /* a command run when the touchscreen exists, to bind it to the virtual output (docs/touch.md) */
 	bool once;               /* serve one session and exit instead of waiting for the next device */
 	bool usb;          /* talk to a tablet over a USB cable (accessory mode) instead of listening on the network */
 	unsigned usb_vid;  /* only consider this USB vendor (0 = any) */
@@ -74,11 +79,15 @@ struct daemon {
 	uint64_t frames_encoded, frames_skipped, idr_frames, submit_failures, send_errors, sent_packets, reconfigs, pongs;
 	double encode_ms_sum, encode_ms_max;
 	uint64_t t_service_us, t_poll_us, auth_drops;
+	int card_index; /* the evdi card in use, for finding the connector name */
 };
 
 static struct daemon D;
 
 enum { PAIR_ASK, PAIR_ACCEPT, PAIR_DENY };
+static struct touchdev *touchdev;  /* the phone's touchscreen on this PC, while a session is running */
+static struct input_rx inrx;
+static unsigned long touch_events_applied;
 static struct sec_udp secudp; /* datagram keys of the current session (valid when !C.insecure) */
 
 static void cb_invalidate(uint32_t lost, void *user)
@@ -191,6 +200,7 @@ static int bring_up(const struct edid_params *ep, const struct edid_timing *t, c
 		int err = vdisplay_open(card, &ev, &D.vd);
 		if (err) return err;
 		LOG("using evdi card%d", card);
+		D.card_index = card;
 	} else {
 		vdisplay_disconnect(D.vd);
 	}
@@ -275,6 +285,10 @@ static void usage(const char *argv0)
 		"  -K DIR      identity and authorized_keys directory (default ~/.config/pdisp)\n"
 		"  -P MODE     a device that is not authorised yet: ask (prompt on stdin, the default), accept (add it: development)\n"
 		"              or deny\n"
+		"  -T          do not create a touchscreen for the phone's touches\n"
+		"  -H CMD      run this shell command once the touchscreen exists, with PDISP_OUTPUT (connector, if known), PDISP_OUTPUT_ID\n"
+		"              (\"make model serial\" as the compositor names it), PDISP_TOUCH_DEVICE, PDISP_WIDTH, PDISP_HEIGHT set: use it\n"
+		"              to bind the touchscreen to the virtual output (see docs/touch.md)\n"
 		"  -I          INSECURE: no handshake and no encryption; for development only\n"
 		"  -o          serve one session and exit (default: keep waiting for the next device)\n",
 		argv0);
@@ -286,7 +300,7 @@ int main(int argc, char **argv)
 {
 	int opt;
 	double run_secs = 0;
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:uV:K:P:Iho")) != -1) {
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:uV:K:P:H:TIho")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
 		case 'n': C.name = optarg; break;
@@ -313,6 +327,8 @@ int main(int argc, char **argv)
 			else { usage(argv[0]); return 2; }
 			break;
 		case 'I': C.insecure = true; break;
+		case 'T': C.no_touch = true; break;
+		case 'H': C.touch_hook = optarg; break;
 		case 'o': C.once = true; break;
 		case 'V': C.usb_vid = (unsigned)strtoul(optarg, NULL, 16); break;
 		default: usage(argv[0]); return 2;
@@ -340,6 +356,81 @@ int main(int argc, char **argv)
 		return 0;
 	}
 	return run_session(run_secs);
+}
+
+/* The compositor's name for the virtual output (its DRM connector, e.g. DVI-I-1), from sysfs, or "" if it is not there (yet). */
+static void connector_name(char *out, size_t cap)
+{
+	out[0] = 0;
+	if (D.card_index < 0) return;
+	char prefix[32], path[320];
+	snprintf(prefix, sizeof prefix, "card%d-", D.card_index);
+	DIR *d = opendir("/sys/class/drm");
+	if (!d) return;
+	struct dirent *e;
+	while ((e = readdir(d))) {
+		if (strncmp(e->d_name, prefix, strlen(prefix)) != 0) continue;
+		snprintf(path, sizeof path, "/sys/class/drm/%s/status", e->d_name);
+		FILE *f = fopen(path, "r");
+		char st[32] = "";
+		if (f) { if (!fgets(st, sizeof st, f)) st[0] = 0; fclose(f); }
+		if (strncmp(st, "connected", 9) == 0) { snprintf(out, cap, "%s", e->d_name + strlen(prefix)); break; }
+	}
+	closedir(d);
+}
+
+/* (Re)creates the phone's touchscreen for the current virtual output size, and tells the hook (if any). */
+static void touch_start(const struct proto_hello *h, unsigned w, unsigned hgt, const struct edid_params *ep)
+{
+	if (touchdev) { touch_close(touchdev); touchdev = NULL; }
+	input_rx_init(&inrx);
+	if (C.no_touch || C.insecure || !(h->device_caps & PROTO_CAP_TOUCH)) {
+		LOG("no touchscreen: %s", C.no_touch ? "disabled with -T" : C.insecure ? "not without security (-I)" : "the phone has none");
+		return;
+	}
+	struct touch_config tc = { .name = "pdisp touchscreen", .width = w, .height = hgt, .dpi = h->density_dpi,
+				   .slots = h->max_touch_points ? (h->max_touch_points > TOUCH_MAX_SLOTS ? TOUCH_MAX_SLOTS : h->max_touch_points) : 1 };
+	int e = touch_open(&tc, &touchdev);
+	if (e) { LOG("cannot create the touchscreen: %s (touch needs write access to /dev/uinput)", strerror(-e)); touchdev = NULL; return; }
+	char out[64], id[160];
+	connector_name(out, sizeof out);
+	snprintf(id, sizeof id, "PNP(%s) %s %s", ep->pnp_id, ep->name, ep->serial_text);
+	LOG("touchscreen created: %ux%u, %u simultaneous touches, output '%s' (%s)", w, hgt, tc.slots, out[0] ? out : "unknown", id);
+	if (C.touch_hook) {
+		signal(SIGCHLD, SIG_IGN); /* nobody waits for the hook */
+		pid_t pid = fork();
+		if (pid == 0) {
+			char wb[16], hb[16];
+			snprintf(wb, sizeof wb, "%u", w);
+			snprintf(hb, sizeof hb, "%u", hgt);
+			setenv("PDISP_OUTPUT", out, 1);
+			setenv("PDISP_OUTPUT_ID", id, 1);
+			setenv("PDISP_TOUCH_DEVICE", tc.name, 1);
+			setenv("PDISP_WIDTH", wb, 1);
+			setenv("PDISP_HEIGHT", hb, 1);
+			execl("/bin/sh", "sh", "-c", C.touch_hook, (char *)NULL);
+			_exit(127);
+		}
+	} else {
+		LOG("the compositor must map the touchscreen to the virtual output. niri: input { touch { map-to-output \"%s\" } } (see docs/touch.md)", id);
+	}
+}
+
+/* An INPUT datagram from the phone: apply each new event once, in order, then acknowledge. */
+static void handle_input(const uint8_t *payload, size_t len, int ufd, const struct sockaddr_in *peer)
+{
+	struct proto_input in;
+	if (!touchdev || proto_input_decode(payload, len, &in) != 0) return;
+	struct proto_input_event ev[PROTO_MAX_INPUT_EVENTS];
+	int gap;
+	unsigned n = input_rx_accept(&inrx, &in, ev, &gap);
+	if (gap) { LOG("touch events were lost for good: lifting every finger"); touch_release_all(touchdev); }
+	for (unsigned i = 0; i < n; i++) { touch_event(touchdev, &ev[i]); touch_events_applied++; }
+	uint8_t body[4], pkt[PROTO_PKT_HDR_SIZE + 4];
+	if (proto_u32_encode(input_rx_acked(&inrx), body, sizeof body) == 4) {
+		int pn = vsend_make_packet(D.vs, PROTO_PKT_INPUT_ACK, body, 4, pkt, sizeof pkt);
+		if (pn > 0) udp_send(ufd, pkt, (size_t)pn, peer);
+	}
 }
 
 /* Waits for one line on stdin (the pairing prompt's answer). Returns its first character lowercased, 0 on end of input or error,
@@ -488,6 +579,7 @@ static int run_session(double run_secs)
 	int err = bring_up(&ep, &timing, edid);
 	if (err == -ENODEV && !D.vd) { LOG("no free evdi device"); reject(&ctl, 3, "no virtual display available"); return 3; }
 	if (err) { LOG("cannot bring up the output and encoder: %s", strerror(-err)); reject(&ctl, 4, "no HEVC encoder or display"); return 1; }
+	touch_start(&hello, D.width, D.height, &ep);
 
 	/* ---- SETUP */
 	D.session_id = (uint32_t)(net_now_us() * 2654435761u) ^ (uint32_t)getpid();
@@ -586,6 +678,11 @@ static int run_session(double run_secs)
 				}
 				continue;
 			}
+			struct proto_pkt_hdr ih;
+			if (proto_pkt_hdr_read(pkt, (size_t)n, &ih) == 0 && ih.type == PROTO_PKT_INPUT && ih.session_id == D.session_id) {
+				handle_input(pkt + PROTO_PKT_HDR_SIZE, (size_t)n - PROTO_PKT_HDR_SIZE, ufd, &peer);
+				continue;
+			}
 			vsend_on_packet(D.vs, pkt, (size_t)n, now);
 		}
 
@@ -621,6 +718,7 @@ static int run_session(double run_secs)
 						D.streaming = false;
 						D.refresh_due_us = 0;
 						if (bring_up(&nep, &nt, nedid) != 0 || ++D.epoch == 0) { LOG("reconfiguration failed"); stop = 1; break; }
+						touch_start(&nh, D.width, D.height, &nep); /* the coordinate range changed with the size */
 						if (make_sender() != 0) { stop = 1; break; }
 						if (!C.insecure) sec_udp_set_epoch(&secudp, D.epoch); /* sequence numbers restart: new datagram keys */
 						struct proto_stream_params rp;
@@ -676,11 +774,11 @@ static int run_session(double run_secs)
 
 	const struct vsend_stats *st = vsend_stats(D.vs);
 	printf("DAEMON frames=%llu skipped=%llu idr=%llu packets=%llu repair_packets=%llu nacks=%llu frames_lost=%llu "
-	       "encode_ms_avg=%.2f encode_ms_max=%.2f reconfigs=%llu pongs=%llu auth_drops=%llu\n",
+	       "encode_ms_avg=%.2f encode_ms_max=%.2f reconfigs=%llu pongs=%llu auth_drops=%llu touch_events=%lu\n",
 	       (unsigned long long)D.frames_encoded, (unsigned long long)D.frames_skipped, (unsigned long long)D.idr_frames,
 	       (unsigned long long)st->packets, (unsigned long long)st->repair_packets, (unsigned long long)st->nacks,
 	       (unsigned long long)st->frames_lost, D.frames_encoded ? D.encode_ms_sum / D.frames_encoded : 0.0, D.encode_ms_max,
-	       (unsigned long long)D.reconfigs, (unsigned long long)D.pongs, (unsigned long long)D.auth_drops);
+	       (unsigned long long)D.reconfigs, (unsigned long long)D.pongs, (unsigned long long)D.auth_drops, touch_events_applied);
 	uint8_t cb[64];
 	struct proto_close cl;
 	memset(&cl, 0, sizeof cl);
@@ -688,6 +786,7 @@ static int run_session(double run_secs)
 	if (cn > 0) net_ctl_send(&ctl, PROTO_CTL_CLOSE, cb, (size_t)cn);
 	vsend_destroy(D.vs);
 	encoder_close(D.enc);
+	if (touchdev) touch_close(touchdev);
 	vdisplay_close(D.vd);
 	net_ctl_close(&ctl);
 	if (!C.usb) close(ufd);

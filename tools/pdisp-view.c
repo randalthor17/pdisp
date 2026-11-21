@@ -25,6 +25,7 @@
 
 #include "handshake.h"
 #include "identity.h"
+#include "inputseq.h"
 #include "net.h"
 #include "pattern.h"
 #include "png.h"
@@ -94,6 +95,12 @@ struct viewer {
 	struct SwsContext *chk_sws;
 	uint8_t *chk_bgra;
 	unsigned chk_samples, chk_bad, chk_other; /* bad: partly wrong picture; other: not the pattern at all (compositor showed something else) */
+	/* -j: a scripted touch session, played as the phone would send it */
+	struct input_tx tx;
+	struct sched_ev { uint64_t at_us; struct proto_input_event ev; } *sched;
+	size_t n_sched, i_sched;
+	uint64_t touch_started_us;
+	uint64_t touch_pushed, touch_acked_to;
 	const char *snap_path;   /* -o: where a snapshot goes; bad checks save pictures next to it */
 	double chk_min;          /* lowest pattern match over the periodic checks */
 };
@@ -344,6 +351,49 @@ static void stop_decoder(void)
 	avcodec_free_context(&V.dec);
 }
 
+/* "tap:X,Y swipe:X1,Y1:X2,Y2 pinch:CX,CY:R1:R2 hold:MS": fractions of the screen, as in tools/pdisp-touch-demo.c */
+static void sched_add(uint64_t at, uint8_t kind, uint8_t id, double x, double y)
+{
+	static size_t cap;
+	if (V.n_sched == cap) { cap = cap ? cap * 2 : 256; V.sched = realloc(V.sched, cap * sizeof *V.sched); }
+	struct proto_input_event e;
+	memset(&e, 0, sizeof e);
+	e.kind = kind; e.pointer_id = id; e.pressure = 30000;
+	e.x = (uint16_t)(x < 0 ? 0 : x > 1 ? 65535 : x * 65535 + 0.5);
+	e.y = (uint16_t)(y < 0 ? 0 : y > 1 ? 65535 : y * 65535 + 0.5);
+	V.sched[V.n_sched++] = (struct sched_ev){ at, e };
+}
+
+static int parse_touch_script(const char *script)
+{
+	char *copy = strdup(script), *save = NULL;
+	uint64_t t = 0;
+	for (char *step = strtok_r(copy, " ", &save); step; step = strtok_r(NULL, " ", &save)) {
+		double a, b, c, d;
+		int ms;
+		if (sscanf(step, "tap:%lf,%lf", &a, &b) == 2) {
+			sched_add(t, PROTO_IN_DOWN, 0, a, b); t += 60000; sched_add(t, PROTO_IN_UP, 0, a, b);
+		} else if (sscanf(step, "swipe:%lf,%lf:%lf,%lf", &a, &b, &c, &d) == 4) {
+			sched_add(t, PROTO_IN_DOWN, 0, a, b);
+			for (int i = 1; i <= 20; i++) { t += 8000; sched_add(t, PROTO_IN_MOVE, 0, a + (c - a) * i / 20, b + (d - b) * i / 20); }
+			sched_add(t, PROTO_IN_UP, 0, c, d);
+		} else if (sscanf(step, "pinch:%lf,%lf:%lf:%lf", &a, &b, &c, &d) == 4) {
+			sched_add(t, PROTO_IN_DOWN, 0, a - c, b); sched_add(t, PROTO_IN_DOWN, 1, a + c, b);
+			for (int i = 1; i <= 20; i++) {
+				double rr = c + (d - c) * i / 20;
+				t += 8000; sched_add(t, PROTO_IN_MOVE, 0, a - rr, b); sched_add(t, PROTO_IN_MOVE, 1, a + rr, b);
+			}
+			sched_add(t, PROTO_IN_UP, 0, a - d, b); sched_add(t, PROTO_IN_UP, 1, a + d, b);
+		} else if (sscanf(step, "hold:%d", &ms) == 1) {
+			t += (uint64_t)ms * 1000;
+			continue;
+		} else { free(copy); return -1; }
+		t += 150000;
+	}
+	free(copy);
+	return 0;
+}
+
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
@@ -358,6 +408,10 @@ static void usage(const char *argv0)
 		"  -G            read the timestamp the pattern client draws (-T there) and report glass-to-glass latency\n"
 		"  -L pct        drop this percentage of incoming datagrams at random\n"
 		"  -X secs:WxH   after this long, report a display change to this size (a rotation), exercising RECONFIGURE\n"
+		"  -j SCRIPT     play these touches to the PC (after a second): tap:X,Y swipe:X1,Y1:X2,Y2 pinch:CX,CY:R1:R2 hold:MS, X and Y\n"
+		"                as fractions of the screen\n"
+		"  -J secs       start the touch script this long after the stream starts (default 1)\n"
+		"  -q pct        drop this percentage of the INPUT datagrams we send (tests the repeat-until-acknowledged stream)\n"
 		"  -i DIR        identity and known_pcs directory (default ~/.config/pdisp-view)\n"
 		"  -I            INSECURE: no handshake, no encryption (only for a daemon started with -I)\n"
 		"  -K us         skew this viewer's clock by this many microseconds (tests the clock sync)\n"
@@ -376,11 +430,12 @@ int main(int argc, char **argv)
 	bool check = false;
 	optind = 3;
 	int opt;
-	const char *identity_dir = NULL;
+	const char *identity_dir = NULL, *touch_script = NULL;
+	double input_drop_pct = 0, touch_delay = 1;
 	bool insecure = false;
 	double change_after = 0;
 	unsigned change_w = 0, change_h = 0;
-	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:i:Ivh")) != -1) {
+	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:i:j:J:q:Ivh")) != -1) {
 		switch (opt) {
 		case 'W': nw = (unsigned)atoi(optarg); break;
 		case 'H': nh = (unsigned)atoi(optarg); break;
@@ -394,6 +449,9 @@ int main(int argc, char **argv)
 		case 'L': drop_pct = atof(optarg); break;
 		case 'K': V.skew_us = atoll(optarg); break;
 		case 'i': identity_dir = optarg; break;
+		case 'j': touch_script = optarg; break;
+		case 'q': input_drop_pct = atof(optarg); break;
+		case 'J': touch_delay = atof(optarg); break;
 		case 'I': insecure = true; break;
 		case 'X':
 			if (sscanf(optarg, "%lf:%ux%u", &change_after, &change_w, &change_h) != 3) { usage(argv[0]); return 2; }
@@ -407,6 +465,8 @@ int main(int argc, char **argv)
 	sigaction(SIGTERM, &sa, NULL);
 	t_start = net_now_us();
 	V.drop_rate = drop_pct / 100.0;
+	input_tx_init(&V.tx);
+	if (touch_script && parse_touch_script(touch_script) != 0) { fprintf(stderr, "cannot parse the touch script '%s'\n", touch_script); return 2; }
 	V.drop_rng = 0x2545f4914f6cdd1dull;
 
 	/* ---- control channel: HELLO, SETUP */
@@ -565,6 +625,14 @@ int main(int argc, char **argv)
 					V.time_resp++;
 				}
 			}
+			if (got >= PROTO_PKT_HDR_SIZE + 4 && proto_pkt_hdr_read(pkt, (size_t)got, &ph) == 0 && ph.type == PROTO_PKT_INPUT_ACK) {
+				uint32_t acked;
+				if (proto_u32_decode(pkt + PROTO_PKT_HDR_SIZE, (size_t)got - PROTO_PKT_HDR_SIZE, &acked) == 0) {
+					input_tx_ack(&V.tx, acked);
+					if ((int32_t)(acked - (uint32_t)V.touch_acked_to) > 0) V.touch_acked_to = acked;
+				}
+				continue;
+			}
 			vrecv_on_packet(vr, pkt, (size_t)got, now);
 		}
 		if (stream_start && now >= next_time) { /* ask for the PC's clock once a second (every 100 ms at first, to settle quickly) */
@@ -625,6 +693,25 @@ int main(int argc, char **argv)
 			hn = vrecv_make_packet(vr, PROTO_PKT_HELLO_UDP, NULL, 0, hb, sizeof hb);
 			if (hn > 0) udp_out(hb, (size_t)hn);
 		}
+		if (V.n_sched && stream_start) { /* the touch script: events become due one second after the stream starts */
+			if (!V.touch_started_us) V.touch_started_us = stream_start + (uint64_t)(touch_delay * 1e6);
+			while (V.i_sched < V.n_sched && now >= V.touch_started_us + V.sched[V.i_sched].at_us) {
+				struct proto_input_event e = V.sched[V.i_sched++].ev;
+				e.time_us = (uint32_t)now;
+				input_tx_push(&V.tx, e);
+				V.touch_pushed++;
+			}
+		}
+		{
+			uint8_t ib[PROTO_MAX_INPUT_EVENTS * 24 + 16], ip[sizeof ib + PROTO_PKT_HDR_SIZE];
+			int in_n = input_tx_build(&V.tx, now, 12000, ib, sizeof ib);
+			if (in_n > 0) {
+				int pn = vrecv_make_packet(vr, PROTO_PKT_INPUT, ib, (size_t)in_n, ip, sizeof ip);
+				V.drop_rng ^= V.drop_rng << 13; V.drop_rng ^= V.drop_rng >> 7; V.drop_rng ^= V.drop_rng << 17;
+				int lost = (double)(V.drop_rng >> 16 & 0xfffff) / 1048576.0 * 100.0 < input_drop_pct;
+				if (pn > 0 && !lost) udp_out(ip, (size_t)pn);
+			}
+		}
 		if (now >= next_fb) {
 			next_fb = now + 10000;
 			int fn = vrecv_feedback_packet(vr, now, pkt, sizeof pkt);
@@ -657,13 +744,13 @@ int main(int argc, char **argv)
 	double match = V.bgra ? pattern_match(V.bgra, V.width, V.height) : 0;
 	printf("VIEW packets=%llu ", (unsigned long long)vs->packets);
 	printf("decoded=%llu fps=%.1f decode_ms_avg=%.2f latency_ms_p50=%.1f p99=%.1f max=%.1f given_up=%llu idr=%llu "
-	       "decoder_errors=%llu match=%.1f%% freeze_ms=%.1f checks=%u check_min=%.1f%% check_bad=%u check_other=%u clock_offset_us=%lld clock_rtt_ms=%.1f reconfigs=%llu pongs=%llu auth_drops=%llu final_size=%dx%d\n",
+	       "decoder_errors=%llu match=%.1f%% freeze_ms=%.1f checks=%u check_min=%.1f%% check_bad=%u check_other=%u clock_offset_us=%lld clock_rtt_ms=%.1f reconfigs=%llu pongs=%llu auth_drops=%llu touch_sent=%llu touch_acked=%llu final_size=%dx%d\n",
 	       (unsigned long long)V.decoded, V.decoded / span, V.decoded ? V.decode_ms_sum / V.decoded : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat / 2] / 1000.0 : 0.0, V.n_lat ? V.lat_us[(size_t)((V.n_lat - 1) * 0.99)] / 1000.0 : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat - 1] / 1000.0 : 0.0, (unsigned long long)vs->frames_given_up,
 	       (unsigned long long)vs->idr_decoded, (unsigned long long)vs->decoder_errors, match * 100, V.max_gap_us / 1000.0,
 	       V.chk_samples, V.chk_samples ? V.chk_min * 100 : 100.0, V.chk_bad, V.chk_other, (long long)atomic_load(&V.offset_us), V.sync_rtt_us / 1000.0,
-	       (unsigned long long)V.reconfigs, (unsigned long long)V.pongs, (unsigned long long)V.auth_drops, V.last ? V.last->width : 0, V.last ? V.last->height : 0);
+	       (unsigned long long)V.reconfigs, (unsigned long long)V.pongs, (unsigned long long)V.auth_drops, (unsigned long long)V.touch_pushed, (unsigned long long)V.touch_acked_to, V.last ? V.last->width : 0, V.last ? V.last->height : 0);
 	if (V.read_stamps) {
 		qsort(V.glass_us, V.n_glass, sizeof *V.glass_us, cmp_u64);
 		printf("GLASS stamps=%zu of %llu frames, ms p50=%.1f p99=%.1f max=%.1f\n", V.n_glass, (unsigned long long)V.decoded,
