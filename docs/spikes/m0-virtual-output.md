@@ -10,6 +10,7 @@ plus Raphael iGPU (card0). Throwaway code: `tools/spikes/evdi_spike.c`.
 | vkms configfs with per-connector EDID | **No.** See below. Plan item 1 must change. |
 | evdi gives EDID identity, hotplug, frames | **Yes** (all verified below). |
 | niri accepts the output as a normal monitor | **Yes**, for both vkms and evdi. |
+| VAAPI HEVC low-latency encode on the 9060 XT | **Yes**: ~2 ms/frame, no B-frames, 60 fps live from evdi frames. |
 
 ## vkms
 
@@ -46,8 +47,10 @@ Verified:
 
 Findings that change the design:
 
-- **No useful dirty rects.** Every update reported one full-screen rect (0 of ~67 frames had a smaller one).
-  The compositor flips whole buffers. Change detection is "an update arrived", nothing finer.
+- **Dirty rects exist but are one bounding box per update.** An idle desktop (shell animation only) reported
+  full-screen rects (0 of ~67 partial). With a window moving (see encode spike below), 533 of 565 updates were
+  partial (average 44% of the screen) and never more than one rect per update. So damage is usable as a hint
+  (for example skip static refinement, or limit work), but not as a precise region list.
 - Connector name is `DVI-I-n` and depends on device index. Stable identity comes from the EDID (make/model/serial),
   so the output config in niri should key on that, not the connector name.
 - evdi has no GPU: niri renders on the dGPU and copies into evdi's buffer. The cost of that copy under load is
@@ -56,12 +59,36 @@ Findings that change the design:
   The only privileged step in the test was `insmod` and the sysfs `add`. `/dev/dri/cardN` was usable by the
   seat user via ACL.
 
+## VAAPI HEVC encode spike (RX 9060 XT, ffmpeg-full 9.0.2, Mesa 26.3.0 radeonsi, `/dev/dri/renderD128`)
+
+Synthetic source (`testsrc2` 2400x1080@60, NV12 upload):
+
+    ffmpeg -vaapi_device /dev/dri/renderD128 -f lavfi -i testsrc2=size=2400x1080:rate=60 -frames:v 600 \
+      -vf format=nv12,hwupload -c:v hevc_vaapi -b:v 30M -maxrate 30M -bf 0 -g 120 -async_depth 1 -f hevc enc.hevc
+
+- 535 fps (8.9x realtime). Encoder packet latency ~1.8 to 3.0 ms per frame (`-benchmark_all`, receive-packet stage;
+  submit stage is a few microseconds).
+- `ffprobe`: HEVC Main, yuv420p, 2400x1080, `has_b_frames=0`, frames only I/P (IDR every 120). `mpv` decodes it.
+
+Live chain, real captured frames (evdi -> raw BGRA fifo -> `hwupload,scale_vaapi=format=nv12` -> `hevc_vaapi`),
+with an mpv `testsrc2` window moved onto the virtual output with `niri msg action move-window-to-monitor`:
+
+- 565 frames in 14 s; after the first 6 s (motion) 59.9 fps with a max inter-frame gap of 19 ms,
+  so niri kept up at 2400x1080@60 and evdi grab stayed at 1.0 to 1.6 ms.
+- ffmpeg consumed it in real time (`speed=1x`, 0.6 s user + 0.9 s sys CPU for 14 s). Output ~18.8 Mbit/s average
+  (VBR under a 30M cap), decodes to the right picture (checked as PNG).
+- Caveat: BGRA->NV12 via `scale_vaapi` tags the stream `yuvj420p` (full range). Color range/matrix tagging must be
+  set deliberately in M10 so the phone decoder matches.
+- Not isolated: the compositor-side copy cost (niri render + copy into evdi). Only the end result (60 fps held,
+  no stalls) is known. A heavier test (full-screen video, 4K scale) is still open.
+
+Intra refresh and "no keyframe spikes" were not tested; `-g 120` IDR intervals are the only structure so far.
+
 ## Not yet verified
 
-- VAAPI HEVC low-latency encode actually running (profiles are listed by `vainfo` on the 9060 XT: HEVC Main/Main10
-  and AV1 encode, H.264 encode).
 - AOA on a real phone (none attached).
-- evdi + niri under load (compositor copy cost at 2400x1080@60, resolution/refresh limits).
+- evdi + niri under heavier load than a 720p test pattern (compositor copy cost, higher resolutions and refresh rates).
+- HEVC intra refresh / per-frame size spikes at keyframes (matters for Wi-Fi latency).
 - Touch binding (`uinput` is available, `/dev/uinput` group `uinput`, user is a member).
 - evdi robustness across kernel updates and newer kernels (nixpkgs rebuilds it per kernel).
 

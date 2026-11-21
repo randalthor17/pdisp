@@ -78,7 +78,7 @@ static void make_edid(uint8_t e[128], int w, int h, int mm_w, int mm_h,
 // ---- frame handling
 static struct evdi_buffer buf;
 static int have_buf, frames, last_rects;
-static double req_t;
+static FILE *raw;   // RAW_OUT: write every grabbed frame as raw BGRA (for the encode spike)
 static struct evdi_rect rects[16];
 
 static void grab(evdi_handle h)
@@ -89,6 +89,7 @@ static void grab(evdi_handle h)
 	double b = now();
 	frames++;
 	last_rects = n;
+	if (raw) fwrite(buf.buffer, 1, (size_t)buf.stride * buf.height, raw);
 	LOG("frame #%d grab=%.2f ms rects=%d", frames, (b - a) * 1e3, n);
 	for (int i = 0; i < n && i < 3; i++)
 		printf(" [%d,%d-%d,%d]", rects[i].x1, rects[i].y1, rects[i].x2, rects[i].y2);
@@ -126,6 +127,7 @@ int main(int argc, char **argv)
 	FILE *f = getenv("EDID_OUT") ? fopen(getenv("EDID_OUT"), "wb") : NULL;
 	if (f) { fwrite(edid, 1, 128, f); fclose(f); }
 
+	if (getenv("RAW_OUT")) raw = fopen(getenv("RAW_OUT"), "wb");
 	evdi_handle h = evdi_open(card);
 	if (h == EVDI_INVALID_HANDLE) { LOG("evdi_open failed\n"); return 1; }
 	struct evdi_event_context ctx = { .dpms_handler = on_dpms, .mode_changed_handler = on_mode,
@@ -140,7 +142,7 @@ int main(int argc, char **argv)
 
 	struct pollfd pfd = { .fd = evdi_get_event_ready(h), .events = POLLIN };
 	while (now() - t0 < secs) {
-		if (!cycled && now() - t0 > secs * 0.6) {
+		if (!getenv("NO_CYCLE") && !cycled && now() - t0 > secs * 0.6) {
 			LOG("disconnect\n"); evdi_disconnect(h); connected = 0; cycled = 1; cyc_t = now();
 		}
 		if (!connected && now() - cyc_t > 3.0) {
@@ -158,6 +160,7 @@ int main(int argc, char **argv)
 		for (int i = 0; i < buf.width * buf.height; i++) { fputc(s[i*4+2], p); fputc(s[i*4+1], p); fputc(s[i*4], p); }
 		fclose(p); LOG("wrote %s\n", argv[3]);
 	}
+	if (raw) fclose(raw);
 	evdi_disconnect(h);
 	evdi_close(h);
 	return 0;
