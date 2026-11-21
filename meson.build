@@ -37,11 +37,23 @@ xdg_shell_c = custom_target('xdg-shell-protocol-code',
   input: xdg_xml, output: 'xdg-shell-protocol.c',
   command: [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
 
+libva_dep = dependency('libva')
+libva_drm_dep = dependency('libva-drm')
+
+encoder_lib = static_library('pdisp-encoder', 'daemon/encoder.c', 'daemon/hevc_headers.c',
+  include_directories: inc,
+  dependencies: [libva_dep, libva_drm_dep])
+encoder_dep = declare_dependency(
+  link_with: encoder_lib, include_directories: inc, dependencies: [libva_dep, libva_drm_dep])
+
 pdisp_edid = executable('pdisp-edid', 'tools/pdisp-edid.c', dependencies: edid_cli_dep)
 pdisp_pattern = executable('pdisp-pattern', 'tools/pdisp-pattern.c', xdg_shell_h, xdg_shell_c,
   include_directories: inc, dependencies: wayland_client_dep)
 pdisp_capture = executable('pdisp-capture', 'tools/pdisp-capture.c', 'tools/png.c',
   dependencies: [edid_cli_dep, vdisplay_dep, zlib_dep])
+
+pdisp_encode = executable('pdisp-encode', 'tools/pdisp-encode.c',
+  dependencies: [edid_cli_dep, vdisplay_dep, encoder_dep])
 
 pdisp_vdisplay = executable('pdisp-vdisplay', 'tools/pdisp-vdisplay.c', dependencies: [edid_cli_dep, vdisplay_dep])
 
@@ -73,3 +85,15 @@ test('m2 capture round trip', m2_check,
   is_parallel: false,
   timeout: 120,
   suite: 'integration')
+
+m3_check = find_program('tests/m3_encode_check.sh')
+test('m3 encode', m3_check,
+  args: [pdisp_encode, pdisp_pattern, meson.current_build_dir() / 'm3-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
+  suite: 'integration')
+
+test_hevc_headers = executable('test_hevc_headers', 'tests/test_hevc_headers.c', 'daemon/hevc_headers.c',
+  include_directories: inc)
+test('hevc headers unit', test_hevc_headers)

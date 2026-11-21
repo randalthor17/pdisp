@@ -22,6 +22,7 @@
           wayland-scanner
           edid-decode
           jq
+          ffmpeg-headless
         ];
         buildInputs = with pkgs; [
           libevdi

@@ -19,7 +19,7 @@ Pipeline: virtual output (kernel) -> capture -> encode -> transport -> Android d
 
 1. **Virtual output**: out-of-tree `evdi` (packaged in nixpkgs), driven through `libevdi`. The daemon creates a display with a generated EDID (`evdi_connect`) and removes it (`evdi_disconnect`) for hotplug. Compositors see an ordinary monitor, so no compositor code is needed here. The EDID make, model and serial are stable per paired phone, so compositors can remember the output between sessions. The connector name (`DVI-I-n`) is not stable, so identity must come from the EDID. In-tree `vkms` was rejected in M0: no EDID control through kernel 7.0, and no configfs before 6.19 (see `docs/spikes/m0-virtual-output.md`).
 2. **Capture**: `libevdi` delivers frames and one bounding dirty rect per update directly to the daemon (`evdi_request_update`, `evdi_grab_pixels`). No scanout capture, no `CAP_SYS_ADMIN` in the capture path. Updates only arrive when the screen changes. Keep requesting while an update is ready and block only when none is.
-3. **Encode**: VAAPI, HEVC 8-bit 4:2:0. Low-latency settings, no B-frames, CBR with a small VBV buffer to keep keyframes near P-frame size. No periodic IDR: send one on connect and on request, SPS/PPS with each. Intra refresh is advertised by the driver but untested, and needs direct libva. A high-quality refresh frame is sent when the screen goes static. 10-bit, wide-gamut and AV1 come later. Colour range and matrix tags must be set deliberately.
+3. **Encode**: VAAPI, HEVC 8-bit 4:2:0. Low-latency settings, no B-frames, CBR with a small VBV buffer to keep keyframes near P-frame size. No periodic IDR: send one on connect and on request, SPS/PPS with each. The application must write VPS/SPS/PPS and a slice header itself: Mesa parses them and rewrites its own (see `docs/encoder-notes.md`). Intra refresh is advertised by the driver but untested. A high-quality refresh frame is sent when the screen goes static. 10-bit, wide-gamut and AV1 come later. Colour range and matrix tags must be set deliberately.
 4. **Transport**: a small interface with two implementations. TCP is for development and Wi-Fi. Android Open Accessory (AOA) over USB is the zero-setup wired path (libusb switches the phone to accessory mode, the app launches on plug-in, one permission tap).
 5. **Protocol**: versioned framing with a handshake and then video, input, cursor and heartbeat messages. The phone reports resolution, density (for physical size in the EDID), orientation, safe-area insets, supported refresh rates, supported codecs, color capabilities (wide gamut, HDR types), and touch and stylus capability. The PC replies with the chosen mode.
 6. **Android app** (Kotlin): `MediaCodec` surface decode with low-latency hints, fullscreen immersive, keep-screen-on, Wi-Fi low-latency lock. It sends raw touch as normalized coordinates, pointer IDs and pressure. The cursor arrives as its own message and is drawn on the phone.
@@ -58,7 +58,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - Receive frames and dirty rects from `libevdi`, with the request-while-ready loop.
 - Pass: a test pattern on the virtual output round-trips to a PNG that matches. Capture time per frame is logged. A moving window produces partial rects and no more than one update per compositor frame.
 
-**M3: Encode**
+**M3: Encode** (done 2026-11-21; direct libva, ~5 ms/frame at 2304x1440, see `docs/encoder-notes.md` and `tests/m3_encode_check.sh`)
 - VAAPI HEVC low-latency from captured frames, output to a file. Prefer direct libva in the daemon; ffmpeg is acceptable for the first version.
 - Pass: the file plays in `mpv` and `ffprobe` reports the expected stream. Encode time per frame is logged. The keyframe size stays near the largest P-frame size under the chosen CBR settings.
 
@@ -120,6 +120,7 @@ Later: other compositors (sway, KDE, GNOME), audio, clipboard, multiple phones.
 - evdi dirty rects are one bounding box per update, and full-screen when the whole output animates. They are a hint, not a precise region list.
 - Compositor-to-evdi copy cost was not isolated. It kept up at 2304x1440@90 in M0, but heavier scenes and 4K are unmeasured.
 - The tablet is on USB 2.0 high speed. That is enough for the measured HEVC stream (about 20 to 40 Mbit/s), but limits headroom for high bitrates, static refinement and 10-bit.
+- The Mesa encoder only works with application-written packed headers that must agree with the VA parameters; a Mesa change in what it parses could break the stream. The integration test (`ffprobe`/decode) catches it. Sizes must be multiples of 8 until a conformance window is supported.
 - Keyframes on desktop content are about 7 times a P-frame unless rate control is constrained. Intra refresh is advertised but untested.
 - AOA behavior varies by phone vendor firmware. The permission prompt and auto-launch on Android 16 are untested until the app exists.
 - Touch-to-output binding may fail on compositors without a binding mechanism.
