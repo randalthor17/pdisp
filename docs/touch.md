@@ -54,6 +54,12 @@ These hooks are not tested here.
 - On a phone: `adb shell input tap/swipe` into the app, and `pkexec build/pdisp-evdump` on the PC (used for the Pixel 8a result above).
 
 ## Known limits
+- **Open issue: the picture sometimes hangs, reported with the S Pen side button (tap or write), and opening niri's overview fixes it.**
+  Not reproduced (2026-11-22). One real cause was found and fixed on the way: a capture skipped because the send queue was behind was
+  never retried, so a static screen could stay stale (commit 0927f1f). Whether that was the reported hang is unknown. If it comes back, do
+  not open the overview first; capture: the daemon's `frames` line over a few seconds (is the PC still encoding?), `niri msg outputs`, and the
+  phone's `adb logcat -s pdisp` (is it still decoding?). If the PC is encoding and the phone is not decoding, it is the tablet's decoder
+  (see docs/latency.md); if the PC has stopped capturing, it is the compositor or the capture path.
 - **Touch must stay on the virtual display (requirement, user 2026-11-22).** Without the binding above niri sends the touches to its
   first output, i.e. onto a real monitor. So the binding is not optional: the daemon should say loudly when it has not been confirmed
   (the line it prints), and packaging (M11) should ship it as an include for niri and the hook for other compositors. A compositor-free
