@@ -103,6 +103,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 
 **M11: Packaging and 0.1 release**
 - NixOS flake and module: evdi (`boot.extraModulePackages`, module options, device creation), udev rules, systemd user service. Install docs.
+- The niri side is part of the install, not something to edit by hand: the touchscreen and tablet bindings (`input { touch { map-to-output "PNP(PDI) pdisp PDISP0001" } tablet { ... } }`, see docs/touch.md) go in through the home-manager module (the user's niri config is a read-only home-manager file with `dms/*.kdl` includes), and the install docs describe them for non-Nix setups. Touch must never reach other displays.
 - Pass: a clean NixOS configuration reaches a working session from one rebuild. Tag 0.1 and hand over the bundle.
 
 Later: other compositors (sway, KDE, GNOME), audio, clipboard, multiple phones.
