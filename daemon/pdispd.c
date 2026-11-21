@@ -2,7 +2,7 @@
  * encodes it and streams it over UDP with loss repair (docs/protocol.md). When the phone reports a new display size
  * (rotation) the output, encoder and sender are rebuilt in a new epoch and the phone is told with RECONFIGURE.
  *
- *   pdispd [-p PORT] [-n NAME] [-t SERIAL] [-m WxH@HZ] [-R MAXHZ] [-b KBPS] [-B MAXKBPS] [-r NODE] [-d CARD] [-S SECS]
+ *   pdispd [-p PORT] [-n NAME] [-t SERIAL] [-m WxH@HZ] [-R MAXHZ] [-b KBPS] [-B MAXKBPS] [-F REFINE_FRAMES] [-r NODE] [-d CARD] [-S SECS]
  *
  * Exit: 0 after the phone left or -S elapsed, 1 on error, 3 if there is no free evdi device.
  */
@@ -59,6 +59,7 @@ static struct {
 	bool once;               /* serve one session and exit instead of waiting for the next device */
 	bool usb;          /* talk to a tablet over a USB cable (accessory mode) instead of listening on the network */
 	unsigned usb_vid;  /* only consider this USB vendor (0 = any) */
+	unsigned refine_frames, refine_min_qp, refine_start_qp, refine_rate_percent, refine_gap_ms, refine_settle_ms; /* static refinement (see D.refine_left); 0 frames = off */
 } C = { .port = 47110, .max_hz_mhz = 60000, .bitrate = 12000, .max_bitrate = 40000, .name = "pdisp",
 	.serial_text = "PDISP0001", .serial = 1, .card = -1, .grace_secs = 30 };
 
@@ -77,6 +78,8 @@ struct daemon {
 	bool new_epoch_pending;    /* the next frame is the first of a new epoch */
 	bool force_idr;
 	uint64_t refresh_due_us;   /* re-encode the current screen at this time if nothing new arrived (0 = none) */
+	uint64_t refine_due_us;    /* when the next refinement of a static screen is due (0 = none) */
+	unsigned refine_left;      /* refinement pictures still to send after the last change of the screen */
 	uint64_t frames_encoded, frames_skipped, idr_frames, submit_failures, send_errors, sent_packets, reconfigs, pongs;
 	double encode_ms_sum, encode_ms_max;
 	uint64_t t_service_us, t_poll_us, auth_drops;
@@ -107,16 +110,20 @@ static void cb_need_idr(void *user)
 }
 
 /* Encodes one screen image and hands it to the sender. */
-static void encode_and_submit(const uint8_t *pixels, int stride, uint64_t capture_us)
+enum pic_kind { PIC_NEW, PIC_REPAIR, PIC_REFINE }; /* a new capture; the same screen again to repair a loss or a skip; a refinement of a static screen */
+
+static void encode_and_submit(const uint8_t *pixels, int stride, uint64_t capture_us, enum pic_kind kind)
 {
 	uint64_t now = net_now_us();
 	if (vsend_queue_delay_us(D.vs) > 20000) { /* the previous frame is still being sent: skip this capture */
 		D.frames_skipped++;
 		/* The screen may not change again, and then this was its last image: look at the current screen again soon, once the
 		 * queue has drained. Without this a static screen stays stale on the phone until something else repaints it. */
-		if (!D.refresh_due_us) D.refresh_due_us = now + 10000;
+		if (kind == PIC_REFINE) D.refine_due_us = now + 10000;
+		else if (!D.refresh_due_us) D.refresh_due_us = now + 10000;
 		return;
 	}
+	encoder_set_refine(D.enc, kind == PIC_REFINE, C.refine_min_qp, C.refine_start_qp, C.refine_rate_percent);
 	encoder_set_bitrate(D.enc, vsend_bitrate_kbps(D.vs));
 	if (vsend_must_idr(D.vs, now)) { /* the newest frames may all depend on a frame the phone never got */
 		D.force_idr = true;
@@ -141,6 +148,12 @@ static void encode_and_submit(const uint8_t *pixels, int stride, uint64_t captur
 		encoder_invalidate_frame(D.enc, p.frame_index);
 	}
 	D.refresh_due_us = 0;
+	if (kind == PIC_NEW) { /* the screen changed: if it stops changing, improve the picture a few times */
+		D.refine_left = C.refine_frames;
+		D.refine_due_us = C.refine_frames ? now + C.refine_settle_ms * 1000ull : 0; /* only once the screen has really settled */
+	} else if (kind == PIC_REFINE) {
+		D.refine_due_us = --D.refine_left ? now + C.refine_gap_ms * 1000ull : 0;
+	}
 }
 
 static void on_frame(const struct vdisplay_frame *f, void *user)
@@ -148,7 +161,7 @@ static void on_frame(const struct vdisplay_frame *f, void *user)
 	(void)user;
 	if (!D.streaming) return;
 	if ((unsigned)f->width != D.width || (unsigned)f->height != D.height) return;
-	encode_and_submit(f->data, f->stride, f->grab_ns / 1000);
+	encode_and_submit(f->data, f->stride, f->grab_ns / 1000, PIC_NEW);
 }
 
 /* ---- choosing a mode and bringing the pipeline up */
@@ -308,9 +321,20 @@ int main(int argc, char **argv)
 {
 	int opt;
 	double run_secs = 0;
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uV:K:P:H:TIho")) != -1) {
+	{ /* static refinement settings; environment variables while the defaults are being worked out */
+		const char *e;
+		/* Static refinement (docs/quality.md): 40 pictures of the same screen, each a little better, once it has not changed for 150 ms. */
+		C.refine_frames = (e = getenv("PDISP_REFINE_FRAMES")) ? (unsigned)atoi(e) : 40;
+		C.refine_min_qp = (e = getenv("PDISP_REFINE_MINQP")) ? (unsigned)atoi(e) : 4;
+		C.refine_gap_ms = (e = getenv("PDISP_REFINE_GAP_MS")) ? (unsigned)atoi(e) : 33;
+		C.refine_settle_ms = (e = getenv("PDISP_REFINE_SETTLE_MS")) ? (unsigned)atoi(e) : 150;
+		C.refine_start_qp = (e = getenv("PDISP_REFINE_QP0")) ? (unsigned)atoi(e) : 22;
+		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 200;
+	}
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uV:K:P:H:F:TIho")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
+		case 'F': C.refine_frames = (unsigned)atoi(optarg); break; /* static refinement pictures; 0 = off */
 		case 'n': C.name = optarg; break;
 		case 't': C.serial_text = optarg; break;
 		case 'N': C.serial = (uint32_t)strtoul(optarg, NULL, 0); break;
@@ -696,6 +720,8 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	D.new_epoch_pending = false;
 	D.force_idr = true; /* the stream starts from a keyframe, whatever the encoder sent before */
 	D.refresh_due_us = 0;
+	D.refine_due_us = 0;
+	D.refine_left = 0;
 
 	/* ---- SETUP */
 	D.session_id = (uint32_t)(net_now_us() * 2654435761u) ^ (uint32_t)getpid();
@@ -751,7 +777,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	/* ---- stream: the first frame is the current screen, so a static desktop shows up at once */
 	D.streaming = true;
 	struct vdisplay_frame cur;
-	if (vdisplay_current_frame(D.vd, &cur)) encode_and_submit(cur.data, cur.stride, net_now_us());
+	if (vdisplay_current_frame(D.vd, &cur)) encode_and_submit(cur.data, cur.stride, net_now_us(), PIC_NEW);
 	else D.refresh_due_us = net_now_us() + 100000;
 
 	enum end_reason end = END_LINK;
@@ -833,7 +859,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 					D.force_idr = true;
 					LOG("the phone confirmed epoch %u: streaming %ux%u", D.epoch, D.width, D.height);
 					if (vdisplay_current_frame(D.vd, &cur) && (unsigned)cur.width == D.width && (unsigned)cur.height == D.height)
-						encode_and_submit(cur.data, cur.stride, net_now_us());
+						encode_and_submit(cur.data, cur.stride, net_now_us(), PIC_NEW);
 				} else if (type == PROTO_CTL_DISPLAY_CHANGED) {
 					struct proto_hello nh;
 					struct edid_params nep;
@@ -848,6 +874,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 						LOG("the phone's display changed to %ux%u: reconfiguring", nep.width, nep.height);
 						D.streaming = false;
 						D.refresh_due_us = 0;
+						D.refine_due_us = 0;
 						if (bring_up(&nep, &nt, nedid) != 0 || ++D.epoch == 0) { LOG("reconfiguration failed"); end = END_LINK; done = 1; break; }
 						touch_start(&nh, D.width, D.height, &nep); /* the coordinate range changed with the size */
 						if (make_sender() != 0) { end = END_FATAL; done = 1; break; }
@@ -879,7 +906,12 @@ static enum end_reason serve(struct conn *c, double run_secs)
 		if (D.refresh_due_us && now >= D.refresh_due_us && D.streaming && vdisplay_current_frame(D.vd, &cur) &&
 		    (unsigned)cur.width == D.width && (unsigned)cur.height == D.height) {
 			D.refresh_due_us = 0;
-			encode_and_submit(cur.data, cur.stride, now); /* same screen again, predicted from a frame the phone has */
+			encode_and_submit(cur.data, cur.stride, now, PIC_REPAIR); /* same screen again, predicted from a frame the phone has */
+		}
+		if (D.refine_due_us && now >= D.refine_due_us && D.streaming && vdisplay_current_frame(D.vd, &cur) &&
+		    (unsigned)cur.width == D.width && (unsigned)cur.height == D.height) {
+			D.refine_due_us = 0;
+			encode_and_submit(cur.data, cur.stride, now, PIC_REFINE); /* the screen stopped changing: better quality for it */
 		}
 
 		for (int guard = 0; guard < 256; guard++) { /* send what is due */

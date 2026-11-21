@@ -47,6 +47,8 @@ struct encoder {
 	} pics[NUM_RECON];     /* the picture in recon[i] */
 	bool force_idr_next;   /* every retained picture was invalidated */
 	bool rc_dirty;         /* the bitrate changed: send new rate control parameters with the next picture */
+	bool refine;           /* encoding refinements of a static screen (encoder_set_refine) */
+	unsigned refine_min_qp, refine_start_qp, refine_rate_percent;
 
 	uint8_t *out;
 	size_t out_cap;
@@ -130,6 +132,16 @@ static int create_misc(struct encoder *e, VAEncMiscParameterType type, const voi
 	memcpy(p->data, payload, len);
 	VA_OK(vaUnmapBuffer(e->dpy, *id));
 	return 0;
+}
+
+void encoder_set_refine(struct encoder *e, bool on, unsigned min_qp, unsigned start_qp, unsigned rate_percent)
+{
+	if (e->refine == on && (!on || (e->refine_min_qp == min_qp && e->refine_start_qp == start_qp && e->refine_rate_percent == rate_percent))) return;
+	e->refine = on;
+	e->refine_min_qp = min_qp;
+	e->refine_start_qp = start_qp;
+	e->refine_rate_percent = rate_percent ? rate_percent : 100;
+	e->rc_dirty = true;
 }
 
 static unsigned level_idc(unsigned w, unsigned h, unsigned fps);
@@ -392,16 +404,16 @@ static int encode_picture(struct encoder *e, bool idr, int cur_slot, const struc
 		/* rate control and the HRD buffer: with every IDR, and whenever the target bitrate changes */
 		VAEncMiscParameterRateControl rc;
 		memset(&rc, 0, sizeof rc);
-		rc.bits_per_second = e->cfg.bitrate_kbps * 1000;
-		rc.target_percentage = e->cfg.vbr ? (e->cfg.target_percent ? e->cfg.target_percent : 50) : 100;
+		rc.bits_per_second = (uint32_t)((uint64_t)e->cfg.bitrate_kbps * 1000 * (e->refine ? e->refine_rate_percent : 100) / 100);
+		rc.target_percentage = e->cfg.vbr && !e->refine ? (e->cfg.target_percent ? e->cfg.target_percent : 50) : 100;
 		rc.window_size = e->cfg.vbv_ms;
-		rc.initial_qp = 26;
-		rc.min_qp = 10;
+		rc.initial_qp = e->refine ? e->refine_start_qp : 26;
+		rc.min_qp = e->refine ? e->refine_min_qp : 10;
 		if (create_misc(e, VAEncMiscParameterTypeRateControl, &rc, sizeof rc, &bufs[nb++])) return -EIO;
 
 		VAEncMiscParameterHRD hrd;
 		memset(&hrd, 0, sizeof hrd);
-		hrd.buffer_size = (uint64_t)e->cfg.bitrate_kbps * e->cfg.vbv_ms;
+		hrd.buffer_size = (uint64_t)rc.bits_per_second / 1000 * e->cfg.vbv_ms;
 		hrd.initial_buffer_fullness = hrd.buffer_size / 2;
 		if (create_misc(e, VAEncMiscParameterTypeHRD, &hrd, sizeof hrd, &bufs[nb++])) return -EIO;
 

@@ -252,6 +252,10 @@ bool vsend_must_idr(const struct vsend *vs, uint64_t now_us)
 	/* a keyframe cannot help while nothing reaches the receiver (a blackout): its newest frame id stops advancing. Wait
 	 * until frames get through again. */
 	if (!vs->last_progress_us || now_us > vs->last_progress_us + 100000) return false;
+	/* Frames that are only waiting in our own send queue are not lost, and a keyframe queued behind them cannot arrive any sooner: it only makes
+	 * the queue longer, which leaves more frames unresolved, which asks for another keyframe. A very large frame (the first keyframe of a page of
+	 * fine text at a low starting rate) started exactly that spiral: idr 1 to 8 within seconds and a queue of 850 ms. */
+	if (vsend_queue_delay_us(vs) > 150000) return false;
 	return vsend_unresolved(vs) > limit;
 }
 

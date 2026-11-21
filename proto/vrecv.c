@@ -17,7 +17,7 @@ struct entry {
 	uint8_t st;
 	bool seen_packet;           /* at least one packet of the frame arrived */
 	bool nacked;
-	uint64_t first_seen_us, last_nack_us;
+	uint64_t first_seen_us, last_packet_us, last_nack_us; /* last_packet_us: the newest packet of this frame (it keeps arriving while a large frame is sent) */
 	/* a frame that completed but waits for its reference */
 	uint8_t *pend;
 	size_t pend_size;
@@ -119,6 +119,7 @@ static struct entry *ensure_entry(struct vrecv *vr, uint32_t id, uint64_t now_us
 		e->used = true;
 		e->id = id;
 		e->first_seen_us = now_us;
+		e->last_packet_us = now_us;
 	}
 	return e;
 }
@@ -318,6 +319,7 @@ int vrecv_on_packet(struct vrecv *vr, const uint8_t *pkt, size_t len, uint64_t n
 	struct entry *e = ent(vr, vh.frame_id);
 	if (!e->used || e->id != vh.frame_id) return 0; /* older than everything resolved */
 	e->seen_packet = true;
+	e->last_packet_us = now_us;
 	if (e->st != FS_UNKNOWN) return 0; /* decided already: pending, held or lost */
 
 	struct vrx_frame f;
@@ -333,7 +335,12 @@ void vrecv_tick(struct vrecv *vr, uint64_t now_us)
 	for (uint32_t k = vr->base + 1; (int32_t)(vr->newest - k) >= 0; k++) {
 		struct entry *e = ent(vr, k);
 		if (!e->used || e->id != k) continue;
-		if ((e->st == FS_UNKNOWN || e->st == FS_PENDING) && now_us >= e->first_seen_us + vr->cfg.giveup_us) mark_lost(vr, k);
+		/* Gone quiet for the give-up time, not merely old: a very large frame (a keyframe of fine text at a low rate is over a megabyte) takes
+		 * longer than that to arrive and is not lost while its packets keep coming. A frame that never finishes is still given up on after
+		 * ten times as long. */
+		if ((e->st == FS_UNKNOWN || e->st == FS_PENDING) &&
+		    (now_us >= e->last_packet_us + vr->cfg.giveup_us || now_us >= e->first_seen_us + 10 * vr->cfg.giveup_us))
+			mark_lost(vr, k);
 	}
 	resolve_pending(vr);
 	advance_base(vr);

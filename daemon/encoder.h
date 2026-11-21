@@ -49,6 +49,11 @@ size_t encoder_parameter_sets(const struct encoder *enc, uint8_t *out, size_t ca
 /* Changes the target bitrate (CBR rate, or the VBR peak) from the next frame on. */
 void encoder_set_bitrate(struct encoder *enc, unsigned bitrate_kbps);
 
+/* Static refinement: while on, the next pictures are encoded to improve on the previous ones (a lower minimum QP and the full peak rate as the
+ * target, `rate_percent` of the normal peak rate as the budget and `start_qp` as the quantiser to start from), for a screen that has stopped changing.
+ * Takes effect with the next picture. */
+void encoder_set_refine(struct encoder *enc, bool on, unsigned min_qp, unsigned start_qp, unsigned rate_percent);
+
 /* Name of the VA driver in use, for logs. */
 const char *encoder_description(const struct encoder *enc);
 

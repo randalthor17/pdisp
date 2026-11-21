@@ -17,6 +17,7 @@
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdbool.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -94,6 +95,8 @@ struct viewer {
 	uint64_t max_gap_us;     /* longest time between two decoded frames, after the first 30 */
 	struct SwsContext *chk_sws;
 	uint8_t *chk_bgra;
+	bool textq;              /* -Q: measure how close decoded pictures are to the static text page (pdisp-pattern -X) */
+	uint64_t textq_last_us, textq_first_us;
 	unsigned chk_samples, chk_bad, chk_other; /* bad: partly wrong picture; other: not the pattern at all (compositor showed something else) */
 	/* -j: a scripted touch session, played as the phone would send it */
 	struct input_tx tx;
@@ -119,6 +122,37 @@ static struct viewer V;
 
 /* decode one access unit; runs on the decode thread */
 static double pattern_match(const uint8_t *bgra, int w, int h);
+
+/* -Q: PSNR and mean absolute error (over R, G, B) of a decoded picture against the text page, sampled at most every 250 ms, so a run shows how the
+ * quality of a static page changes after it stops changing (static refinement). The first and last 8 rows and columns are left out. */
+static void textq_sample(const AVFrame *fr, uint64_t now_us)
+{
+	if (now_us < V.textq_last_us + 250000) return;
+	V.textq_last_us = now_us;
+	if (!V.textq_first_us) V.textq_first_us = now_us;
+	V.chk_sws = sws_getCachedContext(V.chk_sws, fr->width, fr->height, (enum AVPixelFormat)fr->format, fr->width, fr->height,
+					 AV_PIX_FMT_BGRA, SWS_FULL_CHR_H_INT | SWS_ACCURATE_RND | SWS_BICUBIC, NULL, NULL, NULL);
+	if (!V.chk_sws) return;
+	sws_setColorspaceDetails(V.chk_sws, sws_getCoefficients(SWS_CS_ITU709), 0, sws_getCoefficients(SWS_CS_DEFAULT), 1, 0, 1 << 16, 1 << 16);
+	if (!V.chk_bgra) V.chk_bgra = malloc((size_t)fr->width * fr->height * 4);
+	uint8_t *dst[4] = { V.chk_bgra, NULL, NULL, NULL };
+	int dst_stride[4] = { fr->width * 4, 0, 0, 0 };
+	sws_scale(V.chk_sws, (const uint8_t *const *)fr->data, fr->linesize, 0, fr->height, dst, dst_stride);
+	double se = 0, ae = 0;
+	long n = 0;
+	for (int y = 8; y < fr->height - 8; y++)
+		for (int x = 8; x < fr->width - 8; x++) {
+			uint32_t want = textpage_pixel((unsigned)x, (unsigned)y, (unsigned)fr->width, (unsigned)fr->height);
+			const uint8_t *p = V.chk_bgra + ((size_t)y * fr->width + x) * 4;
+			int d[3] = { (int)p[2] - (int)((want >> 16) & 0xff), (int)p[1] - (int)((want >> 8) & 0xff), (int)p[0] - (int)(want & 0xff) };
+			for (int c = 0; c < 3; c++) { se += (double)d[c] * d[c]; ae += abs(d[c]); }
+			n += 3;
+		}
+	double mse = n ? se / (double)n : 0;
+	double psnr = mse > 0 ? 10.0 * log10(255.0 * 255.0 / mse) : 99.0;
+	LOG("TEXTQ t=%.2f s psnr=%.2f dB mae=%.2f frame=%llu", (now_us - V.textq_first_us) / 1e6, psnr, n ? ae / (double)n : 0,
+	    (unsigned long long)V.decoded);
+}
 
 /* periodic check of a decoded picture against the test pattern (the animated bar covers at most 3%) */
 static void check_picture(const AVFrame *fr)
@@ -188,7 +222,8 @@ static void decode_job(const struct job *jb)
 		uint64_t now = net_now_us();
 		V.decoded++;
 		if (V.decoded > 30 && V.last_frame_us && now - V.last_frame_us > V.max_gap_us) V.max_gap_us = now - V.last_frame_us;
-		if (V.decoded > 60 && V.decoded % 20 == 0) check_picture(V.frame);
+		if (V.textq) textq_sample(V.frame, now);
+		else if (V.decoded > 60 && V.decoded % 20 == 0) check_picture(V.frame);
 		V.decode_ms_sum += (now - t0) / 1000.0;
 		if (!V.first_frame_us) V.first_frame_us = now;
 		V.last_frame_us = now;
@@ -455,7 +490,7 @@ int main(int argc, char **argv)
 	bool insecure = false;
 	double change_after = 0;
 	unsigned change_w = 0, change_h = 0;
-	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:i:j:J:q:C:Ivh")) != -1) {
+	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:i:j:J:q:C:IQvh")) != -1) {
 		switch (opt) {
 		case 'W': nw = (unsigned)atoi(optarg); break;
 		case 'H': nh = (unsigned)atoi(optarg); break;
@@ -464,6 +499,7 @@ int main(int argc, char **argv)
 		case 'S': secs = atof(optarg); break;
 		case 'o': snap = optarg; V.snap_path = optarg; break;
 		case 'c': check = true; break;
+		case 'Q': V.textq = true; break;
 		case 'G': V.read_stamps = true; break;
 		case 'w': V.window = true; break;
 		case 'L': drop_pct = atof(optarg); break;

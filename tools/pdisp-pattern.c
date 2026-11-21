@@ -53,7 +53,7 @@ static struct {
 	struct xdg_toplevel *toplevel;
 	struct output *target;
 	int width, height;
-	bool configured, animate, stamp;
+	bool configured, animate, stamp, text; /* text: the static text page of pattern.h instead of the ramps */
 	uint32_t *base; /* the pattern, computed once */
 	struct buffer buf[NBUF];
 	unsigned frame_no;
@@ -180,7 +180,7 @@ static int create_buffers(void)
 	if (!app.base) return -1;
 	for (int y = 0; y < app.height; y++)
 		for (int x = 0; x < app.width; x++)
-			app.base[(size_t)y * app.width + x] = pattern_pixel(x, y, app.width, app.height);
+			app.base[(size_t)y * app.width + x] = app.text ? textpage_pixel(x, y, app.width, app.height) : pattern_pixel(x, y, app.width, app.height);
 	return 0;
 }
 
@@ -274,6 +274,7 @@ static void usage(const char *argv0)
 		"  -o OUTPUT  connector name of the output to fullscreen on (e.g. DVI-I-1)\n"
 		"  -t SECS    exit after this many seconds (default: until SIGINT/SIGTERM)\n"
 		"  -a         animate: sweep a bar across the pattern on every frame\n"
+		"  -X         draw the static text-like page (for the text quality check of pdisp-view -Q) instead of the ramps\n"
 		"  -T         draw a timestamp into the top rows of every frame (see tools/stamp.h)\n"
 		"  -E         print the touch events the compositor delivers to the window (surface coordinates)\n",
 		argv0);
@@ -284,11 +285,12 @@ int main(int argc, char **argv)
 	const char *want = NULL;
 	double secs = -1;
 	int opt;
-	while ((opt = getopt(argc, argv, "o:t:aTEh")) != -1) {
+	while ((opt = getopt(argc, argv, "o:t:aTEXh")) != -1) {
 		switch (opt) {
 		case 'o': want = optarg; break;
 		case 't': secs = atof(optarg); break;
 		case 'a': app.animate = true; break;
+		case 'X': app.text = true; break;
 		case 'T': app.stamp = true; break;
 		case 'E': app.log_touch = true; break;
 		default: usage(argv[0]); return 2;

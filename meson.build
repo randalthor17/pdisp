@@ -123,7 +123,7 @@ test('video stream over a simulated link', test_stream, timeout: 300)
 # the daemon and the desktop test client
 pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', 'daemon/touch.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')])
 libav_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libswscale')]
-pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads'), dependency('sdl2')] + libav_deps)
+pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads'), dependency('sdl2'), meson.get_compiler('c').find_library('m')] + libav_deps)
 
 m4_loopback = find_program('tests/m4_loopback_check.sh')
 test('m4 loopback through the real pipeline', m4_loopback,
@@ -251,4 +251,12 @@ test('m9 windows follow the virtual monitor', m9_windows,
   protocol: 'exitcode',
   is_parallel: false,
   timeout: 400,
+  suite: 'integration')
+
+m10_text = find_program('tests/m10_text_check.sh')
+test('m10 text quality of a static screen', m10_text,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm10-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
   suite: 'integration')

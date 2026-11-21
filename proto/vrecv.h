@@ -17,7 +17,7 @@
 struct vrecv_config {
 	uint32_t session_id;
 	unsigned shard_size;        /* default 1200 */
-	uint64_t giveup_us;         /* give up on a frame this long after first hearing of it, default 100 ms */
+	uint64_t giveup_us;         /* give up on a frame this long after its last packet (or ten times as long after its first), default 100 ms */
 	uint64_t nack_min_age_us;   /* ask for repairs once a frame has been idle this long (no packet), default 4 ms */
 	uint64_t nack_retry_us;     /* ask again after this long, default 15 ms */
 	unsigned max_pending;       /* completed frames kept waiting for their reference, default 8 */
