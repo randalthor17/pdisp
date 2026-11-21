@@ -18,8 +18,8 @@ struct pair { struct usbmux *a, *b; int actl, adg, bctl, bdg; int ab[2], ba[2]; 
 static int setup(struct pair *p)
 {
 	if (pipe(p->ab) || pipe(p->ba)) return -1;
-	if (usbmux_start(p->ba[0], p->ab[1], &p->a, &p->actl, &p->adg)) return -1; /* A reads ba, writes ab */
-	if (usbmux_start(p->ab[0], p->ba[1], &p->b, &p->bctl, &p->bdg)) return -1;
+	if (usbmux_start(p->ba[0], p->ab[1], 0, &p->a, &p->actl, &p->adg)) return -1; /* A reads ba, writes ab */
+	if (usbmux_start(p->ab[0], p->ba[1], 0, &p->b, &p->bctl, &p->bdg)) return -1;
 	return 0;
 }
 

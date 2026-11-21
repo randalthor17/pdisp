@@ -6,6 +6,7 @@
 #include <android/native_window_jni.h>
 #include <arpa/inet.h>
 #include <dlfcn.h>
+#include <fcntl.h>
 #include <dlfcn.h>
 #include <errno.h>
 #include <jni.h>
@@ -25,6 +26,7 @@
 
 #include "net.h"
 #include "proto.h"
+#include "usbmux.h"
 #include "vrecv.h"
 
 #define TAG "pdisp"
@@ -36,6 +38,7 @@ struct session {
 	atomic_bool stop, finished;
 	ANativeWindow *window;
 	char host[128], name[PROTO_NAME_MAX];
+	int usb_fd; /* >= 0: talk over this USB accessory descriptor instead of the network */
 	unsigned port, width, height, dpi, n_rates, rates_mhz[PROTO_MAX_RATES];
 
 	pthread_mutex_t status_mu;
@@ -267,10 +270,19 @@ static int send_hello(struct session *s, struct net_ctl *ctl, uint16_t type)
 static void *run(void *arg)
 {
 	struct session *s = arg;
-	set_status(s, "connecting to %s:%u", s->host, s->port);
-	int cfd = net_tcp_connect(s->host, s->port);
-	if (cfd < 0) { set_status(s, "cannot connect to %s:%u: %s", s->host, s->port, strerror(-cfd)); atomic_store(&s->finished, true); return NULL; }
-	net_tune_tcp(cfd);
+	int cfd = -1, usb_dgram = -1;
+	struct usbmux *mux = NULL;
+	if (s->usb_fd >= 0) {
+		set_status(s, "connected over USB, waiting for the PC");
+		int e = usbmux_start(s->usb_fd, s->usb_fd, USBMUX_LINK_BLOCKING_READ, &mux, &cfd, &usb_dgram);
+		if (e) { set_status(s, "cannot start the USB link: %s", strerror(-e)); atomic_store(&s->finished, true); return NULL; }
+		fcntl(usb_dgram, F_SETFL, fcntl(usb_dgram, F_GETFL) | O_NONBLOCK);
+	} else {
+		set_status(s, "connecting to %s:%u", s->host, s->port);
+		cfd = net_tcp_connect(s->host, s->port);
+		if (cfd < 0) { set_status(s, "cannot connect to %s:%u: %s", s->host, s->port, strerror(-cfd)); atomic_store(&s->finished, true); return NULL; }
+		net_tune_tcp(cfd);
+	}
 	struct net_ctl ctl;
 	net_ctl_init(&ctl, cfd);
 	struct vrecv *vr = NULL;
@@ -298,8 +310,8 @@ static void *run(void *arg)
 	struct vrecv_config rc = { .session_id = su.session_id, .shard_size = su.params.shard_size };
 	struct vrecv_callbacks rcb = { .decode = decode_cb, .user = s };
 	vr = vrecv_create(&rc, &rcb);
-	ufd = net_udp_bind(0);
-	net_tune_udp(ufd);
+	ufd = s->usb_fd >= 0 ? usb_dgram : net_udp_bind(0);
+	if (s->usb_fd < 0) net_tune_udp(ufd);
 	{ /* keyframes arrive as bursts of 100+ packets: the default receive buffer overflows */
 		int rcvbuf = 4 << 20;
 		setsockopt(ufd, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof rcvbuf);
@@ -308,17 +320,19 @@ static void *run(void *arg)
 		LOGI("UDP receive buffer %d bytes", rcvbuf);
 	}
 	struct sockaddr_in to;
-	{
+	memset(&to, 0, sizeof to);
+	if (s->usb_fd < 0) {
 		socklen_t pl = sizeof to;
 		getpeername(cfd, (struct sockaddr *)&to, &pl);
 		to.sin_port = htons(su.udp_port);
 	}
+#define DSEND(buf, n) (s->usb_fd >= 0 ? send(ufd, (buf), (n), MSG_DONTWAIT) : sendto(ufd, (buf), (n), 0, (struct sockaddr *)&to, sizeof to))
 	uint64_t udp_seq = 0;
 	struct proto_pkt_hdr hh = { .session_id = su.session_id, .type = PROTO_PKT_HELLO_UDP };
 	uint8_t hb[PROTO_PKT_HDR_SIZE], pkt[2048];
 	hh.seq = udp_seq++;
 	proto_pkt_hdr_write(&hh, hb, sizeof hb);
-	sendto(ufd, hb, sizeof hb, 0, (struct sockaddr *)&to, sizeof to);
+	DSEND(hb, sizeof hb);
 	net_ctl_send(&ctl, PROTO_CTL_READY, NULL, 0);
 
 	uint64_t t0 = net_now_us(), next_fb = t0 + 10000, next_hello = t0 + 100000, next_ping = t0 + 1000000, last_stat = t0;
@@ -373,12 +387,12 @@ static void *run(void *arg)
 			next_hello = now + 100000;
 			hh.seq = udp_seq++;
 			proto_pkt_hdr_write(&hh, hb, sizeof hb);
-			sendto(ufd, hb, sizeof hb, 0, (struct sockaddr *)&to, sizeof to);
+			DSEND(hb, sizeof hb);
 		}
 		if (now >= next_fb) {
 			next_fb = now + 10000;
 			int fn = vrecv_feedback_packet(vr, now, pkt, sizeof pkt);
-			if (fn > 0) sendto(ufd, pkt, (size_t)fn, 0, (struct sockaddr *)&to, sizeof to);
+			if (fn > 0) DSEND(pkt, (size_t)fn);
 		}
 		if (now >= next_ping) {
 			next_ping = now + 1000000;
@@ -411,20 +425,23 @@ out:
 	if (vr) vrecv_destroy(vr);
 	if (ufd >= 0) close(ufd);
 	net_ctl_close(&ctl);
+	if (mux) usbmux_stop(mux);
 	atomic_store(&s->finished, true);
 	return NULL;
 }
 
-JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStart(JNIEnv *env, jclass cls, jstring host, jint port, jobject surface,
-							      jint width, jint height, jint dpi, jintArray rates, jstring name)
+static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, jobject surface, jint width, jint height, jint dpi,
+			  jintArray rates, jstring name)
 {
-	(void)cls;
 	struct session *s = calloc(1, sizeof *s);
 	if (!s) return 0;
+	s->usb_fd = usb_fd;
 	pthread_mutex_init(&s->status_mu, NULL);
-	const char *h = (*env)->GetStringUTFChars(env, host, NULL);
-	snprintf(s->host, sizeof s->host, "%s", h);
-	(*env)->ReleaseStringUTFChars(env, host, h);
+	if (host) {
+		const char *h = (*env)->GetStringUTFChars(env, host, NULL);
+		snprintf(s->host, sizeof s->host, "%s", h);
+		(*env)->ReleaseStringUTFChars(env, host, h);
+	}
 	const char *n = (*env)->GetStringUTFChars(env, name, NULL);
 	snprintf(s->name, sizeof s->name, "%s", n);
 	(*env)->ReleaseStringUTFChars(env, name, n);
@@ -438,6 +455,21 @@ JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStart(JNIEnv *env, jcla
 	if (!s->window) { free(s); return 0; }
 	if (pthread_create(&s->thread, NULL, run, s) != 0) { ANativeWindow_release(s->window); free(s); return 0; }
 	return (jlong)(intptr_t)s;
+}
+
+JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStart(JNIEnv *env, jclass cls, jstring host, jint port, jobject surface,
+							      jint width, jint height, jint dpi, jintArray rates, jstring name)
+{
+	(void)cls;
+	return start_common(env, host, port, -1, surface, width, height, dpi, rates, name);
+}
+
+/* `fd` is the descriptor of the open USB accessory; ownership passes to the native side. */
+JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStartUsb(JNIEnv *env, jclass cls, jint fd, jobject surface, jint width,
+								 jint height, jint dpi, jintArray rates, jstring name)
+{
+	(void)cls;
+	return start_common(env, NULL, 0, fd, surface, width, height, dpi, rates, name);
 }
 
 JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeStop(JNIEnv *env, jclass cls, jlong handle)

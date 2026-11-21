@@ -11,6 +11,12 @@ object PdispNative {
         width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String,
     ): Long
 
+    /** Same session over a USB accessory file descriptor (ownership passes to the native side). */
+    external fun nativeStartUsb(
+        fd: Int, surface: Surface,
+        width: Int, height: Int, dpi: Int, refreshMhz: IntArray, name: String,
+    ): Long
+
     external fun nativeStop(handle: Long)
     external fun nativeStatus(handle: Long): String
     external fun nativeFinished(handle: Long): Boolean

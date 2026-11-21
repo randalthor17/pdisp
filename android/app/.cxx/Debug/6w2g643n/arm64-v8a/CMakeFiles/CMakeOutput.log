@@ -127,3 +127,11 @@ Parsed C implicit link information from above output:
   implicit fwks: []
 
 
+Determining if the include file pthread.h exists passed with the following output:
+Change Dir: /home/rand/git-repos/virt-monitor/android/app/.cxx/Debug/6w2g643n/arm64-v8a/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/nix/store/rfa8hyxwx9spqpc2ap56clmycbhn9xkk-androidsdk/libexec/android-sdk/cmake/3.22.1/bin/ninja cmTC_ec70a && [1/2] Building C object CMakeFiles/cmTC_ec70a.dir/CheckIncludeFile.c.o
+[2/2] Linking C executable cmTC_ec70a
+
+
+

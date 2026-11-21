@@ -85,7 +85,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - Keypair, authorized-keys store, approval prompt, encrypted transport.
 - Pass: an unauthorized key is rejected. An authorized key reconnects without a prompt. Tests cover both.
 
-**M7: AOA transport**
+**M7: AOA transport** (done 2026-11-21 on the Tab S9 FE: plug in and the stream runs over the cable; see `docs/spikes/m7-usb.md`; done before M6 at the user's request, as it is the more reliable transport)
 - libusb switch to accessory mode, bulk endpoints, udev rule, app launches on plug-in.
 - Pass: plug in, tap permission once, and the monitor appears with no adb or developer mode.
 

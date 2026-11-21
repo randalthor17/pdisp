@@ -17,7 +17,19 @@ struct usbmux {
 	int wake[2];          /* pipe that wakes the threads on stop */
 	pthread_t tx, rx;
 	int started;
+	unsigned flags;
+	atomic_int refs; /* the owner, and the read thread while it runs */
 };
+
+static void unref(struct usbmux *m)
+{
+	if (atomic_fetch_sub(&m->refs, 1) != 1) return;
+	close(m->ctl_in);
+	close(m->dgram_in);
+	close(m->wake[0]);
+	close(m->wake[1]);
+	free(m);
+}
 
 static int write_all(int fd, const uint8_t *p, size_t n)
 {
@@ -29,25 +41,6 @@ static int write_all(int fd, const uint8_t *p, size_t n)
 		}
 		p += w;
 		n -= (size_t)w;
-	}
-	return 0;
-}
-
-static int read_all(struct usbmux *m, int fd, uint8_t *p, size_t n)
-{
-	while (n) {
-		struct pollfd pf[2] = { { .fd = fd, .events = POLLIN }, { .fd = m->wake[0], .events = POLLIN } };
-		if (poll(pf, 2, -1) < 0 && errno != EINTR) return -errno;
-		if (pf[1].revents) return -ECANCELED;
-		if (!(pf[0].revents & (POLLIN | POLLHUP | POLLERR))) continue;
-		ssize_t r = read(fd, p, n);
-		if (r == 0) return -ECONNRESET;
-		if (r < 0) {
-			if (errno == EINTR || errno == EAGAIN) continue;
-			return -errno;
-		}
-		p += r;
-		n -= (size_t)r;
 	}
 	return 0;
 }
@@ -95,34 +88,66 @@ static void *tx_thread(void *arg)
 	return NULL;
 }
 
-/* link -> application */
+/* link -> application. Android's accessory device returns one USB transfer per read() and throws away what does not fit the
+ * caller's buffer, so the link is always read in large chunks and the frames are reassembled here. */
+#define RX_CHUNK 16384
+
 static void *rx_thread(void *arg)
 {
 	struct usbmux *m = arg;
-	uint8_t *buf = malloc(USBMUX_MAX_FRAME);
+	size_t cap = USBMUX_MAX_FRAME + 5 + RX_CHUNK, have = 0, pos = 0;
+	uint8_t *buf = malloc(cap);
 	while (buf && !atomic_load(&m->stop)) {
-		uint8_t h[5];
-		if (read_all(m, m->link_rd, h, 5) != 0) break;
-		uint32_t len = get_u32(h);
-		if (len < 1 || len - 1 > USBMUX_MAX_FRAME) break; /* a broken link: nothing to resynchronise to */
-		if (len > 1 && read_all(m, m->link_rd, buf, len - 1) != 0) break;
-		if (h[4] == USBMUX_KIND_CTL) {
-			if (write_all(m->ctl_in, buf, len - 1) != 0) break;
-		} else if (h[4] == USBMUX_KIND_DGRAM) {
-			if (send(m->dgram_in, buf, len - 1, MSG_DONTWAIT) < 0 && errno != EAGAIN && errno != ENOBUFS) break;
-		} /* unknown kinds are skipped */
+		/* the frames in buf[pos, have) */
+		while (have - pos >= 5) {
+			uint32_t len = get_u32(buf + pos);
+			if (len < 1 || len - 1 > USBMUX_MAX_FRAME) goto done; /* a broken link: nothing to resynchronise to */
+			if (have - pos < 4 + (size_t)len) break;
+			uint8_t kind = buf[pos + 4];
+			const uint8_t *body = buf + pos + 5;
+			if (kind == USBMUX_KIND_CTL) {
+				if (write_all(m->ctl_in, body, len - 1) != 0) goto done;
+			} else if (kind == USBMUX_KIND_DGRAM) {
+				/* the pipe is reliable, so a full socket means "wait", not "drop": a keyframe is a burst far bigger than a socket
+				 * buffer. Only a reader that stops for 100 ms loses datagrams. */
+				for (;;) {
+					if (send(m->dgram_in, body, len - 1, MSG_DONTWAIT) >= 0) break;
+					if (errno == EINTR) continue;
+					if (errno != EAGAIN && errno != ENOBUFS) goto done;
+					struct pollfd wf = { .fd = m->dgram_in, .events = POLLOUT };
+					if (poll(&wf, 1, 100) <= 0 || atomic_load(&m->stop)) break;
+				}
+			} /* unknown kinds are skipped */
+			pos += 4 + (size_t)len;
+		}
+		if (pos) { memmove(buf, buf + pos, have - pos); have -= pos; pos = 0; }
+		struct pollfd pf[2] = { { .fd = m->link_rd, .events = POLLIN }, { .fd = m->wake[0], .events = POLLIN } };
+		if (poll(pf, 2, -1) < 0 && errno != EINTR) break;
+		if (pf[1].revents) break;
+		if (!(pf[0].revents & (POLLIN | POLLHUP | POLLERR))) continue;
+		ssize_t r = read(m->link_rd, buf + have, RX_CHUNK);
+		if (r == 0) break;
+		if (r < 0) {
+			if (errno == EINTR || errno == EAGAIN) continue;
+			break;
+		}
+		have += (size_t)r;
 	}
+done:
 	free(buf);
 	mark_down(m);
+	unref(m);
 	return NULL;
 }
 
-int usbmux_start(int link_rd, int link_wr, struct usbmux **out, int *ctl, int *dgram)
+int usbmux_start(int link_rd, int link_wr, unsigned flags, struct usbmux **out, int *ctl, int *dgram)
 {
 	struct usbmux *m = calloc(1, sizeof *m);
 	if (!m) return -ENOMEM;
 	m->link_rd = link_rd;
 	m->link_wr = link_wr;
+	m->flags = flags;
+	atomic_store(&m->refs, 2);
 	int cs[2], ds[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0, cs) != 0) { free(m); return -errno; }
 	if (socketpair(AF_UNIX, SOCK_DGRAM | SOCK_CLOEXEC, 0, ds) != 0) { close(cs[0]); close(cs[1]); free(m); return -errno; }
@@ -134,10 +159,18 @@ int usbmux_start(int link_rd, int link_wr, struct usbmux **out, int *ctl, int *d
 	setsockopt(ds[0], SOL_SOCKET, SO_RCVBUF, &big, sizeof big);
 	m->ctl_in = cs[0];
 	m->dgram_in = ds[0];
-	if (pthread_create(&m->tx, NULL, tx_thread, m) != 0 || pthread_create(&m->rx, NULL, rx_thread, m) != 0) {
-		usbmux_stop(m);
-		close(cs[1]);
-		close(ds[1]);
+	if (pthread_create(&m->tx, NULL, tx_thread, m) != 0) {
+		close(m->ctl_in); close(m->dgram_in); close(m->wake[0]); close(m->wake[1]); close(cs[1]); close(ds[1]);
+		free(m);
+		return -EAGAIN;
+	}
+	if (pthread_create(&m->rx, NULL, rx_thread, m) != 0) {
+		atomic_store(&m->refs, 1);
+		atomic_store(&m->stop, 1);
+		(void)!write(m->wake[1], "x", 1);
+		pthread_join(m->tx, NULL);
+		close(cs[1]); close(ds[1]);
+		unref(m);
 		return -EAGAIN;
 	}
 	m->started = 1;
@@ -157,13 +190,8 @@ void usbmux_stop(struct usbmux *m)
 	if (!m) return;
 	atomic_store(&m->stop, 1);
 	(void)!write(m->wake[1], "x", 1);
-	if (m->started) {
-		pthread_join(m->tx, NULL);
-		pthread_join(m->rx, NULL);
-	}
-	close(m->ctl_in);
-	close(m->dgram_in);
-	close(m->wake[0]);
-	close(m->wake[1]);
-	free(m);
+	pthread_join(m->tx, NULL);
+	if (m->flags & USBMUX_LINK_BLOCKING_READ) pthread_detach(m->rx); /* it ends when the link does, and frees the mux then */
+	else pthread_join(m->rx, NULL);
+	unref(m);
 }

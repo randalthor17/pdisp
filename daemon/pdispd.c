@@ -8,6 +8,7 @@
  */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
 #include <signal.h>
@@ -18,10 +19,15 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <sys/wait.h>
+#include <time.h>
+
 #include "edid.h"
 #include "encoder.h"
 #include "net.h"
 #include "proto.h"
+#include "usblink.h"
+#include "usbmux.h"
 #include "vdisplay.h"
 #include "video.h"
 #include "vsend.h"
@@ -39,6 +45,8 @@ static struct {
 	const char *name, *serial_text, *render_node;
 	uint32_t serial;
 	int card;
+	bool usb;          /* talk to a tablet over a USB cable (accessory mode) instead of listening on the network */
+	unsigned usb_vid;  /* only consider this USB vendor (0 = any) */
 } C = { .port = 47110, .max_hz_mhz = 60000, .bitrate = 12000, .max_bitrate = 40000, .name = "pdisp",
 	.serial_text = "PDISP0001", .serial = 1, .card = -1 };
 
@@ -221,6 +229,13 @@ static int make_sender(void)
 	return D.vs ? 0 : -ENOMEM;
 }
 
+/* a datagram to the phone: sendto() on the network, plain send() on the connected USB socket */
+static ssize_t udp_send(int fd, const void *buf, size_t n, const struct sockaddr_in *peer)
+{
+	if (C.usb) return send(fd, buf, n, MSG_DONTWAIT);
+	return sendto(fd, buf, n, 0, (const struct sockaddr *)peer, sizeof *peer);
+}
+
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
@@ -235,15 +250,20 @@ static void usage(const char *argv0)
 		"  -B KBPS     highest bitrate (default 40000)\n"
 		"  -r NODE     VAAPI render node (default: first that can encode HEVC)\n"
 		"  -d CARD     evdi card (default: first free)\n"
-		"  -S SECS     stop streaming after this long (default: until the phone leaves)\n",
+		"  -S SECS     stop streaming after this long (default: until the phone leaves)\n"
+		"  -u          serve a tablet over USB (AOA accessory mode) instead of the network; keeps waiting for the next\n"
+		"              plug-in after each session unless -S is given\n"
+		"  -V VID      with -u, only consider this USB vendor id in hex (e.g. 04e8)\n",
 		argv0);
 }
+
+static int run_session(double run_secs);
 
 int main(int argc, char **argv)
 {
 	int opt;
 	double run_secs = 0;
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:h")) != -1) {
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:uV:h")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
 		case 'n': C.name = optarg; break;
@@ -261,6 +281,8 @@ int main(int argc, char **argv)
 		case 'r': C.render_node = optarg; break;
 		case 'd': C.card = atoi(optarg); break;
 		case 'S': run_secs = atof(optarg); break;
+		case 'u': C.usb = true; break;
+		case 'V': C.usb_vid = (unsigned)strtoul(optarg, NULL, 16); break;
 		default: usage(argv[0]); return 2;
 		}
 	}
@@ -270,17 +292,54 @@ int main(int argc, char **argv)
 	signal(SIGPIPE, SIG_IGN);
 	t_start = net_now_us();
 
+	if (C.usb && run_secs <= 0) {
+		/* one child per plug-in: a session leaves the evdi device, encoder and sockets in a state that is simplest to throw away */
+		while (!stop) {
+			pid_t pid = fork();
+			if (pid < 0) { perror("fork"); return 1; }
+			if (pid == 0) return run_session(0);
+			int status = 0;
+			while (waitpid(pid, &status, 0) < 0 && errno == EINTR && !stop) {}
+			if (stop) { kill(pid, SIGTERM); waitpid(pid, &status, 0); break; }
+			if (WIFEXITED(status) && WEXITSTATUS(status) == 3) return 3; /* no evdi device: waiting will not help */
+			struct timespec nap = { 1, 0 };
+			nanosleep(&nap, NULL);
+		}
+		return 0;
+	}
+	return run_session(run_secs);
+}
+
+/* One session: wait for the tablet (network or cable), set up the monitor and stream until it leaves. */
+static int run_session(double run_secs)
+{
+	t_start = net_now_us();
 	/* ---- wait for a phone and read its HELLO */
-	int lfd = net_tcp_listen(C.port);
-	if (lfd < 0) { fprintf(stderr, "cannot listen on %u: %s\n", C.port, strerror(-lfd)); return 1; }
-	LOG("listening on port %u", C.port);
-	struct pollfd lp = { .fd = lfd, .events = POLLIN };
-	while (!stop && poll(&lp, 1, 200) <= 0) {}
-	if (stop) return 0;
-	int cfd = accept(lfd, NULL, NULL);
-	close(lfd);
-	if (cfd < 0) { perror("accept"); return 1; }
-	net_tune_tcp(cfd);
+	int cfd, usb_dgram = -1;
+	struct usblink *link = NULL;
+	struct usbmux *mux = NULL;
+	if (C.usb) {
+		LOG("waiting for a tablet on USB");
+		int rd, wr;
+		int e = usblink_open(-1, C.usb_vid, (const volatile int *)&stop, &link, &rd, &wr);
+		if (e == -ECANCELED) return 0;
+		if (e) { LOG("cannot open the USB device: %s (is the udev rule installed? see contrib/udev)", strerror(-e)); return 1; }
+		LOG("USB accessory %s", usblink_description(link));
+		e = usbmux_start(rd, wr, 0, &mux, &cfd, &usb_dgram);
+		if (e) { LOG("cannot start the USB multiplexer: %s", strerror(-e)); return 1; }
+		fcntl(usb_dgram, F_SETFL, fcntl(usb_dgram, F_GETFL) | O_NONBLOCK);
+	} else {
+		int lfd = net_tcp_listen(C.port);
+		if (lfd < 0) { fprintf(stderr, "cannot listen on %u: %s\n", C.port, strerror(-lfd)); return 1; }
+		LOG("listening on port %u", C.port);
+		struct pollfd lp = { .fd = lfd, .events = POLLIN };
+		while (!stop && poll(&lp, 1, 200) <= 0) {}
+		if (stop) return 0;
+		cfd = accept(lfd, NULL, NULL);
+		close(lfd);
+		if (cfd < 0) { perror("accept"); return 1; }
+		net_tune_tcp(cfd);
+	}
 	struct net_ctl ctl;
 	net_ctl_init(&ctl, cfd);
 
@@ -288,7 +347,7 @@ int main(int argc, char **argv)
 	const uint8_t *payload;
 	size_t plen;
 	struct proto_hello hello;
-	if (net_ctl_recv(&ctl, &type, &payload, &plen, 10000) != 1 || type != PROTO_CTL_HELLO ||
+	if (net_ctl_recv(&ctl, &type, &payload, &plen, C.usb ? 120000 : 10000) != 1 || type != PROTO_CTL_HELLO ||
 	    proto_hello_decode(payload, plen, &hello) != 0) {
 		LOG("no valid HELLO from the phone");
 		return 1;
@@ -314,7 +373,7 @@ int main(int argc, char **argv)
 
 	/* ---- SETUP */
 	D.session_id = (uint32_t)(net_now_us() * 2654435761u) ^ (uint32_t)getpid();
-	int ufd = net_udp_bind(C.port);
+	int ufd = C.usb ? usb_dgram : net_udp_bind(C.port);
 	if (ufd < 0) { LOG("cannot bind UDP port %u: %s", C.port, strerror(-ufd)); return 1; }
 	struct proto_setup su;
 	memset(&su, 0, sizeof su);
@@ -329,7 +388,7 @@ int main(int argc, char **argv)
 
 	/* ---- wait for READY (TCP) and the phone's first UDP packet */
 	struct sockaddr_in peer;
-	bool have_peer = false, ready = false;
+	bool have_peer = C.usb, ready = false; /* over USB the datagram socket is already connected */
 	uint64_t deadline = net_now_us() + 15000000;
 	while (!stop && !(ready && have_peer) && net_now_us() < deadline) {
 		struct pollfd p[2] = { { .fd = cfd, .events = POLLIN }, { .fd = ufd, .events = POLLIN } };
@@ -387,7 +446,7 @@ int main(int argc, char **argv)
 			socklen_t fl = sizeof from;
 			ssize_t n = recvfrom(ufd, pkt, sizeof pkt, 0, (struct sockaddr *)&from, &fl);
 			if (n < 0) break;
-			if (from.sin_addr.s_addr != peer.sin_addr.s_addr || from.sin_port != peer.sin_port) continue;
+			if (!C.usb && (from.sin_addr.s_addr != peer.sin_addr.s_addr || from.sin_port != peer.sin_port)) continue;
 			last_rx = now;
 			struct proto_pkt_hdr ph;
 			if (n >= PROTO_PKT_HDR_SIZE + 8 && proto_pkt_hdr_read(pkt, (size_t)n, &ph) == 0 && ph.type == PROTO_PKT_TIME_REQ &&
@@ -399,7 +458,7 @@ int main(int argc, char **argv)
 					tr.t3 = net_now_us();
 					int bn = proto_time_resp_encode(&tr, body, sizeof body);
 					int rn = bn > 0 ? vsend_make_packet(D.vs, PROTO_PKT_TIME_RESP, body, (size_t)bn, rp, sizeof rp) : -1;
-					if (rn > 0) sendto(ufd, rp, (size_t)rn, 0, (struct sockaddr *)&peer, sizeof peer);
+					if (rn > 0) udp_send(ufd, rp, (size_t)rn, &peer);
 				}
 				continue;
 			}
@@ -460,6 +519,7 @@ int main(int argc, char **argv)
 			if (proto_token_encode(now, tb, sizeof tb) == 8) net_ctl_send(&ctl, PROTO_CTL_PING, tb, 8);
 		}
 		if (now - last_pong > 8000000 && D.pongs) { LOG("no PONG for 8 s: the control channel is dead"); break; }
+		if (C.usb && usblink_gone(link)) { LOG("the USB cable was unplugged"); break; }
 		if (now - last_rx > 3000000 && !D.awaiting_ack) { LOG("no packets from the phone for 3 s"); break; }
 
 		if (D.refresh_due_us && now >= D.refresh_due_us && D.streaming && vdisplay_current_frame(D.vd, &cur) &&
@@ -473,7 +533,7 @@ int main(int argc, char **argv)
 			if (vsend_next_due_us(D.vs, now) > now) break;
 			int n = vsend_next_packet(D.vs, now, pkt, sizeof pkt);
 			if (n <= 0) break;
-			if (sendto(ufd, pkt, (size_t)n, 0, (struct sockaddr *)&peer, sizeof peer) < 0) D.send_errors++;
+			if (udp_send(ufd, pkt, (size_t)n, &peer) < 0) D.send_errors++;
 			else D.sent_packets++;
 		}
 
@@ -505,6 +565,11 @@ int main(int argc, char **argv)
 	encoder_close(D.enc);
 	vdisplay_close(D.vd);
 	net_ctl_close(&ctl);
-	close(ufd);
+	if (!C.usb) close(ufd);
+	else {
+		close(ufd);
+		usbmux_stop(mux);
+		usblink_close(link);
+	}
 	return 0;
 }

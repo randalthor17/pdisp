@@ -119,7 +119,7 @@ test_stream = executable('test_stream', 'tests/test_stream.c', dependencies: pro
 test('video stream over a simulated link', test_stream, timeout: 300)
 
 # the daemon and the desktop test client
-pdispd = executable('pdispd', 'daemon/pdispd.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep])
+pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')])
 libav_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libswscale')]
 pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads'), dependency('sdl2')] + libav_deps)
 
@@ -159,4 +159,12 @@ test('m4 reconfigure on a display change', m4_reconfigure,
   protocol: 'exitcode',
   is_parallel: false,
   timeout: 120,
+  suite: 'integration')
+
+m7_usb = find_program('tests/m7_usb_check.sh')
+test('m7 monitor over a USB cable', m7_usb,
+  args: [pdispd, pdisp_pattern, meson.current_build_dir() / 'm7-usb-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 240,
   suite: 'integration')
