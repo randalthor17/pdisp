@@ -60,6 +60,7 @@ static void pen_tests(void)
 	struct pen_config cfg = { .name = "t", .width = 2000, .height = 1000, .dpi = 300 };
 	struct pendev *p;
 	CHECK(pen_open_sink(&cfg, record, &r, &p) == 0);
+	pen_close(p);
 	CHECK(pen_open_sink(&(struct pen_config){ .width = 1, .height = 5 }, record, &r, &p) == -EINVAL);
 	CHECK(pen_open_sink(&cfg, record, &r, &p) == 0);
 
@@ -168,6 +169,7 @@ static void touch_tests(void)
 	struct touch_config cfg = { .name = "t", .width = 1080, .height = 2400, .dpi = 420, .slots = 10 };
 	struct touchdev *t;
 	CHECK(touch_open_sink(&cfg, record, &r, &t) == 0);
+	touch_close(t);
 	CHECK(touch_open_sink(&(struct touch_config){ .width = 10, .height = 10, .slots = 0 }, record, &r, &t) == -EINVAL);
 	CHECK(touch_open_sink(&(struct touch_config){ .width = 10, .height = 10, .slots = 11 }, record, &r, &t) == -EINVAL);
 	CHECK(touch_open_sink(&cfg, record, &r, &t) == 0);
