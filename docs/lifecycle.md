@@ -49,10 +49,23 @@ not encode. `-o` serves one session and exits, `-S` stops after a time.
 | phone back needing another size | the monitor followed (2400x1080), frames decoded |
 | daemon restarted | monitor gone 10 ms after the daemon stopped, back with the restarted daemon under the same serial |
 
+## Windows (the plan's scenario matrix), niri, 2026-11-22
+`tests/m9_windows_check.sh` (opt-in, `PDISP_TEST_WINDOWS=1`, because it opens a window of our own test client fullscreen on the virtual monitor
+and the compositor moves it) with a 6 s grace period, a scripted phone, and a real monitor `DP-1`:
+
+| Scenario | Where the window was |
+|---|---|
+| phone lost, back within the grace period | stayed on the virtual monitor throughout (the monitor never left) |
+| phone lost, never comes back (app closed after resume) | moved to the real monitor `DP-1` when the grace period ended |
+| phone back after the monitor was removed (app open on resume) | the window went **back to the virtual monitor** on its own: niri hands a workspace back to its output |
+| phone locks (CLOSE reason 1) | moved to `DP-1` at once |
+| daemon restarted | moved to `DP-1` when the monitor went, and back on the virtual monitor when the restarted daemon recreated it |
+
+So windows end up where the design says. This depends on the monitor keeping its identity (EDID make, model, serial) across removal; the
+connector name (DVI-I-1) is not what niri keys on. The test restores your focus and closes its window.
+
 ## Not verified
-- **Windows.** The pass check in the plan is about where windows end up. The monitor's existence and timing are tested, but not niri's
-  handling of real windows on it (unplug with windows open, resume with the app open or closed). That needs windows opened on the virtual
-  output, which moves them onto your real monitor's workspaces when it goes, so it waits for your OK.
+- Other compositors (windows were checked on niri only), and a real application with several windows (the test uses one).
 - **The app on a device**: the lock/unlock, background/foreground and reconnect logic builds but was not run on a phone yet (the test phone
   was locked), nor USB unplug and re-plug.
 - Android Doze and Wi-Fi power management during a long sleep.

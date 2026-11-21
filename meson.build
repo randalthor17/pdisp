@@ -243,3 +243,12 @@ test('m9 virtual monitor lifecycle', m9_lifecycle,
   is_parallel: false,
   timeout: 400,
   suite: 'integration')
+
+# opens a window on your desktop (the compositor moves it around): skips unless PDISP_TEST_WINDOWS=1
+m9_windows = find_program('tests/m9_windows_check.sh')
+test('m9 windows follow the virtual monitor', m9_windows,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm9-windows-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 400,
+  suite: 'integration')
