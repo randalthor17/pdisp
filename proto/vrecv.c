@@ -99,6 +99,12 @@ void vrecv_set_epoch(struct vrecv *vr, uint8_t epoch)
 	vr->started = false;
 	vr->awaiting_idr = true;
 	vr->pending = 0;
+	/* the new epoch's sender numbers its packets from zero again, and its delays start a new baseline */
+	vr->have_seq = false;
+	vr->highest_seq = vr->prev_highest_seq = vr->got_in_interval = vr->bytes_in_interval = 0;
+	vr->owd_base_set = false;
+	vr->n_samples = 0;
+	memset(vr->buckets, 0, sizeof vr->buckets);
 }
 
 const struct vrecv_stats *vrecv_stats(const struct vrecv *vr) { return &vr->st; }
@@ -331,6 +337,17 @@ void vrecv_tick(struct vrecv *vr, uint64_t now_us)
 	}
 	resolve_pending(vr);
 	advance_base(vr);
+}
+
+int vrecv_make_packet(struct vrecv *vr, uint8_t type, const uint8_t *payload, size_t len, uint8_t *out, size_t cap)
+{
+	struct proto_pkt_hdr h = { .session_id = vr->cfg.session_id, .type = type, .seq = vr->seq_out };
+	int a = proto_pkt_hdr_write(&h, out, cap);
+	if (a < 0) return a;
+	if (len > cap - (size_t)a) return -EMSGSIZE;
+	if (len) memcpy(out + a, payload, len);
+	vr->seq_out++;
+	return a + (int)len;
 }
 
 void vrecv_decoder_error(struct vrecv *vr)

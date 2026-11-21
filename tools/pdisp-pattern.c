@@ -6,6 +6,7 @@
  */
 #define _GNU_SOURCE
 #include "pattern.h"
+#include "stamp.h"
 #include "xdg-shell-client-protocol.h"
 
 #include <errno.h>
@@ -49,7 +50,7 @@ static struct {
 	struct xdg_toplevel *toplevel;
 	struct output *target;
 	int width, height;
-	bool configured, animate;
+	bool configured, animate, stamp;
 	uint32_t *base; /* the pattern, computed once */
 	struct buffer buf[NBUF];
 	unsigned frame_no;
@@ -173,6 +174,18 @@ static void draw_and_commit(void)
 			for (int x = new_x; x < new_x + BAR_WIDTH; x++) b->pixels[(size_t)y * app.width + x] = 0x00ff00ffu;
 	}
 
+	if (app.stamp && app.width >= STAMP_WIDTH) {
+		/* the clock is read as late as possible: this is the moment the application hands the frame over */
+		struct timespec ts;
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+		uint64_t us = (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
+		for (unsigned i = 0; i < STAMP_BITS; i++) {
+			uint32_t c = stamp_bit(us, i) ? 0x00ffffffu : 0x00000000u;
+			for (unsigned y = 0; y < STAMP_BLOCK; y++)
+				for (unsigned x = 0; x < STAMP_BLOCK; x++) b->pixels[(size_t)y * app.width + i * STAMP_BLOCK + x] = c;
+		}
+	}
+
 	b->busy = true;
 	wl_surface_attach(app.surface, b->wl, 0, 0);
 	if (!app.animate || app.frame_no == 0) {
@@ -180,6 +193,7 @@ static void draw_and_commit(void)
 	} else {
 		if (app.bar_x >= 0) wl_surface_damage_buffer(app.surface, app.bar_x, 0, BAR_WIDTH, app.height);
 		wl_surface_damage_buffer(app.surface, new_x, 0, BAR_WIDTH, app.height);
+		if (app.stamp) wl_surface_damage_buffer(app.surface, 0, 0, STAMP_WIDTH, STAMP_BLOCK); /* the stamp changes every frame */
 	}
 	app.bar_x = new_x;
 	app.frame_no++;
@@ -213,10 +227,11 @@ static const struct xdg_toplevel_listener tl_listener = { tl_configure, tl_close
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
-		"usage: %s -o OUTPUT [-t SECS] [-a]\n"
+		"usage: %s -o OUTPUT [-t SECS] [-a] [-T]\n"
 		"  -o OUTPUT  connector name of the output to fullscreen on (e.g. DVI-I-1)\n"
 		"  -t SECS    exit after this many seconds (default: until SIGINT/SIGTERM)\n"
-		"  -a         animate: sweep a bar across the pattern on every frame\n",
+		"  -a         animate: sweep a bar across the pattern on every frame\n"
+		"  -T         draw a timestamp into the top rows of every frame (see tools/stamp.h)\n",
 		argv0);
 }
 
@@ -225,11 +240,12 @@ int main(int argc, char **argv)
 	const char *want = NULL;
 	double secs = -1;
 	int opt;
-	while ((opt = getopt(argc, argv, "o:t:ah")) != -1) {
+	while ((opt = getopt(argc, argv, "o:t:aTh")) != -1) {
 		switch (opt) {
 		case 'o': want = optarg; break;
 		case 't': secs = atof(optarg); break;
 		case 'a': app.animate = true; break;
+		case 'T': app.stamp = true; break;
 		default: usage(argv[0]); return 2;
 		}
 	}

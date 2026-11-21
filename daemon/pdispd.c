@@ -1,5 +1,6 @@
 /* pdispd: the pdisp daemon. Accepts one phone on TCP, creates a virtual monitor sized for it, then captures the monitor,
- * encodes it and streams it over UDP with loss repair (docs/protocol.md).
+ * encodes it and streams it over UDP with loss repair (docs/protocol.md). When the phone reports a new display size
+ * (rotation) the output, encoder and sender are rebuilt in a new epoch and the phone is told with RECONFIGURE.
  *
  *   pdispd [-p PORT] [-n NAME] [-t SERIAL] [-m WxH@HZ] [-R MAXHZ] [-b KBPS] [-B MAXKBPS] [-r NODE] [-d CARD] [-S SECS]
  *
@@ -31,18 +32,34 @@ static void on_signal(int sig) { (void)sig; stop = 1; }
 static uint64_t t_start;
 #define LOG(...) do { fprintf(stderr, "[%8.3f] ", (net_now_us() - t_start) / 1e6); fprintf(stderr, __VA_ARGS__); fputc('\n', stderr); } while (0)
 
+/* ---- configuration from the command line */
+
+static struct {
+	unsigned port, max_hz_mhz, bitrate, max_bitrate, force_w, force_h, force_mhz;
+	const char *name, *serial_text, *render_node;
+	uint32_t serial;
+	int card;
+} C = { .port = 47110, .max_hz_mhz = 60000, .bitrate = 12000, .max_bitrate = 40000, .name = "pdisp",
+	.serial_text = "PDISP0001", .serial = 1, .card = -1 };
+
+/* ---- the live session */
+
 struct daemon {
 	struct vdisplay *vd;
 	struct encoder *enc;
 	struct vsend *vs;
-	unsigned width, height;
+	unsigned width, height, refresh_mhz;
+	uint32_t session_id;
+	uint8_t epoch;
 	bool streaming;
+	bool awaiting_ack;         /* RECONFIGURE sent, the phone has not confirmed yet */
+	uint64_t ack_deadline_us;
+	bool new_epoch_pending;    /* the next frame is the first of a new epoch */
 	bool force_idr;
 	uint64_t refresh_due_us;   /* re-encode the current screen at this time if nothing new arrived (0 = none) */
-	uint64_t last_encode_us;
-	uint64_t frames_encoded, frames_skipped, idr_frames, submit_failures, send_errors, sent_packets;
-	uint64_t t_service_us, t_send_us, t_poll_us; /* where the loop spends its time */
+	uint64_t frames_encoded, frames_skipped, idr_frames, submit_failures, send_errors, sent_packets, reconfigs, pongs;
 	double encode_ms_sum, encode_ms_max;
+	uint64_t t_service_us, t_poll_us;
 };
 
 static struct daemon D;
@@ -79,17 +96,19 @@ static void encode_and_submit(const uint8_t *pixels, int stride, uint64_t captur
 	if (rc != 0) { LOG("encode failed: %s", strerror(-rc)); return; }
 	D.force_idr = false;
 	D.frames_encoded++;
-	D.encode_ms_sum += p.upload_ms + p.convert_ms + p.encode_ms;
-	if (p.upload_ms + p.convert_ms + p.encode_ms > D.encode_ms_max) D.encode_ms_max = p.upload_ms + p.convert_ms + p.encode_ms;
+	double ms = p.upload_ms + p.convert_ms + p.encode_ms;
+	D.encode_ms_sum += ms;
+	if (ms > D.encode_ms_max) D.encode_ms_max = ms;
 	if (p.idr) D.idr_frames++;
 	uint32_t id = (uint32_t)p.frame_index;
 	uint32_t ref = p.idr ? PROTO_NO_REF : id - (uint32_t)p.ref_distance;
-	rc = vsend_submit(D.vs, id, ref, capture_us, p.idr ? PROTO_VFLAG_IDR : 0, p.data, (uint32_t)p.size, now);
+	uint8_t vflags = p.idr ? PROTO_VFLAG_IDR : 0;
+	if (D.new_epoch_pending) { vflags |= PROTO_VFLAG_NEW_EPOCH; D.new_epoch_pending = false; }
+	rc = vsend_submit(D.vs, id, ref, capture_us, vflags, p.data, (uint32_t)p.size, now);
 	if (rc != 0) { /* an encoded frame that cannot be sent is a lost frame: keep it out of the reference chain */
 		D.submit_failures++;
 		encoder_invalidate_frame(D.enc, p.frame_index);
 	}
-	D.last_encode_us = now;
 	D.refresh_due_us = 0;
 }
 
@@ -99,6 +118,107 @@ static void on_frame(const struct vdisplay_frame *f, void *user)
 	if (!D.streaming) return;
 	if ((unsigned)f->width != D.width || (unsigned)f->height != D.height) return;
 	encode_and_submit(f->data, f->stride, f->grab_ns / 1000);
+}
+
+/* ---- choosing a mode and bringing the pipeline up */
+
+static int reject(struct net_ctl *c, uint16_t reason, const char *text)
+{
+	struct proto_reject r;
+	memset(&r, 0, sizeof r);
+	r.reason = reason;
+	snprintf(r.text, sizeof r.text, "%s", text);
+	uint8_t b[256];
+	int n = proto_reject_encode(&r, b, sizeof b);
+	if (n > 0) net_ctl_send(c, PROTO_CTL_REJECT, b, (size_t)n);
+	LOG("rejected the phone: %s", text);
+	return 1;
+}
+
+/* The mode for a phone's display fields: its native size unless forced, the best refresh rate within the cap. Returns 0, or
+ * a REJECT reason (with `*why`). */
+static int choose_mode(const struct proto_hello *h, struct edid_params *ep, struct edid_timing *t, uint8_t edid[EDID_SIZE],
+		       const char **why)
+{
+	unsigned w = C.force_w ? C.force_w : h->native_width, hh = C.force_h ? C.force_h : h->native_height;
+	unsigned refresh_mhz = C.force_mhz;
+	if (!refresh_mhz) {
+		for (int i = 0; i < h->n_refresh; i++)
+			if (h->refresh_mhz[i] <= C.max_hz_mhz && h->refresh_mhz[i] > refresh_mhz) refresh_mhz = h->refresh_mhz[i];
+		if (!refresh_mhz) refresh_mhz = h->n_refresh ? h->refresh_mhz[0] : 60000;
+	}
+	unsigned dpi = h->density_dpi ? h->density_dpi : 160;
+	memset(ep, 0, sizeof *ep);
+	ep->width = w; ep->height = hh; ep->refresh_mhz = refresh_mhz;
+	ep->mm_width = (unsigned)(w * 25.4 / dpi + 0.5);
+	ep->mm_height = (unsigned)(hh * 25.4 / dpi + 0.5);
+	memcpy(ep->pnp_id, "PDI", 4);
+	ep->product_code = 1; ep->serial = C.serial; ep->year = 2026;
+	snprintf(ep->name, sizeof ep->name, "%s", C.name);
+	snprintf(ep->serial_text, sizeof ep->serial_text, "%s", C.serial_text);
+	if (w % 8 || hh % 8) { *why = "width and height must be multiples of 8"; return 4; }
+	if (edid_generate(ep, edid) != 0 || edid_compute_timing(w, hh, refresh_mhz, t) != 0) {
+		*why = "this mode cannot be represented in an EDID";
+		return 4;
+	}
+	return 0;
+}
+
+/* Brings up (or re-brings up) the virtual output and the encoder for a mode. Returns 0, or a negative errno. */
+static int bring_up(const struct edid_params *ep, const struct edid_timing *t, const uint8_t edid[EDID_SIZE])
+{
+	if (!D.vd) {
+		int card = C.card >= 0 ? C.card : vdisplay_find_free_device();
+		if (card < 0) return -ENODEV;
+		struct vdisplay_events ev = { .frame = on_frame };
+		int err = vdisplay_open(card, &ev, &D.vd);
+		if (err) return err;
+		LOG("using evdi card%d", card);
+	} else {
+		vdisplay_disconnect(D.vd);
+	}
+	int err = vdisplay_connect(D.vd, edid, t->hactive, t->vactive, t->pixel_clock_khz);
+	if (err) return err;
+	D.width = ep->width; D.height = ep->height; D.refresh_mhz = ep->refresh_mhz;
+	LOG("virtual output %ux%u@%.3f", D.width, D.height, t->refresh_hz);
+
+	if (D.enc) { encoder_close(D.enc); D.enc = NULL; }
+	struct encoder_config ec = { .render_node = C.render_node, .width = D.width, .height = D.height,
+				     .fps = (unsigned)(t->refresh_hz + 0.5), .bitrate_kbps = C.bitrate, .vbr = true,
+				     .target_percent = 50, .vbv_ms = 30 };
+	err = encoder_open(&ec, &D.enc);
+	if (err) return err;
+	LOG("encoder: %s", encoder_description(D.enc));
+	return 0;
+}
+
+static void make_params(struct proto_stream_params *p)
+{
+	memset(p, 0, sizeof *p);
+	p->epoch = D.epoch;
+	p->security = PROTO_SECURITY_NONE;
+	p->width = (uint16_t)D.width;
+	p->height = (uint16_t)D.height;
+	p->refresh_mhz = D.refresh_mhz;
+	p->codec = PROTO_CODEC_HEVC;
+	p->color_range = 0; p->color_primaries = 1; p->color_transfer = 13; p->color_matrix = 1;
+	p->shard_size = 1200;
+	p->fec_percent = 10;
+	p->bitrate_kbps = C.bitrate;
+	p->min_bitrate_kbps = 2000;
+	p->max_bitrate_kbps = C.max_bitrate;
+	p->dpb_frames = 7;
+	p->param_sets_len = (uint16_t)encoder_parameter_sets(D.enc, p->param_sets, sizeof p->param_sets);
+}
+
+static int make_sender(void)
+{
+	if (D.vs) vsend_destroy(D.vs);
+	struct vsend_config vc = { .session_id = D.session_id, .epoch = D.epoch, .shard_size = 1200, .bitrate_kbps = C.bitrate,
+				   .min_bitrate_kbps = 2000, .max_bitrate_kbps = C.max_bitrate };
+	struct vsend_callbacks vcb = { .invalidate = cb_invalidate, .need_idr = cb_need_idr };
+	D.vs = vsend_create(&vc, &vcb);
+	return D.vs ? 0 : -ENOMEM;
 }
 
 static void usage(const char *argv0)
@@ -119,46 +239,27 @@ static void usage(const char *argv0)
 		argv0);
 }
 
-static int reject(struct net_ctl *c, uint16_t reason, const char *text)
-{
-	struct proto_reject r;
-	memset(&r, 0, sizeof r);
-	r.reason = reason;
-	snprintf(r.text, sizeof r.text, "%s", text);
-	uint8_t b[256];
-	int n = proto_reject_encode(&r, b, sizeof b);
-	if (n > 0) net_ctl_send(c, PROTO_CTL_REJECT, b, (size_t)n);
-	LOG("rejected the phone: %s", text);
-	return 1;
-}
-
 int main(int argc, char **argv)
 {
-	unsigned port = 47110;
-	const char *name = "pdisp", *serial_text = "PDISP0001", *render_node = NULL;
-	uint32_t serial = 1;
-	unsigned max_hz_mhz = 60000, bitrate = 12000, max_bitrate = 40000;
-	unsigned force_w = 0, force_h = 0, force_mhz = 0;
-	int card = -1, opt;
+	int opt;
 	double run_secs = 0;
-
 	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:h")) != -1) {
 		switch (opt) {
-		case 'p': port = (unsigned)atoi(optarg); break;
-		case 'n': name = optarg; break;
-		case 't': serial_text = optarg; break;
-		case 'N': serial = (uint32_t)strtoul(optarg, NULL, 0); break;
+		case 'p': C.port = (unsigned)atoi(optarg); break;
+		case 'n': C.name = optarg; break;
+		case 't': C.serial_text = optarg; break;
+		case 'N': C.serial = (uint32_t)strtoul(optarg, NULL, 0); break;
 		case 'm': {
 			double hz;
-			if (sscanf(optarg, "%ux%u@%lf", &force_w, &force_h, &hz) != 3) { usage(argv[0]); return 2; }
-			force_mhz = (unsigned)(hz * 1000 + 0.5);
+			if (sscanf(optarg, "%ux%u@%lf", &C.force_w, &C.force_h, &hz) != 3) { usage(argv[0]); return 2; }
+			C.force_mhz = (unsigned)(hz * 1000 + 0.5);
 			break;
 		}
-		case 'R': max_hz_mhz = (unsigned)(atof(optarg) * 1000); break;
-		case 'b': bitrate = (unsigned)atoi(optarg); break;
-		case 'B': max_bitrate = (unsigned)atoi(optarg); break;
-		case 'r': render_node = optarg; break;
-		case 'd': card = atoi(optarg); break;
+		case 'R': C.max_hz_mhz = (unsigned)(atof(optarg) * 1000); break;
+		case 'b': C.bitrate = (unsigned)atoi(optarg); break;
+		case 'B': C.max_bitrate = (unsigned)atoi(optarg); break;
+		case 'r': C.render_node = optarg; break;
+		case 'd': C.card = atoi(optarg); break;
 		case 'S': run_secs = atof(optarg); break;
 		default: usage(argv[0]); return 2;
 		}
@@ -170,9 +271,9 @@ int main(int argc, char **argv)
 	t_start = net_now_us();
 
 	/* ---- wait for a phone and read its HELLO */
-	int lfd = net_tcp_listen(port);
-	if (lfd < 0) { fprintf(stderr, "cannot listen on %u: %s\n", port, strerror(-lfd)); return 1; }
-	LOG("listening on port %u", port);
+	int lfd = net_tcp_listen(C.port);
+	if (lfd < 0) { fprintf(stderr, "cannot listen on %u: %s\n", C.port, strerror(-lfd)); return 1; }
+	LOG("listening on port %u", C.port);
 	struct pollfd lp = { .fd = lfd, .events = POLLIN };
 	while (!stop && poll(&lp, 1, 200) <= 0) {}
 	if (stop) return 0;
@@ -200,71 +301,31 @@ int main(int argc, char **argv)
 	for (int i = 0; i < hello.n_codecs; i++) has_hevc |= hello.codecs[i] == PROTO_CODEC_HEVC;
 	if (!has_hevc) return reject(&ctl, 4, "the phone cannot decode HEVC");
 
-	/* ---- the mode: the phone's native size unless forced */
-	unsigned w = force_w ? force_w : hello.native_width, h = force_h ? force_h : hello.native_height;
-	unsigned refresh_mhz = force_mhz;
-	if (!refresh_mhz) {
-		for (int i = 0; i < hello.n_refresh; i++)
-			if (hello.refresh_mhz[i] <= max_hz_mhz && hello.refresh_mhz[i] > refresh_mhz) refresh_mhz = hello.refresh_mhz[i];
-		if (!refresh_mhz) refresh_mhz = hello.n_refresh ? hello.refresh_mhz[0] : 60000;
-	}
-	unsigned dpi = hello.density_dpi ? hello.density_dpi : 160;
 	struct edid_params ep;
-	memset(&ep, 0, sizeof ep);
-	ep.width = w; ep.height = h; ep.refresh_mhz = refresh_mhz;
-	ep.mm_width = (unsigned)(w * 25.4 / dpi + 0.5); ep.mm_height = (unsigned)(h * 25.4 / dpi + 0.5);
-	memcpy(ep.pnp_id, "PDI", 4);
-	ep.product_code = 1; ep.serial = serial; ep.year = 2026;
-	snprintf(ep.name, sizeof ep.name, "%s", name);
-	snprintf(ep.serial_text, sizeof ep.serial_text, "%s", serial_text);
-	uint8_t edid[EDID_SIZE];
 	struct edid_timing timing;
-	if (w % 8 || h % 8) return reject(&ctl, 4, "width and height must be multiples of 8");
-	if (edid_generate(&ep, edid) != 0 || edid_compute_timing(w, h, refresh_mhz, &timing) != 0)
-		return reject(&ctl, 4, "this mode cannot be represented in an EDID");
+	uint8_t edid[EDID_SIZE];
+	const char *why = "";
+	int reason = choose_mode(&hello, &ep, &timing, edid, &why);
+	if (reason) return reject(&ctl, (uint16_t)reason, why);
 
-	/* ---- the virtual output and the encoder */
-	if (card < 0) card = vdisplay_find_free_device();
-	if (card < 0) { LOG("no free evdi device"); reject(&ctl, 3, "no virtual display available"); return 3; }
-	struct vdisplay_events ev = { .frame = on_frame };
-	int err = vdisplay_open(card, &ev, &D.vd);
-	if (err) { LOG("cannot open evdi card %d: %s", card, strerror(-err)); return 1; }
-	if (vdisplay_connect(D.vd, edid, timing.hactive, timing.vactive, timing.pixel_clock_khz) != 0) return 1;
-	D.width = w; D.height = h;
-	LOG("virtual output %ux%u@%.3f created on card%d", w, h, timing.refresh_hz, card);
-
-	struct encoder_config ec = { .render_node = render_node, .width = w, .height = h,
-				     .fps = (unsigned)(timing.refresh_hz + 0.5), .bitrate_kbps = bitrate, .vbr = true,
-				     .target_percent = 50, .vbv_ms = 30 };
-	err = encoder_open(&ec, &D.enc);
-	if (err) { LOG("cannot open the encoder: %s", strerror(-err)); reject(&ctl, 4, "no HEVC encoder"); return 1; }
-	LOG("encoder: %s", encoder_description(D.enc));
+	int err = bring_up(&ep, &timing, edid);
+	if (err == -ENODEV && !D.vd) { LOG("no free evdi device"); reject(&ctl, 3, "no virtual display available"); return 3; }
+	if (err) { LOG("cannot bring up the output and encoder: %s", strerror(-err)); reject(&ctl, 4, "no HEVC encoder or display"); return 1; }
 
 	/* ---- SETUP */
-	uint32_t session_id = (uint32_t)(net_now_us() * 2654435761u) ^ (uint32_t)getpid();
-	int ufd = net_udp_bind(port);
-	if (ufd < 0) { LOG("cannot bind UDP port %u: %s", port, strerror(-ufd)); return 1; }
-
+	D.session_id = (uint32_t)(net_now_us() * 2654435761u) ^ (uint32_t)getpid();
+	int ufd = net_udp_bind(C.port);
+	if (ufd < 0) { LOG("cannot bind UDP port %u: %s", C.port, strerror(-ufd)); return 1; }
 	struct proto_setup su;
 	memset(&su, 0, sizeof su);
 	su.proto_version = PROTO_VERSION;
-	su.session_id = session_id;
-	su.udp_port = (uint16_t)port;
-	su.params = (struct proto_stream_params){ .epoch = 0, .security = PROTO_SECURITY_NONE, .width = (uint16_t)w, .height = (uint16_t)h,
-						  .refresh_mhz = refresh_mhz, .codec = PROTO_CODEC_HEVC, .color_range = 0,
-						  .color_primaries = 1, .color_transfer = 13, .color_matrix = 1, .shard_size = 1200,
-						  .fec_percent = 10, .bitrate_kbps = bitrate, .min_bitrate_kbps = 2000,
-						  .max_bitrate_kbps = max_bitrate, .dpb_frames = 7 };
-	su.params.param_sets_len = (uint16_t)encoder_parameter_sets(D.enc, su.params.param_sets, sizeof su.params.param_sets);
+	su.session_id = D.session_id;
+	su.udp_port = (uint16_t)C.port;
+	make_params(&su.params);
 	uint8_t sb[1400];
 	int sn = proto_setup_encode(&su, sb, sizeof sb);
 	if (sn < 0 || net_ctl_send(&ctl, PROTO_CTL_SETUP, sb, (size_t)sn) != 0) { LOG("cannot send SETUP"); return 1; }
-
-	struct vsend_config vc = { .session_id = session_id, .epoch = 0, .shard_size = 1200, .bitrate_kbps = bitrate,
-				   .min_bitrate_kbps = 2000, .max_bitrate_kbps = max_bitrate };
-	struct vsend_callbacks vcb = { .invalidate = cb_invalidate, .need_idr = cb_need_idr };
-	D.vs = vsend_create(&vc, &vcb);
-	if (!D.vs) return 1;
+	if (make_sender() != 0) return 1;
 
 	/* ---- wait for READY (TCP) and the phone's first UDP packet */
 	struct sockaddr_in peer;
@@ -279,7 +340,7 @@ int main(int argc, char **argv)
 			socklen_t fl = sizeof from;
 			ssize_t n = recvfrom(ufd, b, sizeof b, 0, (struct sockaddr *)&from, &fl);
 			struct proto_pkt_hdr h;
-			if (n >= PROTO_PKT_HDR_SIZE && proto_pkt_hdr_read(b, (size_t)n, &h) == 0 && h.session_id == session_id &&
+			if (n >= PROTO_PKT_HDR_SIZE && proto_pkt_hdr_read(b, (size_t)n, &h) == 0 && h.session_id == D.session_id &&
 			    h.type == PROTO_PKT_HELLO_UDP) {
 				peer = from;
 				have_peer = true;
@@ -294,7 +355,7 @@ int main(int argc, char **argv)
 	if (!(ready && have_peer)) { LOG("the phone did not finish setting up"); return 1; }
 	char addr[64];
 	inet_ntop(AF_INET, &peer.sin_addr, addr, sizeof addr);
-	LOG("streaming to %s:%u (session %08x)", addr, ntohs(peer.sin_port), session_id);
+	LOG("streaming to %s:%u (session %08x)", addr, ntohs(peer.sin_port), D.session_id);
 
 	/* ---- stream: the first frame is the current screen, so a static desktop shows up at once */
 	D.streaming = true;
@@ -303,7 +364,7 @@ int main(int argc, char **argv)
 	else D.refresh_due_us = net_now_us() + 100000;
 
 	uint64_t last_rx = net_now_us(), end_us = run_secs > 0 ? net_now_us() + (uint64_t)(run_secs * 1e6) : 0;
-	uint64_t last_report = net_now_us();
+	uint64_t last_report = net_now_us(), next_ping = net_now_us() + 2000000, last_pong = net_now_us();
 	int evfd = vdisplay_event_fd(D.vd);
 	uint8_t pkt[2048];
 	while (!stop) {
@@ -321,25 +382,88 @@ int main(int argc, char **argv)
 		vdisplay_service(D.vd);
 		D.t_service_us += net_now_us() - now;
 
-		for (;;) { /* feedback and other packets from the phone */
+		for (;;) { /* feedback, time requests and other packets from the phone */
 			struct sockaddr_in from;
 			socklen_t fl = sizeof from;
 			ssize_t n = recvfrom(ufd, pkt, sizeof pkt, 0, (struct sockaddr *)&from, &fl);
 			if (n < 0) break;
 			if (from.sin_addr.s_addr != peer.sin_addr.s_addr || from.sin_port != peer.sin_port) continue;
 			last_rx = now;
+			struct proto_pkt_hdr ph;
+			if (n >= PROTO_PKT_HDR_SIZE + 8 && proto_pkt_hdr_read(pkt, (size_t)n, &ph) == 0 && ph.type == PROTO_PKT_TIME_REQ &&
+			    ph.session_id == D.session_id) {
+				/* clock sync: t2 is when this arrived, t3 when the answer leaves */
+				struct proto_time_resp tr = { .t2 = net_now_us() };
+				uint8_t rp[PROTO_PKT_HDR_SIZE + 24], body[24];
+				if (proto_token_decode(pkt + PROTO_PKT_HDR_SIZE, 8, &tr.t1) == 0) {
+					tr.t3 = net_now_us();
+					int bn = proto_time_resp_encode(&tr, body, sizeof body);
+					int rn = bn > 0 ? vsend_make_packet(D.vs, PROTO_PKT_TIME_RESP, body, (size_t)bn, rp, sizeof rp) : -1;
+					if (rn > 0) sendto(ufd, rp, (size_t)rn, 0, (struct sockaddr *)&peer, sizeof peer);
+				}
+				continue;
+			}
 			vsend_on_packet(D.vs, pkt, (size_t)n, now);
 		}
-		if (p[2].revents & (POLLIN | POLLHUP)) {
-			int r = net_ctl_recv(&ctl, &type, &payload, &plen, 0);
-			if (r == 1) {
-				if (type == PROTO_CTL_CLOSE) { LOG("the phone closed the session"); break; }
-				if (type == PROTO_CTL_PING) net_ctl_send(&ctl, PROTO_CTL_PONG, payload, plen);
-			} else if (r < 0) { LOG("control connection closed"); break; }
-		}
-		if (now - last_rx > 3000000) { LOG("no packets from the phone for 3 s"); break; }
 
-		if (D.refresh_due_us && now >= D.refresh_due_us && vdisplay_current_frame(D.vd, &cur)) {
+		/* the control channel */
+		if (p[2].revents & (POLLIN | POLLHUP)) {
+			for (;;) {
+				int r = net_ctl_recv(&ctl, &type, &payload, &plen, 0);
+				if (r == 0) break;
+				if (r < 0) { LOG("control connection closed"); stop = 1; break; }
+				if (type == PROTO_CTL_CLOSE) { LOG("the phone closed the session"); stop = 1; break; }
+				if (type == PROTO_CTL_PING) net_ctl_send(&ctl, PROTO_CTL_PONG, payload, plen);
+				else if (type == PROTO_CTL_PONG) { D.pongs++; last_pong = now; }
+				else if (type == PROTO_CTL_RECONFIGURE_ACK && D.awaiting_ack) {
+					D.awaiting_ack = false;
+					D.streaming = true;
+					D.new_epoch_pending = true;
+					D.force_idr = true;
+					LOG("the phone confirmed epoch %u: streaming %ux%u", D.epoch, D.width, D.height);
+					if (vdisplay_current_frame(D.vd, &cur) && (unsigned)cur.width == D.width && (unsigned)cur.height == D.height)
+						encode_and_submit(cur.data, cur.stride, net_now_us());
+				} else if (type == PROTO_CTL_DISPLAY_CHANGED) {
+					struct proto_hello nh;
+					struct edid_params nep;
+					struct edid_timing nt;
+					uint8_t nedid[EDID_SIZE];
+					const char *nwhy = "";
+					if (proto_hello_decode(payload, plen, &nh) != 0 || choose_mode(&nh, &nep, &nt, nedid, &nwhy) != 0) {
+						LOG("ignoring a display change that cannot be honoured: %s", nwhy);
+					} else if (nep.width == D.width && nep.height == D.height && nep.refresh_mhz == D.refresh_mhz) {
+						LOG("display change without a mode change: nothing to do");
+					} else {
+						LOG("the phone's display changed to %ux%u: reconfiguring", nep.width, nep.height);
+						D.streaming = false;
+						D.refresh_due_us = 0;
+						if (bring_up(&nep, &nt, nedid) != 0 || ++D.epoch == 0) { LOG("reconfiguration failed"); stop = 1; break; }
+						if (make_sender() != 0) { stop = 1; break; }
+						struct proto_stream_params rp;
+						make_params(&rp);
+						uint8_t rb[1400];
+						int rn = proto_stream_params_encode(&rp, rb, sizeof rb);
+						if (rn < 0 || net_ctl_send(&ctl, PROTO_CTL_RECONFIGURE, rb, (size_t)rn) != 0) { stop = 1; break; }
+						D.awaiting_ack = true;
+						D.ack_deadline_us = net_now_us() + 10000000;
+						D.reconfigs++;
+						evfd = vdisplay_event_fd(D.vd);
+					}
+				}
+			}
+			if (stop) break;
+		}
+		if (D.awaiting_ack && now > D.ack_deadline_us) { LOG("the phone did not confirm the reconfiguration"); break; }
+		if (now > next_ping) { /* liveness of the control channel itself */
+			next_ping = now + 2000000;
+			uint8_t tb[8];
+			if (proto_token_encode(now, tb, sizeof tb) == 8) net_ctl_send(&ctl, PROTO_CTL_PING, tb, 8);
+		}
+		if (now - last_pong > 8000000 && D.pongs) { LOG("no PONG for 8 s: the control channel is dead"); break; }
+		if (now - last_rx > 3000000 && !D.awaiting_ack) { LOG("no packets from the phone for 3 s"); break; }
+
+		if (D.refresh_due_us && now >= D.refresh_due_us && D.streaming && vdisplay_current_frame(D.vd, &cur) &&
+		    (unsigned)cur.width == D.width && (unsigned)cur.height == D.height) {
 			D.refresh_due_us = 0;
 			encode_and_submit(cur.data, cur.stride, now); /* same screen again, predicted from a frame the phone has */
 		}
@@ -356,23 +480,22 @@ int main(int argc, char **argv)
 		if (now - last_report >= 2000000) {
 			last_report = now;
 			const struct vsend_stats *st = vsend_stats(D.vs);
-			LOG("loop: poll %.0f%% service(capture+encode) %.0f%%, sent %llu packets, %llu send errors, queue %.1f ms, unresolved %u",
-			    D.t_poll_us / 20000.0, D.t_service_us / 20000.0, (unsigned long long)D.sent_packets,
-			    (unsigned long long)D.send_errors, vsend_queue_delay_us(D.vs) / 1000.0, vsend_unresolved(D.vs));
-			D.t_poll_us = D.t_service_us = 0;
-			LOG("frames %llu (skipped %llu, idr %llu), %.1f Mbit/s target, FEC %u%%, repairs %llu, nacks %llu, lost %llu",
+			LOG("frames %llu (skipped %llu, idr %llu), %.1f Mbit/s target, FEC %u%%, repairs %llu, nacks %llu, lost %llu, "
+			    "queue %.1f ms, unresolved %u",
 			    (unsigned long long)D.frames_encoded, (unsigned long long)D.frames_skipped, (unsigned long long)D.idr_frames,
 			    vsend_bitrate_kbps(D.vs) / 1000.0, vsend_fec_percent(D.vs), (unsigned long long)st->repair_packets,
-			    (unsigned long long)st->nacks, (unsigned long long)st->frames_lost);
+			    (unsigned long long)st->nacks, (unsigned long long)st->frames_lost, vsend_queue_delay_us(D.vs) / 1000.0,
+			    vsend_unresolved(D.vs));
 		}
 	}
 
 	const struct vsend_stats *st = vsend_stats(D.vs);
 	printf("DAEMON frames=%llu skipped=%llu idr=%llu packets=%llu repair_packets=%llu nacks=%llu frames_lost=%llu "
-	       "encode_ms_avg=%.2f encode_ms_max=%.2f\n",
+	       "encode_ms_avg=%.2f encode_ms_max=%.2f reconfigs=%llu pongs=%llu\n",
 	       (unsigned long long)D.frames_encoded, (unsigned long long)D.frames_skipped, (unsigned long long)D.idr_frames,
 	       (unsigned long long)st->packets, (unsigned long long)st->repair_packets, (unsigned long long)st->nacks,
-	       (unsigned long long)st->frames_lost, D.frames_encoded ? D.encode_ms_sum / D.frames_encoded : 0.0, D.encode_ms_max);
+	       (unsigned long long)st->frames_lost, D.frames_encoded ? D.encode_ms_sum / D.frames_encoded : 0.0, D.encode_ms_max,
+	       (unsigned long long)D.reconfigs, (unsigned long long)D.pongs);
 	uint8_t cb[64];
 	struct proto_close cl;
 	memset(&cl, 0, sizeof cl);

@@ -314,6 +314,17 @@ static void adapt(struct vsend *vs, const struct proto_feedback *fb, uint64_t no
 	vs->target_kbps = t;
 }
 
+int vsend_make_packet(struct vsend *vs, uint8_t type, const uint8_t *payload, size_t len, uint8_t *out, size_t cap)
+{
+	struct proto_pkt_hdr h = { .session_id = vs->cfg.session_id, .type = type, .seq = vs->seq };
+	int a = proto_pkt_hdr_write(&h, out, cap);
+	if (a < 0) return a;
+	if (len > cap - (size_t)a) return -EMSGSIZE;
+	if (len) memcpy(out + a, payload, len);
+	vs->seq++;
+	return a + (int)len;
+}
+
 int vsend_on_packet(struct vsend *vs, const uint8_t *pkt, size_t len, uint64_t now_us)
 {
 	struct proto_pkt_hdr h;

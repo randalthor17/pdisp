@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
+#include <SDL2/SDL.h>
 #include <libswscale/swscale.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -26,6 +27,8 @@
 #include "pattern.h"
 #include "png.h"
 #include "proto.h"
+#include "stamp.h"
+#include "timesync.h"
 #include "vrecv.h"
 
 static volatile sig_atomic_t stop;
@@ -60,6 +63,29 @@ struct viewer {
 	bool quit;
 	atomic_bool decoder_failed;
 	AVFrame *last;           /* newest decoded picture, converted at exit */
+	pthread_mutex_t last_mu; /* guards `last` and `frame_serial` while a window is shown */
+	unsigned frame_serial;
+
+	/* -w: a window showing the stream */
+	bool window;
+	SDL_Window *win;
+	SDL_Renderer *ren;
+	SDL_Texture *tex;
+	int tex_w, tex_h;
+	unsigned shown_serial;
+
+	/* clocks: the viewer's own clock may be skewed (-K) to prove the sync works; server_time = client_time + offset */
+	int64_t skew_us;
+	atomic_llong offset_us;
+	atomic_bool have_offset;
+	struct timesync ts;
+	int64_t sync_rtt_us;
+	uint64_t time_resp, pings, pongs, reconfigs;
+
+	/* glass-to-glass: the stamp the application drew into the frame, read back from the decoded picture */
+	bool read_stamps;
+	uint64_t *glass_us;
+	size_t n_glass, cap_glass;
 
 	/* freeze and corruption tracking over the whole run */
 	uint64_t max_gap_us;     /* longest time between two decoded frames, after the first 30 */
@@ -99,6 +125,12 @@ static void check_picture(const AVFrame *fr)
 	V.chk_samples++;
 }
 
+/* the viewer's clock, as the (possibly skewed) clock of the phone it plays */
+static uint64_t cnow(void) { return net_now_us() + (uint64_t)V.skew_us; }
+
+/* the PC's clock now, from the viewer's clock and the sync estimate (0 offset until the first exchange completes) */
+static uint64_t server_now(void) { return cnow() + (uint64_t)(int64_t)atomic_load(&V.offset_us); }
+
 static void decode_job(const struct job *jb)
 {
 	uint64_t t0 = net_now_us();
@@ -123,12 +155,30 @@ static void decode_job(const struct job *jb)
 			V.cap_lat = V.cap_lat ? V.cap_lat * 2 : 1024;
 			V.lat_us = realloc(V.lat_us, V.cap_lat * sizeof *V.lat_us);
 		}
-		V.lat_us[V.n_lat++] = now > jb->capture_us ? now - jb->capture_us : 0;
+		uint64_t sn = server_now();
+		V.lat_us[V.n_lat++] = sn > jb->capture_us ? sn - jb->capture_us : 0;
 		V.width = V.frame->width;
 		V.height = V.frame->height;
+		if (V.read_stamps && V.frame->format == AV_PIX_FMT_YUV420P) {
+			uint64_t stamp;
+			if (stamp_read(V.frame->data[0], V.frame->linesize[0], V.frame->width, &stamp)) {
+				uint64_t sn2 = server_now() & ((1ull << STAMP_VALUE_BITS) - 1);
+				uint64_t d = (sn2 - stamp) & ((1ull << STAMP_VALUE_BITS) - 1); /* the stamp holds the low 48 bits of the clock */
+				if (d < 5000000) { /* anything older than 5 s is a misread, not a measurement */
+					if (V.n_glass == V.cap_glass) {
+						V.cap_glass = V.cap_glass ? V.cap_glass * 2 : 1024;
+						V.glass_us = realloc(V.glass_us, V.cap_glass * sizeof *V.glass_us);
+					}
+					V.glass_us[V.n_glass++] = d;
+				}
+			}
+		}
+		pthread_mutex_lock(&V.last_mu);
 		if (!V.last) V.last = av_frame_alloc();
 		av_frame_unref(V.last);
 		av_frame_ref(V.last, V.frame);
+		V.frame_serial++;
+		pthread_mutex_unlock(&V.last_mu);
 		if (V.verbose) LOG("decoded frame %u (ref %d) %zu bytes, latency %.1f ms", jb->id,
 				   jb->ref == PROTO_NO_REF ? -1 : (int)jb->ref, jb->size, V.lat_us[V.n_lat - 1] / 1000.0);
 	}
@@ -192,6 +242,76 @@ static double pattern_match(const uint8_t *bgra, int w, int h)
 	return total ? (double)good / total : 0;
 }
 
+/* Shows the newest decoded picture in the window, creating or resizing it as needed. Runs on the main thread. */
+static void show_picture(void)
+{
+	pthread_mutex_lock(&V.last_mu);
+	if (!V.last || V.shown_serial == V.frame_serial) { pthread_mutex_unlock(&V.last_mu); return; }
+	V.shown_serial = V.frame_serial;
+	if (V.last->format != AV_PIX_FMT_YUV420P) { pthread_mutex_unlock(&V.last_mu); return; }
+	int w = V.last->width, h = V.last->height;
+	if (!V.win) {
+		int ww = w, wh = h;
+		while (ww > 1280 || wh > 800) { ww /= 2; wh /= 2; } /* a window that fits on a normal screen */
+		V.win = SDL_CreateWindow("pdisp-view", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, ww, wh, SDL_WINDOW_RESIZABLE);
+		V.ren = V.win ? SDL_CreateRenderer(V.win, -1, SDL_RENDERER_ACCELERATED) : NULL;
+		if (!V.ren) { fprintf(stderr, "cannot create a window: %s\n", SDL_GetError()); V.window = false; pthread_mutex_unlock(&V.last_mu); return; }
+		SDL_SetYUVConversionMode(SDL_YUV_CONVERSION_BT709); /* the stream is tagged BT.709 */
+	}
+	if (!V.tex || V.tex_w != w || V.tex_h != h) { /* first picture, or the size changed (RECONFIGURE) */
+		if (V.tex) SDL_DestroyTexture(V.tex);
+		V.tex = SDL_CreateTexture(V.ren, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, w, h);
+		V.tex_w = w;
+		V.tex_h = h;
+		SDL_RenderSetLogicalSize(V.ren, w, h);
+	}
+	if (V.tex) {
+		SDL_UpdateYUVTexture(V.tex, NULL, V.last->data[0], V.last->linesize[0], V.last->data[1], V.last->linesize[1],
+				     V.last->data[2], V.last->linesize[2]);
+		pthread_mutex_unlock(&V.last_mu);
+		SDL_RenderClear(V.ren);
+		SDL_RenderCopy(V.ren, V.tex, NULL, NULL);
+		SDL_RenderPresent(V.ren);
+		return;
+	}
+	pthread_mutex_unlock(&V.last_mu);
+}
+
+/* (Re)opens the HEVC decoder with the parameter sets of the current epoch and starts its thread. */
+static int start_decoder(const uint8_t *param_sets, size_t len)
+{
+	const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
+	V.dec = avcodec_alloc_context3(codec);
+	V.dec->thread_count = 0;
+	V.dec->flags |= AV_CODEC_FLAG_LOW_DELAY;
+	V.dec->extradata = av_mallocz(len + AV_INPUT_BUFFER_PADDING_SIZE);
+	memcpy(V.dec->extradata, param_sets, len);
+	V.dec->extradata_size = (int)len;
+	if (avcodec_open2(V.dec, codec, NULL) < 0) return -1;
+	if (!V.pkt) V.pkt = av_packet_alloc();
+	if (!V.frame) V.frame = av_frame_alloc();
+	if (!V.jobs) {
+		pthread_mutex_init(&V.last_mu, NULL);
+		pthread_mutex_init(&V.mu, NULL);
+		pthread_cond_init(&V.cv, NULL);
+		V.jobs = calloc(JOB_RING, sizeof *V.jobs);
+	}
+	V.quit = false;
+	atomic_store(&V.decoder_failed, false);
+	return pthread_create(&V.thread, NULL, decode_thread, NULL);
+}
+
+/* Lets the decode thread finish what is queued, then stops it and frees the decoder. */
+static void stop_decoder(void)
+{
+	pthread_mutex_lock(&V.mu);
+	V.quit = true;
+	pthread_cond_signal(&V.cv);
+	pthread_mutex_unlock(&V.mu);
+	pthread_join(V.thread, NULL);
+	avcodec_free_context(&V.dec);
+}
+
 static void usage(const char *argv0)
 {
 	fprintf(stderr,
@@ -202,7 +322,11 @@ static void usage(const char *argv0)
 		"  -S secs       run this long after the stream starts (default 10)\n"
 		"  -o file.png   save the last decoded picture\n"
 		"  -c            require the decoded picture to match the test pattern\n"
+		"  -w            show the stream in a window (SDL2)\n"
+		"  -G            read the timestamp the pattern client draws (-T there) and report glass-to-glass latency\n"
 		"  -L pct        drop this percentage of incoming datagrams at random\n"
+		"  -X secs:WxH   after this long, report a display change to this size (a rotation), exercising RECONFIGURE\n"
+		"  -K us         skew this viewer's clock by this many microseconds (tests the clock sync)\n"
 		"  -v            log every decoded frame\n",
 		argv0);
 }
@@ -218,7 +342,9 @@ int main(int argc, char **argv)
 	bool check = false;
 	optind = 3;
 	int opt;
-	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cL:vh")) != -1) {
+	double change_after = 0;
+	unsigned change_w = 0, change_h = 0;
+	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:vh")) != -1) {
 		switch (opt) {
 		case 'W': nw = (unsigned)atoi(optarg); break;
 		case 'H': nh = (unsigned)atoi(optarg); break;
@@ -227,7 +353,13 @@ int main(int argc, char **argv)
 		case 'S': secs = atof(optarg); break;
 		case 'o': snap = optarg; break;
 		case 'c': check = true; break;
+		case 'G': V.read_stamps = true; break;
+		case 'w': V.window = true; break;
 		case 'L': drop_pct = atof(optarg); break;
+		case 'K': V.skew_us = atoll(optarg); break;
+		case 'X':
+			if (sscanf(optarg, "%lf:%ux%u", &change_after, &change_w, &change_h) != 3) { usage(argv[0]); return 2; }
+			break;
 		case 'v': V.verbose = true; break;
 		default: usage(argv[0]); return 2;
 		}
@@ -277,21 +409,10 @@ int main(int argc, char **argv)
 	LOG("SETUP: %ux%u@%.3f, session %08x, %u kbit/s, %u bytes of parameter sets", su.params.width, su.params.height,
 	    su.params.refresh_mhz / 1000.0, su.session_id, su.params.bitrate_kbps, su.params.param_sets_len);
 
+	if (V.window && SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "cannot initialise SDL: %s\n", SDL_GetError()); return 1; }
+
 	/* ---- decoder */
-	const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
-	V.dec = avcodec_alloc_context3(codec);
-	V.dec->thread_count = 0;
-	V.dec->flags |= AV_CODEC_FLAG_LOW_DELAY;
-	V.dec->extradata = av_mallocz(su.params.param_sets_len + AV_INPUT_BUFFER_PADDING_SIZE);
-	memcpy(V.dec->extradata, su.params.param_sets, su.params.param_sets_len);
-	V.dec->extradata_size = su.params.param_sets_len;
-	if (avcodec_open2(V.dec, codec, NULL) < 0) { fprintf(stderr, "cannot open the HEVC decoder\n"); return 1; }
-	V.pkt = av_packet_alloc();
-	V.frame = av_frame_alloc();
-	pthread_mutex_init(&V.mu, NULL);
-	pthread_cond_init(&V.cv, NULL);
-	V.jobs = calloc(JOB_RING, sizeof *V.jobs);
-	pthread_create(&V.thread, NULL, decode_thread, NULL);
+	if (start_decoder(su.params.param_sets, su.params.param_sets_len) != 0) { fprintf(stderr, "cannot open the HEVC decoder\n"); return 1; }
 
 	struct vrecv_config rc = { .session_id = su.session_id, .shard_size = su.params.shard_size };
 	struct vrecv_callbacks rcb = { .decode = decode_cb };
@@ -317,8 +438,10 @@ int main(int argc, char **argv)
 	LOG("sent READY");
 
 	/* ---- receive */
-	uint64_t next_fb = net_now_us() + 10000, next_hello = net_now_us() + 100000;
-	uint64_t stream_start = 0, end_us = 0;
+	uint64_t next_fb = net_now_us() + 10000, next_hello = net_now_us() + 100000, next_time = 0;
+	timesync_init(&V.ts);
+	uint64_t stream_start = 0, end_us = 0, next_ping = 0, change_at = 0;
+	uint64_t last_pong = net_now_us();
 	uint8_t pkt[2048];
 	while (!stop) {
 		uint64_t now = net_now_us();
@@ -326,6 +449,12 @@ int main(int argc, char **argv)
 		struct pollfd p[2] = { { .fd = ufd, .events = POLLIN }, { .fd = cfd, .events = POLLIN } };
 		poll(p, 2, 2);
 		now = net_now_us();
+		if (V.window) { /* window events and the newest picture, without ever waiting for vsync */
+			SDL_Event ev;
+			while (SDL_PollEvent(&ev))
+				if (ev.type == SDL_QUIT || (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE)) stop = 1;
+			show_picture();
+		}
 		for (;;) {
 			ssize_t got = recv(ufd, pkt, sizeof pkt, 0);
 			if (got < 0) break;
@@ -336,14 +465,75 @@ int main(int argc, char **argv)
 			if (!stream_start) {
 				stream_start = now;
 				end_us = now + (uint64_t)(secs * 1e6);
+				if (change_after > 0) change_at = now + (uint64_t)(change_after * 1e6);
 				LOG("first packet from the daemon");
+			}
+			struct proto_pkt_hdr ph;
+			if (got >= PROTO_PKT_HDR_SIZE + 24 && proto_pkt_hdr_read(pkt, (size_t)got, &ph) == 0 && ph.type == PROTO_PKT_TIME_RESP) {
+				struct proto_time_resp tr;
+				uint64_t t4 = cnow();
+				if (proto_time_resp_decode(pkt + PROTO_PKT_HDR_SIZE, (size_t)got - PROTO_PKT_HDR_SIZE, &tr) == 0) {
+					timesync_add(&V.ts, tr.t1, tr.t2, tr.t3, t4);
+					int64_t off, rtt;
+					if (timesync_estimate(&V.ts, &off, &rtt)) {
+						atomic_store(&V.offset_us, off);
+						atomic_store(&V.have_offset, true);
+						V.sync_rtt_us = rtt;
+					}
+					V.time_resp++;
+				}
 			}
 			vrecv_on_packet(vr, pkt, (size_t)got, now);
 		}
+		if (stream_start && now >= next_time) { /* ask for the PC's clock once a second (every 100 ms at first, to settle quickly) */
+			next_time = now + (V.time_resp < 5 ? 100000 : 1000000);
+			uint8_t tb[8], tp[PROTO_PKT_HDR_SIZE + 8];
+			if (proto_time_req_encode(cnow(), tb, sizeof tb) == 8) {
+				int tn = vrecv_make_packet(vr, PROTO_PKT_TIME_REQ, tb, 8, tp, sizeof tp);
+				if (tn > 0) sendto(ufd, tp, (size_t)tn, 0, (struct sockaddr *)&to, sizeof to);
+			}
+		}
 		if (p[1].revents & (POLLIN | POLLHUP)) {
-			r = net_ctl_recv(&ctl, &type, &payload, &plen, 0);
-			if (r == 1 && type == PROTO_CTL_CLOSE) { LOG("the daemon closed the session"); break; }
-			if (r < 0) { LOG("control connection closed"); break; }
+			bool done = false;
+			for (;;) {
+				r = net_ctl_recv(&ctl, &type, &payload, &plen, 0);
+				if (r == 0) break;
+				if (r < 0) { LOG("control connection closed"); done = true; break; }
+				if (type == PROTO_CTL_CLOSE) { LOG("the daemon closed the session"); done = true; break; }
+				if (type == PROTO_CTL_PING) net_ctl_send(&ctl, PROTO_CTL_PONG, payload, plen);
+				else if (type == PROTO_CTL_PONG) { V.pongs++; last_pong = now; }
+				else if (type == PROTO_CTL_RECONFIGURE) {
+					struct proto_stream_params np;
+					if (proto_stream_params_decode(payload, plen, &np) != 0) { LOG("bad RECONFIGURE"); done = true; break; }
+					LOG("RECONFIGURE: epoch %u, %ux%u: restarting the decoder", np.epoch, np.width, np.height);
+					stop_decoder();
+					if (start_decoder(np.param_sets, np.param_sets_len) != 0) { LOG("cannot reopen the decoder"); done = true; break; }
+					vrecv_destroy(vr);
+					struct vrecv_config nrc = { .session_id = su.session_id, .shard_size = np.shard_size };
+					vr = vrecv_create(&nrc, &rcb);
+					vrecv_set_epoch(vr, np.epoch);
+					V.reconfigs++;
+					V.width = np.width; V.height = np.height; /* until a picture of the new size is decoded */
+					net_ctl_send(&ctl, PROTO_CTL_RECONFIGURE_ACK, NULL, 0);
+				}
+			}
+			if (done) break;
+		}
+		if (stream_start && now >= next_ping) { /* liveness of the control channel */
+			next_ping = now + 1000000;
+			uint8_t tb[8];
+			if (proto_token_encode(cnow(), tb, sizeof tb) == 8) { net_ctl_send(&ctl, PROTO_CTL_PING, tb, 8); V.pings++; }
+		}
+		if (V.pings > 2 && !V.pongs && now - stream_start > 6000000) { LOG("no PONG from the daemon: the control channel is dead"); break; }
+		if (V.pongs && now - last_pong > 6000000) { LOG("no PONG for 6 s: the control channel is dead"); break; }
+		if (change_at && now >= change_at) { /* test hook (-X): tell the daemon the display changed, as a rotation would */
+			change_at = 0;
+			struct proto_hello nh = hello;
+			nh.native_width = (uint16_t)change_w; nh.native_height = (uint16_t)change_h;
+			nh.orientation = change_h > change_w ? 1 : 0;
+			uint8_t nb[2048];
+			int nn = proto_hello_encode(&nh, nb, sizeof nb);
+			if (nn > 0 && net_ctl_send(&ctl, PROTO_CTL_DISPLAY_CHANGED, nb, (size_t)nn) == 0) LOG("sent DISPLAY_CHANGED: %ux%u", change_w, change_h);
 		}
 		if (atomic_exchange(&V.decoder_failed, false)) vrecv_decoder_error(vr);
 		vrecv_tick(vr, now);
@@ -361,11 +551,11 @@ int main(int argc, char **argv)
 	}
 
 	/* ---- report: stop the decoder thread first, then convert the newest picture for the checks */
-	pthread_mutex_lock(&V.mu);
-	V.quit = true;
-	pthread_cond_signal(&V.cv);
-	pthread_mutex_unlock(&V.mu);
-	pthread_join(V.thread, NULL);
+	stop_decoder();
+	if (V.tex) SDL_DestroyTexture(V.tex);
+	if (V.ren) SDL_DestroyRenderer(V.ren);
+	if (V.win) SDL_DestroyWindow(V.win);
+	if (V.window) SDL_Quit();
 	if (V.last) {
 		V.sws = sws_getCachedContext(V.sws, V.last->width, V.last->height, (enum AVPixelFormat)V.last->format, V.last->width,
 					     V.last->height, AV_PIX_FMT_BGRA, SWS_BILINEAR, NULL, NULL, NULL);
@@ -385,12 +575,19 @@ int main(int argc, char **argv)
 	double match = V.bgra ? pattern_match(V.bgra, V.width, V.height) : 0;
 	printf("VIEW packets=%llu ", (unsigned long long)vs->packets);
 	printf("decoded=%llu fps=%.1f decode_ms_avg=%.2f latency_ms_p50=%.1f p99=%.1f max=%.1f given_up=%llu idr=%llu "
-	       "decoder_errors=%llu match=%.1f%% freeze_ms=%.1f checks=%u check_min=%.1f%% check_bad=%u\n",
+	       "decoder_errors=%llu match=%.1f%% freeze_ms=%.1f checks=%u check_min=%.1f%% check_bad=%u clock_offset_us=%lld clock_rtt_ms=%.1f reconfigs=%llu pongs=%llu final_size=%dx%d\n",
 	       (unsigned long long)V.decoded, V.decoded / span, V.decoded ? V.decode_ms_sum / V.decoded : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat / 2] / 1000.0 : 0.0, V.n_lat ? V.lat_us[(size_t)((V.n_lat - 1) * 0.99)] / 1000.0 : 0.0,
 	       V.n_lat ? V.lat_us[V.n_lat - 1] / 1000.0 : 0.0, (unsigned long long)vs->frames_given_up,
 	       (unsigned long long)vs->idr_decoded, (unsigned long long)vs->decoder_errors, match * 100, V.max_gap_us / 1000.0,
-	       V.chk_samples, V.chk_samples ? V.chk_min * 100 : 100.0, V.chk_bad);
+	       V.chk_samples, V.chk_samples ? V.chk_min * 100 : 100.0, V.chk_bad, (long long)atomic_load(&V.offset_us), V.sync_rtt_us / 1000.0,
+	       (unsigned long long)V.reconfigs, (unsigned long long)V.pongs, V.last ? V.last->width : 0, V.last ? V.last->height : 0);
+	if (V.read_stamps) {
+		qsort(V.glass_us, V.n_glass, sizeof *V.glass_us, cmp_u64);
+		printf("GLASS stamps=%zu of %llu frames, ms p50=%.1f p99=%.1f max=%.1f\n", V.n_glass, (unsigned long long)V.decoded,
+		       V.n_glass ? V.glass_us[V.n_glass / 2] / 1000.0 : 0.0,
+		       V.n_glass ? V.glass_us[(size_t)((V.n_glass - 1) * 0.99)] / 1000.0 : 0.0, V.n_glass ? V.glass_us[V.n_glass - 1] / 1000.0 : 0.0);
+	}
 	if (snap && V.bgra && png_write_bgra(snap, V.bgra, V.width, V.height, V.width * 4) == 0) LOG("wrote %s", snap);
 
 	uint8_t cb[64];

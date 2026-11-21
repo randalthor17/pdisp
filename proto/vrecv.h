@@ -57,6 +57,10 @@ void vrecv_tick(struct vrecv *vr, uint64_t now_us);
  * yet. Call about every 10 ms and after anything notable. */
 int vrecv_feedback_packet(struct vrecv *vr, uint64_t now_us, uint8_t *out, size_t cap);
 
+/* Builds a datagram of any other type (header with the next sequence number, then `payload`). Returns the length, or a
+ * negative errno. */
+int vrecv_make_packet(struct vrecv *vr, uint8_t type, const uint8_t *payload, size_t len, uint8_t *out, size_t cap);
+
 /* The platform decoder reported an error outside the decode callback: ask for an IDR. */
 void vrecv_decoder_error(struct vrecv *vr);
 

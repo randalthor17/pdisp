@@ -107,7 +107,7 @@ test('loss recovery', find_program('tests/loss_recovery_check.sh'),
   timeout: 120,
   suite: 'integration')
 
-proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', include_directories: inc)
+proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', include_directories: inc)
 proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
 test_proto = executable('test_proto', 'tests/test_proto.c', dependencies: proto_dep)
 test('proto wire format', test_proto)
@@ -121,7 +121,7 @@ test('video stream over a simulated link', test_stream, timeout: 300)
 # the daemon and the desktop test client
 pdispd = executable('pdispd', 'daemon/pdispd.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep])
 libav_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libswscale')]
-pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads')] + libav_deps)
+pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads'), dependency('sdl2')] + libav_deps)
 
 m4_loopback = find_program('tests/m4_loopback_check.sh')
 test('m4 loopback through the real pipeline', m4_loopback,
@@ -137,4 +137,23 @@ test('m4 netem loss jitter and bandwidth caps', m4_netem,
   protocol: 'exitcode',
   is_parallel: false,
   timeout: 400,
+  suite: 'integration')
+
+test_timesync = executable('test_timesync', 'tests/test_timesync.c', dependencies: proto_dep)
+test('clock offset estimator', test_timesync)
+
+test('m4 clock sync with a skewed viewer clock', m4_loopback,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm4-skew-artifacts', '-K', '7654321'],
+  env: {'EXPECT_OFFSET_US': '-7654321', 'PDISP_TEST_PORT': '47113'},
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
+  suite: 'integration')
+
+m4_reconfigure = find_program('tests/m4_reconfigure_check.sh')
+test('m4 reconfigure on a display change', m4_reconfigure,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm4-reconfigure-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
   suite: 'integration')

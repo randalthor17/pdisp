@@ -36,15 +36,15 @@ run_scenario() {
 }
 
 run_scenario "latency only, 8 ms each way" "delay 8ms" -- \
-	MIN_DECODED=540 MIN_FPS=55 MAX_P99_MS=60 MAX_FREEZE_MS=100 MAX_GIVEN_UP=0
+	MIN_DECODED=540 MIN_FPS=55 MAX_P99_MS=60 MAX_FREEZE_MS=100 MAX_GIVEN_UP=0 GLASS_MAX_MS=120 OFFSET_TOL_US=4000
 run_scenario "bursty ~2% loss, 15 ms jitter, 40 Mbit/s cap" \
 	"delay 10ms 15ms loss gemodel 0.7% 25% 80% 0.1% rate 40mbit limit 330" -- \
-	MIN_DECODED=540 MIN_FPS=50 MAX_P99_MS=150 MAX_FREEZE_MS=400 MAX_IDR=3
+	MIN_DECODED=540 MIN_FPS=50 MAX_P99_MS=150 MAX_FREEZE_MS=400 MAX_IDR=3 GLASS_MAX_MS=200 OFFSET_TOL_US=20000
 run_scenario "bursty ~5% loss, 15 ms jitter" \
 	"delay 10ms 15ms loss gemodel 2% 25% 80% 0.1%" -- \
-	MIN_DECODED=480 MIN_FPS=45 MAX_P99_MS=200 MAX_FREEZE_MS=400 MAX_IDR=4 MIN_CHECK_PCT=90
+	MIN_DECODED=480 MIN_FPS=45 MAX_P99_MS=200 MAX_FREEZE_MS=400 MAX_IDR=4 MIN_CHECK_PCT=90 GLASS_MAX_MS=250 OFFSET_TOL_US=20000
 run_scenario "15 Mbit/s cap (the target starts at 20)" "delay 5ms rate 15mbit limit 150" -- \
-	MIN_DECODED=500 MIN_FPS=50 MAX_P99_MS=150 MAX_FREEZE_MS=400 MAX_IDR=3
+	MIN_DECODED=500 MIN_FPS=50 MAX_P99_MS=150 MAX_FREEZE_MS=400 MAX_IDR=3 GLASS_MAX_MS=200 OFFSET_TOL_US=20000
 
 [ "$failed" = 0 ] || exit 1
 echo "PASS: no persistent corruption, bounded freezes and bounded latency under every impairment"

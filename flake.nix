@@ -24,6 +24,7 @@
           jq
           iproute2
           ffmpeg-headless
+          SDL2
         ];
         buildInputs = with pkgs; [
           libevdi
@@ -34,6 +35,7 @@
           wayland-protocols
           zlib
           ffmpeg-headless
+          SDL2
         ];
       };
     };

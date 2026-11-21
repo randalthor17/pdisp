@@ -92,14 +92,16 @@ extension TLVs (`u16 type, u16 length, value`); unknown TLVs are skipped, which 
 
 **RECONFIGURE** (PC to phone): the fields of SETUP from `epoch` on, with the `epoch` incremented, new parameter sets and
 mode. The PC sends no video of the new epoch until it receives RECONFIGURE_ACK. The first video frame of an epoch is an IDR
-and carries the `new_epoch` flag. Packets of an older epoch are discarded.
+and carries the `new_epoch` flag. Packets of an older epoch are discarded. A new epoch starts a new sender: **frame ids
+and packet sequence numbers start again from 0**, and the receiver resets its state (and its delay baseline) with the epoch.
 **DISPLAY_CHANGED** (phone to PC): the HELLO display fields again (rotation, new insets, window size). The PC decides whether
 to change the virtual output (EDID reconnect or mode change) and replies with RECONFIGURE.
 
 **CURSOR_SHAPE**: `u16 shape_id, i16 hot_x, i16 hot_y, u16 width, u16 height, bytes argb` (at most 128 x 128 x 4 bytes).
 Cursor positions use shape ids (section 3.7).
 
-**PING/PONG**: `u64 token` echoed back. Either side may send them; if nothing is received on TCP for 5 s the channel is dead.
+**PING/PONG**: `u64 token` echoed back. Either side may send them (the phone every second, the PC every 2 s); a side that has seen
+PONGs and then sees none for 6 to 8 s treats the control channel as dead. The UDP path has its own liveness (KEEPALIVE and feedback).
 **CLOSE**: `u16 reason` (0 normal, 1 screen lock, 2 replaced by another phone, 3 error), `string text`.
 
 ### 2.3 Session establishment

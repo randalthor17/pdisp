@@ -58,6 +58,10 @@ int vsend_next_packet(struct vsend *vs, uint64_t now_us, uint8_t *out, size_t ca
 /* When the next datagram will be due (now or later), or UINT64_MAX if the queue is empty. */
 uint64_t vsend_next_due_us(const struct vsend *vs, uint64_t now_us);
 
+/* Builds a datagram of any other type (header with the next sequence number, then `payload`), so everything the PC sends shares
+ * one sequence space. Returns the length, or a negative errno. */
+int vsend_make_packet(struct vsend *vs, uint8_t type, const uint8_t *payload, size_t len, uint8_t *out, size_t cap);
+
 /* Processes a datagram from the phone; FEEDBACK packets are handled, others ignored. Returns 0, or a negative errno. */
 int vsend_on_packet(struct vsend *vs, const uint8_t *pkt, size_t len, uint64_t now_us);
 
