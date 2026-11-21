@@ -17,9 +17,9 @@ Goal: use an Android phone or tablet as a real extended monitor on Linux, with t
 
 Pipeline: virtual output (kernel) -> capture -> encode -> transport -> Android decode and display. Touch travels the reverse way.
 
-1. **Virtual output**: in-tree `vkms` with the configfs interface, creating a connector with a generated EDID. Compositors see an ordinary monitor, so no compositor code is needed here. Connector name and EDID serial are stable per paired phone, so compositors can remember the output between sessions.
-2. **Capture**: a privileged daemon reads the CRTC scanout buffer (`drmModeGetFB2` plus PRIME export, needs `CAP_SYS_ADMIN`). Fallback: PipeWire capture of that one output. The compositor still copies into vkms buffers, so measure that copy.
-3. **Encode**: VAAPI, HEVC 8-bit 4:2:0 at a high bitrate first. Low-latency settings, no B-frames, intra refresh, SPS/PPS on every keyframe. A high-quality refresh frame is sent when the screen goes static. 10-bit, wide-gamut and AV1 come later.
+1. **Virtual output**: out-of-tree `evdi` (packaged in nixpkgs), driven through `libevdi`. The daemon creates a display with a generated EDID (`evdi_connect`) and removes it (`evdi_disconnect`) for hotplug. Compositors see an ordinary monitor, so no compositor code is needed here. The EDID make, model and serial are stable per paired phone, so compositors can remember the output between sessions. The connector name (`DVI-I-n`) is not stable, so identity must come from the EDID. In-tree `vkms` was rejected in M0: no EDID control through kernel 7.0, and no configfs before 6.19 (see `docs/spikes/m0-virtual-output.md`).
+2. **Capture**: `libevdi` delivers frames and one bounding dirty rect per update directly to the daemon (`evdi_request_update`, `evdi_grab_pixels`). No scanout capture, no `CAP_SYS_ADMIN` in the capture path. Updates only arrive when the screen changes. Keep requesting while an update is ready and block only when none is.
+3. **Encode**: VAAPI, HEVC 8-bit 4:2:0. Low-latency settings, no B-frames, CBR with a small VBV buffer to keep keyframes near P-frame size. No periodic IDR: send one on connect and on request, SPS/PPS with each. Intra refresh is advertised by the driver but untested, and needs direct libva. A high-quality refresh frame is sent when the screen goes static. 10-bit, wide-gamut and AV1 come later. Colour range and matrix tags must be set deliberately.
 4. **Transport**: a small interface with two implementations. TCP is for development and Wi-Fi. Android Open Accessory (AOA) over USB is the zero-setup wired path (libusb switches the phone to accessory mode, the app launches on plug-in, one permission tap).
 5. **Protocol**: versioned framing with a handshake and then video, input, cursor and heartbeat messages. The phone reports resolution, density (for physical size in the EDID), orientation, safe-area insets, supported refresh rates, supported codecs, color capabilities (wide gamut, HDR types), and touch and stylus capability. The PC replies with the chosen mode.
 6. **Android app** (Kotlin): `MediaCodec` surface decode with low-latency hints, fullscreen immersive, keep-screen-on, Wi-Fi low-latency lock. It sends raw touch as normalized coordinates, pointer IDs and pressure. The cursor arrives as its own message and is drawn on the phone.
@@ -40,26 +40,27 @@ Pipeline: virtual output (kernel) -> capture -> encode -> transport -> Android d
 
 Each milestone has a pass check. Do not start the next one until the check passes.
 
-**M0: Feasibility spikes** (throwaway code, results in `docs/spikes/`)
-- vkms: kernel version, `CONFIG_DRM_VKMS`, configfs present, per-connector EDID and hotplug control.
-- Niri accepts the vkms output as a normal monitor.
-- Scanout capture via `drmModeGetFB2` works with `CAP_SYS_ADMIN`, and its cost.
-- VAAPI HEVC low-latency encode works on the RX 9060 XT.
-- AOA works on the target phone.
-- Pass: each item is answered yes or no with evidence. Any "no" triggers a design change before M1.
+**M0: Feasibility spikes** (throwaway code, results in `docs/spikes/`). Done 2026-11-21.
+- vkms per-connector EDID and hotplug control: **no** (no configfs on 6.18; no EDID attribute upstream through 7.0). Design change: use evdi.
+- evdi: EDID identity, hotplug, frames and dirty rects: **yes**, on 6.18.63.
+- Niri accepts the virtual output as a normal monitor: **yes** (vkms and evdi).
+- Capture: **yes**, through `libevdi`, 1 to 2 ms per frame. The `drmModeGetFB2` path is no longer needed.
+- VAAPI HEVC low-latency encode on the RX 9060 XT: **yes**, about 2 ms per frame. 2304x1440@90 sustained live (88.8 fps).
+- AOA on the target tablet (Samsung, Android 16): **yes** (protocol 2, accessory mode in ~800 ms, USB 2.0 high speed).
+- Open, carried forward: intra refresh in practice, raw-capture text quality, tablet `MediaCodec` accepting the stream (M5), AOA permission prompt and auto-launch (M7).
 
 **M1: Virtual output**
-- EDID generator (timing, physical size, name, serial, later chromaticity) with unit tests checked against `edid-decode`.
-- Daemon creates, connects and disconnects a vkms connector through configfs.
-- Pass: `niri msg outputs` shows the output with the right mode and physical size. Disconnect and reconnect keeps the same name.
+- EDID generator (timing, physical size, name, serial, later chromaticity) with unit tests checked against `edid-decode`. Physical size must be right in the base-block centimetre fields as well as the timing descriptor, because niri reads the former.
+- Daemon creates an evdi device, connects it with the EDID, and disconnects and reconnects it on demand.
+- Pass: `niri msg outputs` shows the output with the right mode and physical size. Disconnect and reconnect keeps the same output identity (make, model, serial).
 
 **M2: Capture**
-- Grab the scanout buffer, import as dmabuf, detect changed frames.
-- Pass: a test pattern on the virtual output round-trips to a PNG that matches. Capture time per frame is logged.
+- Receive frames and dirty rects from `libevdi`, with the request-while-ready loop.
+- Pass: a test pattern on the virtual output round-trips to a PNG that matches. Capture time per frame is logged. A moving window produces partial rects and no more than one update per compositor frame.
 
 **M3: Encode**
-- VAAPI HEVC low-latency, output to a file.
-- Pass: the file plays in `mpv` and `ffprobe` reports the expected stream. Encode time per frame is logged.
+- VAAPI HEVC low-latency from captured frames, output to a file. Prefer direct libva in the daemon; ffmpeg is acceptable for the first version.
+- Pass: the file plays in `mpv` and `ffprobe` reports the expected stream. Encode time per frame is logged. The keyframe size stays near the largest P-frame size under the chosen CBR settings.
 
 **M4: Protocol, TCP transport, desktop test client, latency harness**
 - Framing, handshake, video packets, heartbeat. Protocol fuzz and round-trip tests.
@@ -92,7 +93,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - Pass: visual check on text-heavy content. Latency under load stays within the recorded baseline plus a margin chosen at M4.
 
 **M11: Packaging and 0.1 release**
-- NixOS flake and module: vkms, udev rules, systemd user service, kernel module options. Install docs.
+- NixOS flake and module: evdi (`boot.extraModulePackages`, module options, device creation), udev rules, systemd user service. Install docs.
 - Pass: a clean NixOS configuration reaches a working session from one rebuild. Tag 0.1 and hand over the bundle.
 
 Later: other compositors (sway, KDE, GNOME), audio, clipboard, multiple phones.
@@ -108,17 +109,18 @@ Later: other compositors (sway, KDE, GNOME), audio, clipboard, multiple phones.
 
 ## Open decisions
 
-- Daemon language. The leaning is C: DRM, VAAPI and libusb are C APIs, and it matches the author's systems background. Rust and Zig are possible. Decide at M0 once the spike code shows how much glue is needed.
+- Daemon language. The leaning is C: `libevdi`, VAAPI and libusb are all C APIs, the spike code was plain C with little glue, and it matches the author's systems background. Rust and Zig are possible. Confirm at the start of M1.
 - Share the protocol library between daemon and app as C (via JNI) or write it twice with a spec and tests. Decide at M4.
 - Project name.
-- Whether the daemon runs as a system service with `CAP_SYS_ADMIN` or as a user service with a small privileged helper. Decide at M2 when capture requirements are known.
+- Privilege model. Capture no longer needs `CAP_SYS_ADMIN`. The remaining privileged steps are loading the evdi module and adding a device (`/sys/devices/evdi/add`), so a user service plus a udev rule or a one-shot privileged setup unit (module options, device count) is the likely answer. Decide at M1.
 
 ## Risks
 
-- vkms may lack per-connector EDID or hotplug control on the available kernel (unverified).
-- Niri may not handle a secondary DRM device or vkms output well (unverified).
-- Scanout capture gives no dirty rects, so change detection must be done by other means.
-- The CPU copy into vkms buffers may limit resolution or refresh rate.
-- AOA behavior varies by phone vendor firmware.
+- evdi is out-of-tree. It must be rebuilt for each kernel (nixpkgs does this), and DisplayLink only claims verification up to 6.15. It worked on 6.18.63; newer kernels are unverified. If it breaks, the fallbacks are vkms plus hotplug on 6.19+ without EDID identity, or forcing a spare physical connector with `drm.edid_firmware`.
+- evdi dirty rects are one bounding box per update, and full-screen when the whole output animates. They are a hint, not a precise region list.
+- Compositor-to-evdi copy cost was not isolated. It kept up at 2304x1440@90 in M0, but heavier scenes and 4K are unmeasured.
+- The tablet is on USB 2.0 high speed. That is enough for the measured HEVC stream (about 20 to 40 Mbit/s), but limits headroom for high bitrates, static refinement and 10-bit.
+- Keyframes on desktop content are about 7 times a P-frame unless rate control is constrained. Intra refresh is advertised but untested.
+- AOA behavior varies by phone vendor firmware. The permission prompt and auto-launch on Android 16 are untested until the app exists.
 - Touch-to-output binding may fail on compositors without a binding mechanism.
 - Compositors may not restore windows on output reconnect.
