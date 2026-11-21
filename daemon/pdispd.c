@@ -112,6 +112,9 @@ static void encode_and_submit(const uint8_t *pixels, int stride, uint64_t captur
 	uint64_t now = net_now_us();
 	if (vsend_queue_delay_us(D.vs) > 20000) { /* the previous frame is still being sent: skip this capture */
 		D.frames_skipped++;
+		/* The screen may not change again, and then this was its last image: look at the current screen again soon, once the
+		 * queue has drained. Without this a static screen stays stale on the phone until something else repaints it. */
+		if (!D.refresh_due_us) D.refresh_due_us = now + 10000;
 		return;
 	}
 	encoder_set_bitrate(D.enc, vsend_bitrate_kbps(D.vs));
