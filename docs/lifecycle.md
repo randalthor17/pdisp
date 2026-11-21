@@ -89,3 +89,9 @@ automatic afterwards: the app says "cable connected, but USB is charging only: o
 it sees power over USB and no accessory, and connects by itself when the accessory appears; the daemon logs the same advice once when
 a phone ignores its switch request, and keeps asking (every 5 s). Install docs must mention the step. The adb path
 (`adb reverse`) is not an option: devices will not have USB debugging on.
+
+### Re-test after the descriptor fix (2026-11-22)
+Real pull and replug, grace 40 s: pull noticed at once, monitor kept; the phone came back as a plain data device and ignored the first switch
+request (the daemon logged the advice); about 9 s after the replug the accessory appeared on its own (no manual File transfer choice this
+time), and the daemon logged "the virtual output 1080x2400 is still there: reusing it" and streamed on it. One run; a phone that stays charging-only
+still needs the user's choice.
