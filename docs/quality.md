@@ -73,3 +73,13 @@ Loopback quality of 50%/50 ms: 29.84 dB (30.37 dB at 100%/33 ms), so the cost is
 loss (the target stayed at 40 Mbit/s through the episode); a budget tied to the measured link rate would be the real fix.
 The picture on the tablet was not judged by eye in these runs, and the phone does not report decode time yet. One tablet, one network, a few runs each.
 The NixOS firewall blocks port 47110 after every reboot until a rule is added (`docs/spikes/m5-android.md`).
+
+## Refresh rate over Wi-Fi (Tab S9 FE, full-motion pattern, 40 Mbit/s target)
+| mode | frames | repair packets / NACKs | keyframes | queue | lost |
+|---|---|---|---|---|---|
+| 60 Hz (default cap), 60 s | 3534 (59 fps) | 395 / 34 | 1 | about 5 ms | 0 |
+| 90 Hz (`-R 120`: the tablet offers 3 rates and the best the decoder accepts is 100, so 90 is chosen), 42 s | 3655 (87 fps) | 11064 / 754 | 7 | 5 to 31 ms | 0 |
+
+90 Hz is delivered, but Wi-Fi needs about 30 times the repairs and the receiver asked for 6 extra keyframes ("9 frames unresolved ... sending an
+IDR"). Nothing was lost in the end. Whether it looks smooth was not judged by eye. 60 Hz stays the default. The phone's decode time is still not
+reported, so the PC cannot tell whether the phone or the network is the limit.
