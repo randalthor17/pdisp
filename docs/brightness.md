@@ -16,8 +16,13 @@ desktop shell that supports external monitors (DMS lists the output as `ddc:i2c-
 
 ## Using it
 
-    ddcutil --bus N getvcp 10        # N is the bus number of the output's card, see `ddcutil detect`
-    ddcutil --bus N setvcp 10 40
+The bus is the one of the virtual output's card (`/sys/class/drm/cardN/device/i2c-*`; DMS lists it as `ddc:i2c-N`).
+
+    pdisp-ddc /dev/i2c-N get         # tools/pdisp-ddc.c: a bare DDC/CI client
+    pdisp-ddc /dev/i2c-N set 40
+
+`ddcutil` itself refuses this bus ("cannot be used for DDC/CI communication") before it sends anything: it probes a monitor first, which evdi
+cannot fully answer (the kernel passes only address 0x37 on). A client that talks to the bus directly, as a shell slider does, works.
 
 The bus device (`/dev/i2c-N`) belongs to the group `i2c`: add yourself (`hardware.i2c.enable = true;` and the group on NixOS), or the
 slider cannot open it. `tests/m13_brightness_check.sh` skips without that access.

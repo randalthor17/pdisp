@@ -321,9 +321,10 @@ if qt6_dep.found() and have_cpp
   subdir('gui')
 endif
 
+pdisp_ddc = executable('pdisp-ddc', 'tools/pdisp-ddc.c')
 m13_brightness = find_program('tests/m13_brightness_check.sh')
 test('m13 brightness over DDC/CI', m13_brightness,
-  args: [pdispd, pdisp_view, meson.current_build_dir() / 'm13-artifacts'],
+  args: [pdispd, pdisp_view, pdisp_ddc, meson.current_build_dir() / 'm13-artifacts'],
   protocol: 'exitcode',
   is_parallel: false,
   timeout: 90,
