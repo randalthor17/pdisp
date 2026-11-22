@@ -8,6 +8,7 @@
  */
 #include <arpa/inet.h>
 #include <errno.h>
+#include <stdatomic.h>
 #include <dirent.h>
 #include <fcntl.h>
 #include <netinet/in.h>
@@ -716,7 +717,7 @@ static char g_ks_path[1100];
 /* ================= the control socket (docs/control.md) =================
  * The state a GUI shows, kept up to date by the streaming loop; control.c copies it into its own thread. */
 static struct ctl_state g_cs;
-static volatile sig_atomic_t g_disconnect_req; /* a client asked to end the session */
+static atomic_int g_disconnect_req; /* a client asked to end the session (set by the control thread, taken by the session loop) */
 static bool g_grace_active;                    /* the monitor is being kept for a lost device */
 static uint64_t g_session_start_us, g_pub_frames, g_pub_us;
 static char g_conf_path[1100];                 /* the settings file a client can change; read at start */
@@ -859,7 +860,7 @@ static int conf_save(void)
 	return 0;
 }
 
-static void op_disconnect(void *user) { (void)user; g_disconnect_req = 1; }
+static void op_disconnect(void *user) { (void)user; atomic_store(&g_disconnect_req, 1); }
 
 static void op_visit(const struct keystore_entry *e, void *user)
 {
@@ -957,7 +958,7 @@ static int acquire_peer(struct conn *c, uint64_t deadline_us)
 		ctl_set_usb_state("waiting");
 		for (;;) { /* in short slices, so the display keeps being serviced and the deadline is honoured; a cable and the network are both watched when both are on */
 			if (stop) return -ECANCELED;
-			if (g_disconnect_req) { g_disconnect_req = 0; return -ECONNABORTED; } /* a client asked to remove the monitor that is waiting for a lost device */
+			if (atomic_exchange(&g_disconnect_req, 0)) return -ECONNABORTED; /* a client asked to remove the monitor that is waiting for a lost device */
 			if (deadline_us && net_now_us() >= deadline_us) return -ETIMEDOUT;
 			if (g_lfd >= 0) {
 				struct pollfd lp[2] = { { .fd = g_lfd, .events = POLLIN }, { .fd = D.vd ? vdisplay_event_fd(D.vd) : -1, .events = POLLIN } };
@@ -1162,7 +1163,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	while (!done) {
 		if (stop) { end = END_STOP; break; }
 		uint64_t now = net_now_us();
-		if (g_disconnect_req) { g_disconnect_req = 0; LOG("a client asked to end the session"); end = END_USER; break; }
+		if (atomic_exchange(&g_disconnect_req, 0)) { LOG("a client asked to end the session"); end = END_USER; break; }
 		if (now - last_pub >= 1000000) { last_pub = now; ctl_session_numbers(now); }
 		if (end_us && now >= end_us) { end = END_STOP; break; }
 		uint64_t due = vsend_next_due_us(D.vs, now);

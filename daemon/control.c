@@ -4,6 +4,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <stdatomic.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,7 +45,7 @@ static struct {
 	char pair_name[64], pair_fp[40];
 	int pair_answer;
 	struct client cl[MAX_CLIENTS];
-	volatile bool quit;
+	atomic_bool quit; /* set by control_stop, read by the server thread */
 } G = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER, .lfd = -1 };
 
 static void wake(void) { char c = 1; if (G.wake[1] >= 0) (void)!write(G.wake[1], &c, 1); }
@@ -256,7 +257,7 @@ static void *thread_main(void *arg)
 	(void)arg;
 	char last[2048] = "";
 	struct timespec last_sent = { 0, 0 };
-	while (!G.quit) {
+	while (!atomic_load(&G.quit)) {
 		struct pollfd p[2 + MAX_CLIENTS];
 		int idx[MAX_CLIENTS], n = 0;
 		p[n++] = (struct pollfd){ .fd = G.lfd, .events = POLLIN };
@@ -264,7 +265,7 @@ static void *thread_main(void *arg)
 		for (int i = 0; i < MAX_CLIENTS; i++)
 			if (G.cl[i].fd >= 0) { idx[n - 2] = i; p[n++] = (struct pollfd){ .fd = G.cl[i].fd, .events = POLLIN }; }
 		poll(p, (nfds_t)n, 500);
-		if (G.quit) break;
+		if (atomic_load(&G.quit)) break;
 		if (p[1].revents & POLLIN) { char t[64]; while (read(G.wake[0], t, sizeof t) > 0) {} }
 		if (p[0].revents & POLLIN) {
 			int fd = accept4(G.lfd, NULL, NULL, SOCK_CLOEXEC | SOCK_NONBLOCK);
@@ -367,7 +368,7 @@ int control_start(const char *path, const struct control_ops *ops)
 	if (rc < 0 || listen(G.lfd, 4) < 0) { int e = errno; close(G.lfd); G.lfd = -1; return -e; }
 	if (pipe2(G.wake, O_CLOEXEC | O_NONBLOCK) != 0) { int e = errno; close(G.lfd); G.lfd = -1; unlink(path); return -e; }
 	for (int i = 0; i < MAX_CLIENTS; i++) G.cl[i].fd = -1;
-	G.quit = false;
+	atomic_store(&G.quit, false);
 	if (pthread_create(&G.thread, NULL, thread_main, NULL) != 0) { close(G.lfd); close(G.wake[0]); close(G.wake[1]); G.lfd = -1; unlink(path); return -EAGAIN; }
 	G.running = true;
 	return 0;
@@ -376,7 +377,7 @@ int control_start(const char *path, const struct control_ops *ops)
 void control_stop(void)
 {
 	if (!G.running) return;
-	G.quit = true;
+	atomic_store(&G.quit, true);
 	pthread_mutex_lock(&G.mu);
 	G.pair_answered = true; /* let a waiting pairing request go */
 	G.pair_answer = 'n';

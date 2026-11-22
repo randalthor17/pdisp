@@ -11,6 +11,7 @@ set -u
 daemon=$1; viewer=$2; pattern=$3; ctl=$4
 art=${5:-$(mktemp -d)}; mkdir -p "$art"; rm -rf "${art:?}"/*
 skip() { echo "SKIP: $*"; exit 77; }
+[ -z "${PDISP_TEST_SLOW:-}" ] || skip "this check is about timing (a rate the device can sustain), which the sanitizers change"
 command -v niri >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || skip "niri or jq missing"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
 PORT=${PDISP_TEST_PORT:-24122}; SERIAL=PDISPM12CHK; SOCK="$art/ctl.sock"

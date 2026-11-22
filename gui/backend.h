@@ -19,6 +19,9 @@ class Backend : public QObject {
 
 public:
     explicit Backend(const QString &socketPath, QObject *parent = nullptr);
+    // m_sock is declared before m_state and m_pairing, so it is destroyed after them, and closing it makes it emit disconnected(), which clears them:
+    // cut the socket off from this object first (AddressSanitizer found the use after free)
+    ~Backend() override { m_retry.stop(); QObject::disconnect(&m_sock, nullptr, this, nullptr); }
 
     bool connected() const { return m_connected; }
     QVariantMap state() const { return m_state; }

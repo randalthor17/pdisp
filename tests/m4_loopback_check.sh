@@ -10,7 +10,7 @@
 # the clock offset the viewer must estimate, for a viewer run with a skewed clock (extra argument -K).
 set -u
 # PDISP_TEST_SLOW: the run is slowed by sanitizers, so the timing budgets are not checked (what is checked is that nothing breaks)
-if [ -n "${PDISP_TEST_SLOW:-}" ]; then MIN_FPS=1; MAX_P99_MS=100000; GLASS_MAX_MS=100000; unset MAX_FREEZE_MS; fi
+if [ -n "${PDISP_TEST_SLOW:-}" ]; then MIN_FPS=1; MAX_P99_MS=100000; GLASS_MAX_MS=100000; MIN_DECODED=1; MAX_IDR=1000; unset MAX_FREEZE_MS MAX_GIVEN_UP; fi
 daemon=$1; viewer=$2; pattern=$3
 art=${4:-$(mktemp -d)}
 [ $# -ge 4 ] && shift 4 || shift $#

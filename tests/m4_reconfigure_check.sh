@@ -78,7 +78,7 @@ grep -E '^(GLASS|DAEMON)' "$vlog" "$dlog" | sed 's/^[^:]*://'
 val() { echo "$summary" | tr ' ' '\n' | grep "^$1=" | head -1 | cut -d= -f2 | tr -d '%'; }
 [ "$(val reconfigs)" = 1 ] || fail "viewer saw $(val reconfigs) reconfigurations (expected 1)"
 [ "$(val final_size)" = 1440x2304 ] || fail "the last decoded picture is $(val final_size), not 1440x2304"
-[ "$(val decoded)" -ge 300 ] 2>/dev/null || fail "decoded only $(val decoded) frames"
+[ -n "${PDISP_TEST_SLOW:-}" ] || [ "$(val decoded)" -ge 300 ] 2>/dev/null || fail "decoded only $(val decoded) frames"
 [ "$(val decoder_errors)" = 0 ] || fail "$(val decoder_errors) decoder errors"
 [ "$(val pongs)" -ge 3 ] 2>/dev/null || fail "only $(val pongs) PONGs: the control channel liveness does not work"
 grep -q 'reconfigs=1' "$dlog" || grep -q '^DAEMON.*reconfigs=1' "$dlog" || fail "the daemon did not count one reconfiguration"

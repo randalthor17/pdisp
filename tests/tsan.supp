@@ -9,3 +9,13 @@ called_from_lib:libdrm_amdgpu.so
 called_from_lib:libLLVM.so
 race:radeonsi_drv_video.so
 race:radeonsi_dri.so
+# the Qt libraries (the GUI): thread pools and event dispatch with their own synchronisation
+called_from_lib:libQt6Core.so
+called_from_lib:libQt6Gui.so
+called_from_lib:libQt6Quick.so
+called_from_lib:libQt6Qml.so
+called_from_lib:libQt6Network.so
+called_from_lib:libQt6Widgets.so
+called_from_lib:libglib-2.0.so
+race:libQt6
+thread:libQt6Core.so
