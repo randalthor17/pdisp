@@ -25,12 +25,15 @@ mem() {
 }
 echo "GPU memory before:"; mem
 res=$(mktemp)
+# safe here: this niri is a throwaway, so the checks that change its config or open windows may run
+export PDISP_TEST_NIRI_CONFIG=1 PDISP_TEST_WINDOWS=1
 niri -c "$cfg" -- sh -c "
 	cd '$repo' && nix develop -c meson test -C build --print-errorlogs ${*:-} ; echo \$? >'$res'
-	echo; echo 'GPU memory after the tests (still held by this niri):'; $(declare -f mem); mem
+	echo; echo 'GPU memory after the tests (still held by this niri):' | tee -a '$res.mem'; $(declare -f mem); mem | tee -a '$res.mem'
 	niri msg action quit --skip-confirmation
 "
 echo; echo "niri has quit. GPU memory now:"; mem
 rc=$(cat "$res" 2>/dev/null || echo 1); rm -f "$res"
+[ -r "$res.mem" ] && { echo "peak, from inside niri:"; cat "$res.mem"; rm -f "$res.mem"; }
 echo "meson test exit status: $rc"
 exit "$rc"
