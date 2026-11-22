@@ -1,0 +1,17 @@
+# pdisp: the daemon that turns an Android device into a second monitor. A user service: it needs the logged-in user's access to the GPU, the evdi
+# device and the USB device (see docs/install.md for the rules that grant it). Start it with the graphical session.
+# Change the options in a drop-in:  systemctl --user edit pdispd   (ExecStart= first, then your own line)
+[Unit]
+Description=pdisp second monitor daemon
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# -u also listens for a USB cable. -P ask -A: unknown devices are approved with a desktop notification.
+ExecStart=@BINDIR@/pdispd -u -P ask -A @BINDIR@/pdisp-pair-prompt
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=graphical-session.target

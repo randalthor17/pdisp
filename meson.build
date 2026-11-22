@@ -121,7 +121,7 @@ test_stream = executable('test_stream', 'tests/test_stream.c', dependencies: pro
 test('video stream over a simulated link', test_stream, timeout: 300)
 
 # the daemon and the desktop test client
-pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', 'daemon/touch.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')])
+pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', 'daemon/touch.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')], install: true)
 libav_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libswscale')]
 pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads'), dependency('sdl2'), meson.get_compiler('c').find_library('m')] + libav_deps)
 
@@ -194,7 +194,7 @@ test('secure channels', test_secure)
 test_handshake = executable('test_handshake', 'tests/test_handshake.c', dependencies: [proto_dep, dependency('threads')])
 test('handshake driver', test_handshake)
 
-pdisp_keys = executable('pdisp-keys', 'tools/pdisp-keys.c', dependencies: proto_dep)
+pdisp_keys = executable('pdisp-keys', 'tools/pdisp-keys.c', dependencies: proto_dep, install: true)
 m6_pairing = find_program('tests/m6_pairing_check.sh')
 test('m6 pairing and authorisation', m6_pairing,
   args: [pdispd, pdisp_view, meson.current_build_dir() / 'm6-pairing-artifacts', pdisp_keys],
@@ -276,3 +276,11 @@ test('m10 real text (opt-in: PDISP_TEST_WINDOWS=1)', m10_real,
   is_parallel: false,
   timeout: 120,
   suite: 'integration')
+
+# ---- installation (nix/pdisp.nix, docs/install.md)
+install_data('contrib/pdisp-pair-prompt', install_dir: get_option('bindir'), install_mode: 'rwxr-xr-x')
+install_data('contrib/udev/70-pdisp.rules', install_dir: get_option('prefix') / 'lib/udev/rules.d')
+install_data('contrib/niri/pdisp.kdl', install_dir: get_option('datadir') / 'pdisp')
+configure_file(input: 'contrib/systemd/pdispd.service.in', output: 'pdispd.service',
+  configuration: { 'BINDIR': get_option('prefix') / get_option('bindir') },
+  install_dir: get_option('prefix') / 'lib/systemd/user')

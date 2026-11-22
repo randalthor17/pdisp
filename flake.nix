@@ -17,9 +17,23 @@
         cmakeVersions = [ "3.22.1" ];
       }).androidsdk;
       libevdi = pkgs.callPackage ./nix/libevdi.nix { evdi = pkgs.linuxPackages.evdi; };
+      pdisp = pkgs.callPackage ./nix/pdisp.nix { inherit libevdi; };
     in
     {
-      packages.${system} = { inherit libevdi; };
+      packages.${system} = { inherit libevdi pdisp; default = pdisp; };
+
+      nixosModules.default = import ./nix/nixos-module.nix { inherit self; };
+      homeManagerModules.default = import ./nix/hm-module.nix { inherit self; };
+
+      # evaluates a minimal system with the module switched on (no build): `nix flake check`
+      checks.${system}.nixos-module = (nixpkgs.lib.nixosSystem {
+        inherit system;
+        modules = [
+          self.nixosModules.default
+          { services.pdisp = { enable = true; openFirewall = true; };
+            boot.loader.grub.enable = false; fileSystems."/" = { device = "none"; fsType = "tmpfs"; }; system.stateVersion = "25.11"; }
+        ];
+      }).config.system.build.toplevel;
 
       devShells.${system} = {
       android = apkgs.mkShell {

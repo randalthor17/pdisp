@@ -14,7 +14,7 @@ Android rules happened to grant it (so every early test worked), but a normal ph
 - the common Android vendors in their normal mode (Samsung, Google, Xiaomi, Motorola, Huawei, OnePlus, Oppo, Vivo, Sony), because the
   switch request is sent to the device before it changes mode. A vendor not on the list needs a line added.
 
-Install: copy to `/etc/udev/rules.d/`, `udevadm control --reload`, replug. NixOS: `services.udev.extraRules`. The packaged install (M11)
+Install: see `docs/install.md` (the NixOS module does it itself): copy to `/etc/udev/rules.d/`, `udevadm control --reload`, replug. The packaged install (M11)
 must do this itself. For a test without installing: `pkexec` copy it to `/run/udev/rules.d/` (gone at reboot).
 
 ## 2. Modes a phone can be in, and what we measured
