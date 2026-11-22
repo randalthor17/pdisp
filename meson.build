@@ -20,7 +20,7 @@ edid_lib = static_library('pdisp-edid', 'daemon/edid.c',
   dependencies: m_dep)
 edid_dep = declare_dependency(link_with: edid_lib, include_directories: inc)
 
-vdisplay_lib = static_library('pdisp-vdisplay', 'daemon/vdisplay.c',
+vdisplay_lib = static_library('pdisp-vdisplay', 'daemon/vdisplay.c', 'daemon/ddcci.c',
   include_directories: inc,
   dependencies: [evdi_dep, edid_dep])
 vdisplay_dep = declare_dependency(
@@ -297,6 +297,8 @@ test_ratestep = executable('test_ratestep', 'tests/test_ratestep.c', 'daemon/rat
 test('rate governor', test_ratestep)
 test_mdns = executable('test_mdns', 'tests/test_mdns.c', 'daemon/mdns.c', dependencies: dependency('threads'))
 test('mdns packets', test_mdns)
+test_ddcci = executable('test_ddcci', 'tests/test_ddcci.c', 'daemon/ddcci.c')
+test('ddc/ci monitor', test_ddcci)
 test('json helper', test_json)
 
 m11_control = find_program('tests/m11_control_check.sh')
