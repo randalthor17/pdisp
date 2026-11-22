@@ -38,6 +38,12 @@ int main(void)
 	for (int i = 0; i < 5; i++) assert(ratestep_tick(&r, (i & 1) ? &lost : &slow) == RATESTEP_NONE);
 	assert(ratestep_tick(&r, &lost) == RATESTEP_DOWN);
 
+	/* a collapsed bitrate or a heavy repair load are trouble too, even when nothing is lost for good */
+	ratestep_reset(&r);
+	struct ratestep_sample lowr = { .active = true, .low_rate = true }, rep = { .active = true, .heavy_repair = true };
+	for (int i = 0; i < 5; i++) assert(ratestep_tick(&r, (i & 1) ? &lowr : &rep) == RATESTEP_NONE);
+	assert(ratestep_tick(&r, &lowr) == RATESTEP_DOWN);
+
 	/* stable once after 15 healthy ticks, and not again */
 	ratestep_reset(&r);
 	for (int i = 0; i < 14; i++) assert(ratestep_tick(&r, &good) == RATESTEP_NONE);

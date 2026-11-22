@@ -15,6 +15,8 @@ struct ratestep_sample {
 	unsigned idr_unresolved;  /* keyframes forced by unresolved frames in this tick */
 	unsigned frames_lost;     /* frames the receiver reported lost in this tick */
 	bool phone_slow;          /* the phone reported a decode time of 50 ms or more */
+	bool low_rate;            /* the rate controller had to cut the target bitrate far down (the link or the receiver cannot take the stream) */
+	bool heavy_repair;        /* repair packets were a large share of what was sent */
 };
 
 enum ratestep_action { RATESTEP_NONE, RATESTEP_DOWN, RATESTEP_STABLE };

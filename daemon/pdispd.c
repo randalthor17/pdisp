@@ -1282,6 +1282,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 		if (now - last_report >= 2000000) {
 			last_report = now;
 			const struct vsend_stats *st = vsend_stats(D.vs);
+			const unsigned fb_dec_x10 = st->fb_decode_max_x10; /* the feedback window is reset below */
 			LOG("frames %llu (skipped %llu, idr %llu), %.1f Mbit/s target, FEC %u%%, repairs %llu, nacks %llu, lost %llu, "
 			    "queue %.1f ms, unresolved %u, phone: queue %.1f ms decode %.1f ms recv >= %.1f Mbit/s",
 			    (unsigned long long)D.frames_encoded, (unsigned long long)D.frames_skipped, (unsigned long long)D.idr_frames,
@@ -1291,11 +1292,13 @@ static enum end_reason serve(struct conn *c, double run_secs)
 			vsend_reset_report(D.vs);
 
 			/* is this rate sustainable? A quiet screen proves nothing; trouble over most of 12 s steps down to the next rate the device offers */
-			static uint64_t prev_frames, prev_lost;
+			static uint64_t prev_frames, prev_lost, prev_pkts, prev_rep;
 			static unsigned prev_idr;
 			struct ratestep_sample rs = { .active = D.frames_encoded > prev_frames && D.streaming, .idr_unresolved = g_idr_unres - prev_idr,
-						      .frames_lost = (unsigned)(st->frames_lost - prev_lost), .phone_slow = st->fb_decode_max_x10 >= 500 };
-			prev_frames = D.frames_encoded; prev_lost = st->frames_lost; prev_idr = g_idr_unres;
+						      .frames_lost = (unsigned)(st->frames_lost - prev_lost), .phone_slow = fb_dec_x10 >= 500,
+						      .low_rate = vsend_bitrate_kbps(D.vs) < 6000,
+						      .heavy_repair = (st->repair_packets - prev_rep) * 100 > (st->packets - prev_pkts) * 12 && st->packets > prev_pkts + 50 };
+			prev_frames = D.frames_encoded; prev_lost = st->frames_lost; prev_idr = g_idr_unres; prev_pkts = st->packets; prev_rep = st->repair_packets;
 			enum ratestep_action act = D.awaiting_ack ? RATESTEP_NONE : ratestep_tick(&g_rs, &rs);
 			if (act == RATESTEP_DOWN) {
 				unsigned lower = ratestep_next_lower(g_hello.refresh_mhz, g_hello.n_refresh, D.refresh_mhz, 30000);
@@ -1305,8 +1308,8 @@ static enum end_reason serve(struct conn *c, double run_secs)
 				const char *nwhy = "";
 				if (!lower) LOG("the stream is not healthy at %u Hz and the device offers nothing lower", D.refresh_mhz / 1000);
 				else {
-					LOG("the stream is not healthy at %u Hz (keyframes forced %u, lost %u, decode up to %.0f ms): trying %u Hz",
-					    D.refresh_mhz / 1000, rs.idr_unresolved, rs.frames_lost, st->fb_decode_max_x10 / 10.0, lower / 1000);
+					LOG("the stream is not healthy at %u Hz (keyframes forced %u, lost %u, decode up to %.0f ms, target %.1f Mbit/s, repairs %s): trying %u Hz",
+					    D.refresh_mhz / 1000, rs.idr_unresolved, rs.frames_lost, fb_dec_x10 / 10.0, vsend_bitrate_kbps(D.vs) / 1000.0, rs.heavy_repair ? "heavy" : "light", lower / 1000);
 					g_rate_limit_mhz = lower;
 					g_stepped = true;
 					if (choose_mode(&g_hello, &nep, &nt, nedid, &nwhy) == 0) {

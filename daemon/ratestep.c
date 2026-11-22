@@ -11,7 +11,7 @@ void ratestep_reset(struct ratestep *r)
 enum ratestep_action ratestep_tick(struct ratestep *r, const struct ratestep_sample *s)
 {
 	if (!s->active) return RATESTEP_NONE; /* idle: neither evidence for nor against */
-	bool bad = s->idr_unresolved > 0 || s->frames_lost > 0 || s->phone_slow;
+	bool bad = s->idr_unresolved > 0 || s->frames_lost > 0 || s->phone_slow || s->low_rate || s->heavy_repair;
 	memmove(r->bad, r->bad + 1, RATESTEP_WINDOW - 1);
 	r->bad[RATESTEP_WINDOW - 1] = bad ? 1 : 0;
 	if (r->n < 1000) r->n++;
