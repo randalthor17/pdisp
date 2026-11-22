@@ -15,7 +15,7 @@ android {
         minSdk = 29
         targetSdk = 36
         versionCode = (System.getenv("PDISP_VERSION_CODE") ?: "1").toInt() // CI passes the run number
-        versionName = "0.2"
+        versionName = "0.3"
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=none" } }
     }
