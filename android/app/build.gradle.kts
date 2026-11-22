@@ -14,7 +14,7 @@ android {
         applicationId = "dev.pdisp"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
+        versionCode = (System.getenv("PDISP_VERSION_CODE") ?: "1").toInt() // CI passes the run number
         versionName = "0.1"
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild { cmake { arguments += "-DANDROID_STL=none" } }
@@ -30,6 +30,23 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlin { compilerOptions { jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17) } }
+    // Release signing comes from the environment (CI secrets, or your shell): PDISP_KEYSTORE (a path), PDISP_KEYSTORE_PASSWORD, PDISP_KEY_ALIAS,
+    // PDISP_KEY_PASSWORD. Without them the release build is signed with the local debug key, which is fine for trying it but changes per machine,
+    // so such an APK cannot be updated in place by one from another machine (see docs/app.md, "Signing").
+    val releaseKeystore = System.getenv("PDISP_KEYSTORE")
+    signingConfigs {
+        if (releaseKeystore != null) create("release") {
+            storeFile = file(releaseKeystore)
+            storePassword = System.getenv("PDISP_KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("PDISP_KEY_ALIAS")
+            keyPassword = System.getenv("PDISP_KEY_PASSWORD")
+        }
+    }
+    buildTypes {
+        release {
+            signingConfig = if (releaseKeystore != null) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
+        }
+    }
     buildFeatures { compose = true }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }

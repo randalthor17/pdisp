@@ -29,3 +29,24 @@ rotation through `tests/m5_rotate_check.sh` (62 fps afterwards), touch reaching 
 - While streaming there is no way to open the menu except Back (a gesture-navigation back swipe works too); a three-finger gesture or an edge handle was not added
   because the PC's own gestures use touches.
 - On a tablet with a floating keyboard the keyboard can cover the Add dialog's Connect button; the keyboard's own Go key still works.
+
+## APKs from GitHub Actions, and signing
+`.github/workflows/android.yml` builds `assembleRelease` on every push to `master` that touches the app, on pull requests, on a `v*` tag, and by hand
+(Actions tab, "Run workflow"). The APK is an artifact of the run (`pdisp-apk`); a `v*` tag also makes a GitHub release with it attached.
+
+**Why the signature matters.** Android installs an update only over an app with the *same signing key*. Sign every release with one key you keep, or
+each new APK has to be installed after uninstalling the old one (losing its paired keys and saved PCs). The key is not in the repository.
+
+**One-time setup (on your machine):**
+```
+keytool -genkeypair -v -keystore pdisp-release.jks -alias pdisp -keyalg RSA -keysize 4096 -validity 10000
+base64 -w0 pdisp-release.jks | gh secret set PDISP_KEYSTORE_B64
+gh secret set PDISP_KEYSTORE_PASSWORD     # the store password you chose
+gh secret set PDISP_KEY_ALIAS             # pdisp
+gh secret set PDISP_KEY_PASSWORD          # the key password (same as the store's if you pressed Enter)
+```
+Keep `pdisp-release.jks` and its passwords in a password manager as well: if the key is lost, nobody can update installed copies in place.
+The secrets are only given to runs of this repository; pull requests from forks get none and build with the throwaway debug key instead
+(the run's log shows the signer either way: `apksigner verify --print-certs`). Locally, `PDISP_KEYSTORE=... PDISP_KEYSTORE_PASSWORD=... PDISP_KEY_ALIAS=...
+PDISP_KEY_PASSWORD=... android/build.sh assembleRelease` signs the same way; without them the release build uses the local debug key.
+Releases to Google Play would use Play App Signing instead and are not set up.
