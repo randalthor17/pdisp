@@ -46,7 +46,7 @@ mainmem() { # MiB
 main_before=$(mainmem)
 echo "GPU memory before:"; mem
 echo "your desktop niri (pid ${main_niri:-none}) holds ${main_before:-?} MiB of shared VRAM"
-args=$(printf '%q ' "$@") # test names with spaces survive the sh -c below
+args=; [ $# -gt 0 ] && args=$(printf '%q ' "$@") # test names with spaces survive the sh -c below; no arguments = every test
 res=$(mktemp)
 log="$repo/build/niri-session-tests.log" # niri runs its command with stdout discarded, so meson's output goes to a file
 # safe here: this niri is a throwaway, so the checks that change its config or open windows may run
