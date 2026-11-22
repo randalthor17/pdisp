@@ -40,7 +40,7 @@ the wire) and caused a spiral of keyframes (idr 1 to 18, a send queue of 850 ms,
 
 ## Not done yet
 - Real text and the phone or tablet are still open (above); the loopback cost of refinement is measured, see below.
-- 10-bit and wide-gamut, the refresh-rate policy, and the phone reporting its decode time to the PC are still open.
+- 10-bit and wide gamut are blocked by evdi (see the end of this file). The refresh-rate policy and a check on real text are still open.
 
 ## Latency of a change right after refinement (loopback)
 `tests/m10_burst_latency.sh`: the text page stays static and only a pixel timestamp changes every 0.4 s (`pdisp-pattern -X -T -B 0.4`), so every
@@ -121,3 +121,15 @@ loss, so the sender then ignores both for the rate cut and does not raise the ra
 1500 kbit/s with a decode of 10 ms and leaves it at 20000 kbit/s with 80 ms.
 Not done: the PC does not lower the frame rate or the picture size when the phone is slow, and the 50 ms threshold comes from these two measurement
 series only. The 6.6 Mbit/s collapse itself did not happen again in the runs after this change, so it is not shown that the rule prevents it.
+
+## 10-bit and wide gamut: not possible on this path (decision: skipped)
+- **The source is 8-bit.** The evdi 1.15.1 module only has the formats XRGB8888 and ARGB8888 (no `XR30`/`AR30` string or constant in the module), so the
+  compositor's picture on the virtual output is 8-bit before it reaches the encoder. A real 10-bit or HDR stream cannot start there.
+- **Wide gamut** would also need the compositor to render the output in another colour space (niri outputs are sRGB) and an EDID that claims it; evdi gives
+  the compositor no way to take 10-bit anyway.
+- What does work: the PC's VAAPI encoder supports HEVC Main10 (`VAProfileHEVCMain10`, encode entry point, render formats 4:2:0 8 and 10 bit). Encoding the
+  8-bit source as Main10 would only reduce banding from compression in smooth gradients. A test with libx265 on a synthetic gradient (30 frames) did not
+  show a useful difference (the content was too easy for the rate to matter), so that gain is unproven and was not built.
+- Reopen if evdi gets a 10-bit format, or if the capture path moves away from evdi (for example a compositor-side virtual output). Then the change is: P010
+  surfaces and VPP in `daemon/encoder.c`, Main10 in the VPS/SPS, the colour tags (BT.709/BT.2020, range, transfer) in the VUI, a matching EDID
+  (colour characteristics, HDR static metadata block) and the phone checking `MediaCodecInfo` for Main10 and the panel's colour modes.

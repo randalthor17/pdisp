@@ -97,7 +97,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - Grace period, hot-unplug, sleep and resume, lock.
 - Pass: a scenario matrix on niri: unplug with windows open, resume with app open, resume with app closed, lock, daemon restart. Windows end up where the design says.
 
-**M10: Quality and rates** (in progress 2026-11-22: text-quality measurement and static refinement done on loopback, see `docs/quality.md`; tablet decoder rate ladder done, `docs/latency.md`; refresh policy, decode-time feedback, 10-bit/wide gamut and the on-phone Wi-Fi check open)
+**M10: Quality and rates** (in progress 2026-11-22: text-quality measurement and static refinement done on loopback, see `docs/quality.md`; tablet decoder rate ladder done, `docs/latency.md`; decode-time feedback and Wi-Fi checks on the tablet and Pixel done; refresh policy and the real-text check open; 10-bit and wide gamut skipped because evdi is 8-bit only, see the end of `docs/quality.md`)
 - Refresh rate mode selection, adaptive bitrate, static refinement, optional 10-bit and wide-gamut with matching EDID and stream color tags.
 - Pass: visual check on text-heavy content. Latency under load stays within the recorded baseline plus a margin chosen at M4.
 
