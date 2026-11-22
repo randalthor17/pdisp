@@ -148,3 +148,8 @@ disconnect and connect of the same evdi device. Nothing is created while the dae
 
 If GTT fills up (`cat /sys/class/drm/card1/device/mem_info_gtt_used`), log out and in: that frees it. Avoid scripts that cycle the output.
 The evdi module itself can stay loaded; unloading it needs root and does not free niri's buffers.
+
+Measured on a fresh niri session (2026-11-22, RX 9060 XT): GTT 45 MiB, niri's shared VRAM 59 MiB. Eight create/remove cycles of a 2304x1440 output
+(a viewer connecting for 3 s, then a clean close) raised VRAM from 309 to 704 MiB: **about 38 MiB per cycle**, and it stayed after the daemon
+exited. That is one 2304x1536 buffer set per removed output; 600+ cycles of the test suite explain the 24 GiB seen before. A real user who
+connects a few times a day loses a few hundred MiB per day at most; scripts that cycle the output are the problem.
