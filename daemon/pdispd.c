@@ -23,6 +23,7 @@
 #include <sys/wait.h>
 #include <time.h>
 
+#include "control.h"
 #include "edid.h"
 #include "encoder.h"
 #include "handshake.h"
@@ -53,6 +54,7 @@ static struct {
 	const char *config_dir;  /* identity and authorized_keys live here (default ~/.config/pdisp) */
 	int pair_mode;           /* what to do with a device that is not in authorized_keys */
 	const char *pair_cmd;    /* -A: command that asks the user (no terminal under systemd); see ask_command */
+	const char *control_path; /* -C: the control socket (default $XDG_RUNTIME_DIR/pdisp/control.sock; "none" turns it off) */
 	bool insecure;           /* development only: no handshake, no encryption (the M4 behaviour) */
 	bool no_touch;           /* do not create a touchscreen for the phone */
 	const char *touch_hook;  /* a command run when the touchscreen exists, to bind it to the virtual output (docs/touch.md) */
@@ -64,6 +66,10 @@ static struct {
 	unsigned refine_frames, refine_min_qp, refine_start_qp, refine_rate_percent, refine_gap_ms, refine_settle_ms; /* static refinement (see D.refine_left); 0 frames = off */
 } C = { .port = 47110, .max_hz_mhz = 60000, .bitrate = 12000, .max_bitrate = 40000, .name = "pdisp",
 	.serial_text = "PDISP0001", .serial = 1, .card = -1, .grace_secs = 30 };
+
+/* which settings the command line gave (they win over the settings file a client may change) */
+enum { CONF_R = 1, CONF_B = 2, CONF_BMAX = 4, CONF_G = 8, CONF_F = 16 };
+static unsigned g_cli_set;
 
 /* ---- the live session */
 
@@ -372,10 +378,10 @@ int main(int argc, char **argv)
 		C.refine_start_qp = (e = getenv("PDISP_REFINE_QP0")) ? (unsigned)atoi(e) : 22;
 		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 50;
 	}
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uWV:K:P:A:H:F:TIho")) != -1) {
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uWV:K:P:A:H:F:C:TIho")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
-		case 'F': C.refine_frames = (unsigned)atoi(optarg); break; /* static refinement pictures; 0 = off */
+		case 'F': C.refine_frames = (unsigned)atoi(optarg); g_cli_set |= CONF_F; break; /* static refinement pictures; 0 = off */
 		case 'n': C.name = optarg; break;
 		case 't': C.serial_text = optarg; break;
 		case 'N': C.serial = (uint32_t)strtoul(optarg, NULL, 0); break;
@@ -385,9 +391,9 @@ int main(int argc, char **argv)
 			C.force_mhz = (unsigned)(hz * 1000 + 0.5);
 			break;
 		}
-		case 'R': C.max_hz_mhz = (unsigned)(atof(optarg) * 1000); break;
-		case 'b': C.bitrate = (unsigned)atoi(optarg); break;
-		case 'B': C.max_bitrate = (unsigned)atoi(optarg); break;
+		case 'R': C.max_hz_mhz = (unsigned)(atof(optarg) * 1000); g_cli_set |= CONF_R; break;
+		case 'b': C.bitrate = (unsigned)atoi(optarg); g_cli_set |= CONF_B; break;
+		case 'B': C.max_bitrate = (unsigned)atoi(optarg); g_cli_set |= CONF_BMAX; break;
 		case 'r': C.render_node = optarg; break;
 		case 'd': C.card = atoi(optarg); break;
 		case 'S': run_secs = atof(optarg); break;
@@ -395,6 +401,7 @@ int main(int argc, char **argv)
 		case 'W': C.also_net = true; break;
 		case 'K': C.config_dir = optarg; break;
 		case 'A': C.pair_cmd = optarg; break;
+		case 'C': C.control_path = optarg; break;
 		case 'P':
 			if (!strcmp(optarg, "ask")) C.pair_mode = PAIR_ASK;
 			else if (!strcmp(optarg, "accept")) C.pair_mode = PAIR_ACCEPT;
@@ -405,7 +412,7 @@ int main(int argc, char **argv)
 		case 'T': C.no_touch = true; break;
 		case 'H': C.touch_hook = optarg; break;
 		case 'o': C.once = true; break;
-		case 'g': C.grace_secs = (unsigned)atoi(optarg); break;
+		case 'g': C.grace_secs = (unsigned)atoi(optarg); g_cli_set |= CONF_G; break;
 		case 'V': C.usb_vid = (unsigned)strtoul(optarg, NULL, 16); break;
 		default: usage(argv[0]); return 2;
 		}
@@ -620,8 +627,10 @@ static int authorize(struct net_ctl *ctl, const struct hs_peer *peer, const char
 		return 1;
 	}
 	net_ctl_send(ctl, PROTO_CTL_PAIRING_REQUIRED, NULL, 0); /* the device shows its own copy of the code */
-	int a;
-	if (C.pair_cmd) {
+	int a = control_pair_ask(peer->name, fp, peer->sas, 90000, &stop); /* a GUI that listens for pairing requests asks the user */
+	if (a != -2) {
+		/* answered (or timed out) there */
+	} else if (C.pair_cmd) {
 		a = ask_command(C.pair_cmd, peer->name, fp, peer->sas, 90000);
 	} else {
 	fprintf(stderr, "\nA device wants to use this PC as a second monitor.\n   name: %s\n   key:  %s\n   code: %06u   (it must be the same on the device's screen)\n"
@@ -675,6 +684,158 @@ struct conn {
 
 static struct identity g_id;
 static char g_ks_path[1100];
+
+/* ================= the control socket (docs/control.md) =================
+ * The state a GUI shows, kept up to date by the streaming loop; control.c copies it into its own thread. */
+static struct ctl_state g_cs;
+static volatile sig_atomic_t g_disconnect_req; /* a client asked to end the session */
+static bool g_grace_active;                    /* the monitor is being kept for a lost device */
+static uint64_t g_session_start_us, g_pub_frames, g_pub_us;
+static char g_conf_path[1100];                 /* the settings file a client can change; read at start */
+
+static void ctl_publish(void)
+{
+	g_cs.usb = C.usb;
+	g_cs.net = g_lfd >= 0;
+	g_cs.port = C.port;
+	g_cs.monitor = D.vd != NULL;
+	if (g_cs.monitor) connector_name(g_cs.connector, sizeof g_cs.connector); else g_cs.connector[0] = 0;
+	g_cs.grace = g_grace_active && g_cs.monitor && !g_cs.session;
+	g_cs.refresh_cap_hz = C.max_hz_mhz / 1000;
+	g_cs.bitrate_kbps = C.bitrate;
+	g_cs.max_bitrate_kbps = C.max_bitrate;
+	g_cs.grace_secs = C.grace_secs;
+	g_cs.refine_frames = C.refine_frames;
+	control_publish(&g_cs);
+}
+
+static void ctl_set_usb_state(const char *s)
+{
+	snprintf(g_cs.usb_state, sizeof g_cs.usb_state, "%s", C.usb ? s : "off");
+	ctl_publish();
+}
+
+/* The live numbers of the session being served, called about once a second. */
+static void ctl_session_numbers(uint64_t now)
+{
+	const struct vsend_stats *st = vsend_stats(D.vs);
+	g_cs.width = D.width;
+	g_cs.height = D.height;
+	g_cs.refresh_hz = D.refresh_mhz / 1000.0;
+	g_cs.session_secs = (now - g_session_start_us) / 1e6;
+	double dt = (now - g_pub_us) / 1e6;
+	if (dt > 0.2) { g_cs.fps = (double)(D.frames_encoded - g_pub_frames) / dt; g_pub_frames = D.frames_encoded; g_pub_us = now; }
+	g_cs.bitrate_mbps = vsend_bitrate_kbps(D.vs) / 1000.0;
+	g_cs.queue_ms = vsend_queue_delay_us(D.vs) / 1000.0;
+	g_cs.phone_queue_ms = st->fb_queue_max_us / 1000.0;
+	g_cs.phone_decode_ms = st->fb_decode_max_x10 / 10.0;
+	g_cs.frames_lost = st->frames_lost;
+	g_cs.idr_frames = D.idr_frames;
+	g_cs.repair_packets = st->repair_packets;
+	ctl_publish();
+}
+
+static void ctl_session_begin(const char *device)
+{
+	snprintf(g_cs.device, sizeof g_cs.device, "%s", device);
+	snprintf(g_cs.transport, sizeof g_cs.transport, "%s", g_usb_conn ? "usb" : "network");
+	g_cs.session = true;
+	g_session_start_us = g_pub_us = net_now_us();
+	g_pub_frames = D.frames_encoded;
+	ctl_session_numbers(g_pub_us);
+}
+
+static void ctl_session_end(void)
+{
+	g_cs.session = false;
+	g_cs.fps = g_cs.bitrate_mbps = g_cs.queue_ms = 0;
+	ctl_publish();
+}
+
+/* ---- the settings file: key=value lines, written by set_config, read at start for what the command line did not give */
+static void conf_load(void)
+{
+	FILE *f = g_conf_path[0] ? fopen(g_conf_path, "r") : NULL;
+	if (!f) return;
+	char line[128];
+	while (fgets(line, sizeof line, f)) {
+		char *eq = strchr(line, '=');
+		if (!eq || line[0] == '#') continue;
+		*eq = 0;
+		unsigned v = (unsigned)strtoul(eq + 1, NULL, 10);
+		if (!strcmp(line, "refresh_cap_hz") && !(g_cli_set & CONF_R) && v >= 24 && v <= 480) C.max_hz_mhz = v * 1000;
+		else if (!strcmp(line, "bitrate_kbps") && !(g_cli_set & CONF_B) && v >= 1000 && v <= 200000) C.bitrate = v;
+		else if (!strcmp(line, "max_bitrate_kbps") && !(g_cli_set & CONF_BMAX) && v >= 2000 && v <= 200000) C.max_bitrate = v;
+		else if (!strcmp(line, "grace_secs") && !(g_cli_set & CONF_G) && v <= 3600) C.grace_secs = v;
+		else if (!strcmp(line, "refine_frames") && !(g_cli_set & CONF_F) && v <= 400) C.refine_frames = v;
+	}
+	fclose(f);
+}
+
+static int conf_save(void)
+{
+	if (!g_conf_path[0]) return -ENOENT;
+	char tmp[1120];
+	snprintf(tmp, sizeof tmp, "%s.tmp", g_conf_path);
+	FILE *f = fopen(tmp, "w");
+	if (!f) return -errno;
+	fprintf(f, "# written by pdisp: settings changed through the control socket\nrefresh_cap_hz=%u\nbitrate_kbps=%u\nmax_bitrate_kbps=%u\ngrace_secs=%u\nrefine_frames=%u\n",
+		C.max_hz_mhz / 1000, C.bitrate, C.max_bitrate, C.grace_secs, C.refine_frames);
+	if (fclose(f) != 0 || rename(tmp, g_conf_path) != 0) return -errno;
+	return 0;
+}
+
+static void op_disconnect(void *user) { (void)user; g_disconnect_req = 1; }
+
+static void op_visit(const struct keystore_entry *e, void *user)
+{
+	struct jw *w = user;
+	char fp[IDENTITY_FINGERPRINT_LEN];
+	identity_fingerprint(e->pub, fp);
+	jw_obj_begin(w);
+	jw_str(w, "fingerprint", fp);
+	jw_str(w, "name", e->name);
+	jw_obj_end(w);
+}
+
+static int op_devices(void *user, struct jw *w)
+{
+	(void)user;
+	jw_arr_begin(w, "devices");
+	if (g_ks_path[0]) keystore_list(g_ks_path, op_visit, w);
+	jw_arr_end(w);
+	return 0;
+}
+
+static int op_remove_device(void *user, const char *prefix)
+{
+	(void)user;
+	if (strlen(prefix) < 4 || !g_ks_path[0]) return -EINVAL;
+	return keystore_remove(g_ks_path, prefix);
+}
+
+static int op_set_config(void *user, const char *key, const char *value, char *err, size_t errcap)
+{
+	(void)user;
+	char *end;
+	unsigned long v = strtoul(value, &end, 10);
+	if (*end || !*value) { snprintf(err, errcap, "%s must be a whole number", key); return -EINVAL; }
+	if (!strcmp(key, "refresh_cap_hz")) { if (v < 24 || v > 480) goto range; C.max_hz_mhz = (unsigned)v * 1000; }
+	else if (!strcmp(key, "bitrate_kbps")) { if (v < 1000 || v > 200000) goto range; C.bitrate = (unsigned)v; }
+	else if (!strcmp(key, "max_bitrate_kbps")) { if (v < 2000 || v > 200000) goto range; C.max_bitrate = (unsigned)v; }
+	else if (!strcmp(key, "grace_secs")) { if (v > 3600) goto range; C.grace_secs = (unsigned)v; }
+	else if (!strcmp(key, "refine_frames")) { if (v > 400) goto range; C.refine_frames = (unsigned)v; }
+	else { snprintf(err, errcap, "unknown setting %s", key); return -EINVAL; }
+	if (conf_save() != 0) LOG("cannot save the settings to %s", g_conf_path);
+	LOG("setting %s = %lu (from a client; used from the next session on)", key, v);
+	ctl_publish();
+	return 0;
+range:
+	snprintf(err, errcap, "%s is out of range", key);
+	return -ERANGE;
+}
+
+static const struct control_ops g_control_ops = { .disconnect = op_disconnect, .devices = op_devices, .remove_device = op_remove_device, .set_config = op_set_config };
 static int g_exit_code;
 
 static void conn_init(struct conn *c)
@@ -719,8 +880,10 @@ static int acquire_peer(struct conn *c, uint64_t deadline_us)
 	for (;;) {
 		conn_init(c);
 		g_usb_conn = false;
+		ctl_set_usb_state("waiting");
 		for (;;) { /* in short slices, so the display keeps being serviced and the deadline is honoured; a cable and the network are both watched when both are on */
 			if (stop) return -ECANCELED;
+			if (g_disconnect_req) { g_disconnect_req = 0; return -ECONNABORTED; } /* a client asked to remove the monitor that is waiting for a lost device */
 			if (deadline_us && net_now_us() >= deadline_us) return -ETIMEDOUT;
 			if (g_lfd >= 0) {
 				struct pollfd lp[2] = { { .fd = g_lfd, .events = POLLIN }, { .fd = D.vd ? vdisplay_event_fd(D.vd) : -1, .events = POLLIN } };
@@ -742,6 +905,7 @@ static int acquire_peer(struct conn *c, uint64_t deadline_us)
 				if (e == -ECANCELED) return e;
 				if (e) { LOG("cannot open the USB device: %s (is the udev rule installed? see contrib/udev)", strerror(-e)); return e; }
 				LOG("USB accessory %s", usblink_description(c->link));
+				ctl_set_usb_state("accessory");
 				int usb_dgram;
 				e = usbmux_start(rd, wr, 0, &c->mux, &c->cfd, &usb_dgram);
 				if (e) { LOG("cannot start the USB multiplexer: %s", strerror(-e)); usblink_close(c->link); c->link = NULL; return e; }
@@ -874,6 +1038,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	char addr[64];
 	inet_ntop(AF_INET, &peer->sin_addr, addr, sizeof addr);
 	LOG("streaming to %s:%u (session %08x)", addr, ntohs(peer->sin_port), D.session_id);
+	ctl_session_begin(hello.device_name);
 
 	/* ---- stream: the first frame is the current screen, so a static desktop shows up at once */
 	D.streaming = true;
@@ -883,6 +1048,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 
 	enum end_reason end = END_LINK;
 	uint64_t last_rx = net_now_us(), end_us = run_secs > 0 ? net_now_us() + (uint64_t)(run_secs * 1e6) : 0;
+	uint64_t last_pub = net_now_us();
 	uint64_t last_report = net_now_us(), next_ping = net_now_us() + 2000000, last_pong = net_now_us();
 	int evfd = vdisplay_event_fd(D.vd);
 	uint8_t pkt[2048];
@@ -890,6 +1056,8 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	while (!done) {
 		if (stop) { end = END_STOP; break; }
 		uint64_t now = net_now_us();
+		if (g_disconnect_req) { g_disconnect_req = 0; LOG("a client asked to end the session"); end = END_USER; break; }
+		if (now - last_pub >= 1000000) { last_pub = now; ctl_session_numbers(now); }
 		if (end_us && now >= end_us) { end = END_STOP; break; }
 		uint64_t due = vsend_next_due_us(D.vs, now);
 		int timeout_ms = due <= now ? 0 : (int)((due - now + 999) / 1000);
@@ -1083,6 +1251,8 @@ static int run_session(double run_secs)
 		identity_fingerprint(g_id.pub, fp);
 		LOG("%s identity in %s, key %s", created ? "created a new" : "using the", cdir, fp);
 		snprintf(g_ks_path, sizeof g_ks_path, "%s/authorized_keys", cdir);
+		snprintf(g_conf_path, sizeof g_conf_path, "%s/pdispd.conf", cdir);
+		conf_load();
 	}
 	if (!C.usb || C.also_net) {
 		g_lfd = net_tcp_listen(C.port);
@@ -1090,6 +1260,17 @@ static int run_session(double run_secs)
 		LOG("listening on port %u", C.port);
 	} else {
 		LOG("waiting for a tablet on USB");
+	}
+	{ /* the control socket for a GUI or a script (docs/control.md) */
+		char cpath[200] = "";
+		const char *rt = getenv("XDG_RUNTIME_DIR");
+		if (C.control_path) snprintf(cpath, sizeof cpath, "%s", C.control_path);
+		else if (rt && *rt) snprintf(cpath, sizeof cpath, "%s/pdisp/control.sock", rt);
+		if (cpath[0] && strcmp(cpath, "none")) {
+			int ce = control_start(cpath, &g_control_ops);
+			if (ce == 0) LOG("control socket %s", cpath); else LOG("no control socket (%s): %s", cpath, strerror(-ce));
+		}
+		ctl_set_usb_state("waiting");
 	}
 
 	bool single = C.once || run_secs > 0; /* -o and -S serve one session and exit */
@@ -1099,15 +1280,19 @@ static int run_session(double run_secs)
 		struct conn c;
 		int r = acquire_peer(&c, grace_deadline);
 		if (r == -ECANCELED) break;
+		if (r == -ECONNABORTED) { LOG("a client removed the waiting monitor"); teardown_output(); grace_deadline = 0; g_grace_active = false; ctl_publish(); continue; }
 		if (r == -ETIMEDOUT) {
 			LOG("the phone did not come back within %u s", C.grace_secs);
 			teardown_output();
 			grace_deadline = 0;
+			g_grace_active = false;
+			ctl_publish();
 			if (single) break;
 			continue;
 		}
 		if (r) { exit_code = 1; break; }
 		enum end_reason end = serve(&c, run_secs);
+		ctl_session_end();
 		conn_close(&c);
 		if (end == END_FATAL) { exit_code = g_exit_code ? g_exit_code : 1; break; }
 		if (end == END_STOP) break;
@@ -1115,13 +1300,18 @@ static int run_session(double run_secs)
 		if (single) break;
 		if (end == END_LINK && C.grace_secs && D.vd) {
 			grace_deadline = net_now_us() + (uint64_t)C.grace_secs * 1000000;
+			g_grace_active = true;
+			ctl_publish();
 			LOG("lost the phone: keeping the virtual output for %u s in case it comes back", C.grace_secs);
 		} else {
 			teardown_output(); /* on purpose, or its screen locked, or no grace period: the compositor moves the windows away now */
 			grace_deadline = 0;
+			g_grace_active = false;
+			ctl_publish();
 		}
 	}
 	teardown_output();
+	control_stop();
 	if (g_lfd >= 0) close(g_lfd);
 	return exit_code;
 }

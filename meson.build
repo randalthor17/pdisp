@@ -121,7 +121,7 @@ test_stream = executable('test_stream', 'tests/test_stream.c', dependencies: pro
 test('video stream over a simulated link', test_stream, timeout: 300)
 
 # the daemon and the desktop test client
-pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', 'daemon/touch.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')], install: true)
+pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', 'daemon/touch.c', 'daemon/control.c', 'daemon/json.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')], install: true)
 libav_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libswscale')]
 pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads'), dependency('sdl2'), meson.get_compiler('c').find_library('m')] + libav_deps)
 
@@ -195,6 +195,7 @@ test_handshake = executable('test_handshake', 'tests/test_handshake.c', dependen
 test('handshake driver', test_handshake)
 
 pdisp_keys = executable('pdisp-keys', 'tools/pdisp-keys.c', dependencies: proto_dep, install: true)
+pdisp_ctl = executable('pdisp-ctl', 'tools/pdisp-ctl.c', install: true)
 m6_pairing = find_program('tests/m6_pairing_check.sh')
 test('m6 pairing and authorisation', m6_pairing,
   args: [pdispd, pdisp_view, meson.current_build_dir() / 'm6-pairing-artifacts', pdisp_keys],
@@ -284,3 +285,16 @@ install_data('contrib/niri/pdisp.kdl', install_dir: get_option('datadir') / 'pdi
 configure_file(input: 'contrib/systemd/pdispd.service.in', output: 'pdispd.service',
   configuration: { 'BINDIR': get_option('prefix') / get_option('bindir') },
   install_dir: get_option('prefix') / 'lib/systemd/user')
+
+json_lib = static_library('pdisp-json', 'daemon/json.c', include_directories: inc)
+json_dep = declare_dependency(link_with: json_lib, include_directories: inc)
+test_json = executable('test_json', 'tests/test_json.c', dependencies: json_dep)
+test('json helper', test_json)
+
+m11_control = find_program('tests/m11_control_check.sh')
+test('m11 control socket', m11_control,
+  args: [pdispd, pdisp_view, pdisp_ctl, meson.current_build_dir() / 'm11-control-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 200,
+  suite: 'integration')
