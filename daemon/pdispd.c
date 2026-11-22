@@ -1144,7 +1144,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	enum end_reason end = END_LINK;
 	uint64_t last_rx = net_now_us(), end_us = run_secs > 0 ? net_now_us() + (uint64_t)(run_secs * 1e6) : 0;
 	uint64_t last_pub = net_now_us();
-	uint64_t last_report = net_now_us(), next_ping = net_now_us() + 2000000, last_pong = net_now_us();
+	uint64_t last_report = net_now_us(), next_ping = net_now_us() + 2000000, next_usb_nudge = net_now_us() + 3000000, last_pong = net_now_us();
 	int evfd = vdisplay_event_fd(D.vd);
 	uint8_t pkt[2048];
 	int done = 0;
@@ -1251,6 +1251,10 @@ static enum end_reason serve(struct conn *c, double run_secs)
 			next_ping = now + 2000000;
 			uint8_t tb[8];
 			if (proto_token_encode(now, tb, sizeof tb) == 8) net_ctl_send(ctl, PROTO_CTL_PING, tb, 8);
+		}
+		if (C.usb && !g_usb_conn && now > next_usb_nudge) { /* a network session, and a cable may be plugged in: move to it (the app switches when the accessory appears) */
+			next_usb_nudge = now + 3000000;
+			if (usblink_nudge(C.usb_vid) > 0) LOG("an Android device is plugged into this PC: asking it to switch to the cable");
 		}
 		if (now - last_pong > 8000000 && D.pongs) { LOG("no PONG for 8 s: the control channel is dead"); end = END_LINK; break; }
 		if (g_usb_conn && usblink_gone(c->link)) { LOG("the USB cable was unplugged"); end = END_LINK; break; }

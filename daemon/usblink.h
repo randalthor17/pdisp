@@ -14,6 +14,11 @@ struct usblink;
  * `*stop` (if not NULL) is polled while waiting; a non-zero value makes the call return -ECANCELED. */
 int usblink_open(int timeout_ms, unsigned vid_filter, const volatile int *stop, struct usblink **out, int *rd_fd, int *wr_fd);
 
+/* Asks an Android device that is plugged in, but not in accessory mode, to switch (once; not more often than every 10 s, and not while one is already in
+ * accessory mode). It does not claim anything: the device re-enumerates, Android starts the app with the accessory, and the app connects over the cable.
+ * Used while a network session runs, to move it to the cable. Returns 1 if a request was accepted, 0 if there was nothing to do, or a negative errno. */
+int usblink_nudge(unsigned vid_filter);
+
 /* Stops the transfer threads and releases the device. The descriptors handed out are closed. */
 void usblink_close(struct usblink *l);
 

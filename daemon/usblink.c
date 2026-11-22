@@ -260,6 +260,31 @@ fail:
 	return err;
 }
 
+int usblink_nudge(unsigned vid_filter)
+{
+	uint64_t now = mono_us();
+	if (last_switch_us && now - last_switch_us < 10000000) return 0;
+	libusb_context *ctx;
+	if (libusb_init(&ctx)) return -EIO;
+	libusb_device **list;
+	ssize_t n = libusb_get_device_list(ctx, &list);
+	int result = 0;
+	if (n < 0) { libusb_exit(ctx); return -EIO; }
+	if (find_accessory(list, n, 0, 0, NULL, 0)) { libusb_free_device_list(list, 1); libusb_exit(ctx); return 0; } /* already in accessory mode: the app has it or will */
+	for (ssize_t i = 0; i < n && !result; i++) {
+		struct libusb_device_descriptor d;
+		if (libusb_get_device_descriptor(list[i], &d) || d.bDeviceClass == LIBUSB_CLASS_HUB) continue;
+		if (vid_filter && d.idVendor != vid_filter) continue;
+		libusb_device_handle *h;
+		if (libusb_open(list[i], &h)) continue; /* no permission (see contrib/udev) or not ours */
+		if (switch_to_accessory(h) == 0) { result = 1; last_switch_us = now; }
+		libusb_close(h);
+	}
+	libusb_free_device_list(list, 1);
+	libusb_exit(ctx);
+	return result;
+}
+
 int usblink_gone(const struct usblink *l)
 {
 	return atomic_load(&l->gone);

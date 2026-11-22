@@ -48,3 +48,16 @@ address and pressing Go during that wait stopped the session on the UI thread, w
 - `usbmux_stop` interrupts the write thread with SIGUSR2 as it already did the read thread, waits at most 0.5 s, and detaches it if it is still stuck.
 - An address typed and confirmed on purpose replaces a USB session (`MainActivity`).
 Cancelling while the app is still connecting to an address that does not answer (the same freeze) is fixed too: the connect runs in 100 ms steps and ends when the user cancels (`net_tcp_connect_cancellable`, 10 s limit). Still blocking: resolving a host name (an IP address is not affected).
+
+## Moving between the cable and Wi-Fi
+With `pdispd -u -W` (the NixOS module's `usb = true`) both ways are open at once, and a session moves between them:
+
+- **Cable plugged in during a Wi-Fi session:** the daemon notices an Android device it could use (`usblink_nudge`, every 3 s, only while a network session runs and no
+  device is in accessory mode) and asks it to switch to accessory mode. Android starts the app with the accessory, and the app leaves Wi-Fi the way a lost link
+  is left (CLOSE reason 3: the PC keeps the monitor for the grace period) and connects over the cable. The same device gets the same monitor back; if the
+  stable rate learned for USB differs from the one on Wi-Fi, the monitor is reconfigured once.
+- **Cable unplugged during a USB session:** the app falls back to the PC it used last (if it has one) within a moment.
+- **Wi-Fi lost while the cable is in:** the app tries the cable first, then alternates, two tries each, so a dead way is not insisted on.
+- A "busy" answer while reconnecting is retried (up to 7 times): the PC may not have noticed yet that the old link is dead.
+
+Not covered: a device that is plugged in but whose USB mode is "charging only" does not accept the switch (the daemon logs it once); several tablets at once.

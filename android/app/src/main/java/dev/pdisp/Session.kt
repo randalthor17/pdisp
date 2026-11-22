@@ -62,6 +62,8 @@ class SessionController(private val activity: Activity, private val store: Store
     private val ui = Handler(Looper.getMainLooper())
     private val usb = activity.getSystemService(Context.USB_SERVICE) as UsbManager
     private val reconnect = Runnable { connectNow() }
+    /** Which way the connection was going when it was lost: after a loss the other way is tried too (see [connectNow]). */
+    private var primaryUsb = false
 
     val handleOrZero: Long get() = handle
     val active: Boolean get() = handle != 0L
@@ -97,8 +99,14 @@ class SessionController(private val activity: Activity, private val store: Store
     fun connectUsb(acc: UsbAccessory) {
         problem = null
         wantConnected = true
+        if (handle != 0L) {
+            if (target !is Target.Host) return // a session over the cable is already running
+            // Streaming over Wi-Fi and the cable has just come in (the PC asked this device to switch to it): the cable is the better way. Leave Wi-Fi the way
+            // a lost link is left (the PC keeps the monitor for a while and gives it back to this device), then connect over USB.
+            stopSession(3)
+            attempts = 0
+        }
         target = Target.Usb
-        if (handle != 0L) return
         phase = Phase.Connecting
         if (!usb.hasPermission(acc)) {
             val pi = PendingIntent.getBroadcast(activity, 0, Intent(ACTION_USB_PERMISSION).setPackage(activity.packageName), PendingIntent.FLAG_MUTABLE)
@@ -150,11 +158,21 @@ class SessionController(private val activity: Activity, private val store: Store
 
     private fun connectNow() {
         if (!wantConnected || handle != 0L || surface == null) return
-        when (val t = target) {
-            is Target.Host -> startHostSession(t.pc.host)
-            Target.Usb -> usb.accessoryList?.firstOrNull()?.let { connectUsb(it) } ?: run { usbHint = usbWaitingText(); scheduleReconnect() }
-            null -> {}
+        val t = target ?: return
+        val acc = usb.accessoryList?.firstOrNull()
+        // The PC to try over the network: the one asked for, or, when the way was the cable, the one used last.
+        val net = (t as? Target.Host)?.pc ?: store.pcs().filter { it.lastUsed > 0 }.maxByOrNull { it.lastUsed }
+        // After a lost link both ways are tried: the other one first (the one that just failed is the likelier to be down), two tries each, so an
+        // unplugged cable moves a session to Wi-Fi at once, a dropped Wi-Fi moves it to the cable, and a dead one is not insisted on.
+        val useUsb = when {
+            acc != null && net != null ->
+                if (attempts == 0) t is Target.Usb else if (((attempts - 1) / 2) % 2 == 0) !primaryUsb else primaryUsb
+            acc != null -> true
+            net != null -> false
+            else -> { usbHint = usbWaitingText(); scheduleReconnect(); return }
         }
+        if (useUsb) connectUsb(acc!!)
+        else { target = Target.Host(net!!); usbHint = null; startHostSession(net.host) }
     }
 
     private fun startHostSession(address: String) {
@@ -212,7 +230,10 @@ class SessionController(private val activity: Activity, private val store: Store
     private fun sessionEnded(message: String) {
         val kind = PdispNative.nativeEndKind(handle)
         stopSession(3)
-        if (wantConnected && kind == 1) {
+        // "busy" while reconnecting is the PC not having noticed yet that the old link is dead (up to a few seconds): ask again
+        val busyAgain = kind == 2 && attempts in 1..7 && message.contains("busy")
+        if (wantConnected && (kind == 1 || busyAgain)) {
+            if (attempts == 0) primaryUsb = target is Target.Usb // the way that just failed
             attempts++
             phase = Phase.Connecting
             rawStatus = "lost the PC, reconnecting: $message"
