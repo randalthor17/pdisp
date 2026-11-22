@@ -4,7 +4,7 @@ pdisp has three parts: the **daemon** on the PC (`pdispd`, creates a virtual mon
 and a few **system and desktop settings** that let the daemon and the touch input work. On NixOS and home-manager the settings are done by the modules in
 this repository. Other systems do them by hand, listed below.
 
-Needs: a Wayland compositor that handles a new monitor (niri is the tested one), an AMD or Intel GPU with VAAPI HEVC encoding, and Android 11 or newer.
+Needs: a Wayland compositor that handles a new monitor (niri 26.04 is the one tried), a GPU with VAAPI HEVC encoding (only an AMD RX 9060 XT was tried), and Android 10 (API 29) or newer (tried on Android 17 on a Pixel 8a and a Galaxy Tab S9 FE).
 
 ## NixOS
 
@@ -45,7 +45,7 @@ imports = [ pdisp.homeManagerModules.default ];
 programs.pdisp.niri.enable = true;   # writes ~/.config/niri/pdisp.kdl
 ```
 
-and add one line to your niri configuration, with the other includes: `include "pdisp.kdl"` (the string is also available as `programs.pdisp.niri.include`
+and add one line to your niri configuration, with the other includes: `include "pdisp.kdl"` (your niri must support `include`; the DankMaterialShell setup here already uses it) (the string is also available as `programs.pdisp.niri.include`
 if you generate the config from Nix). Without the mapping the device's touches would be treated as input on whatever monitor the compositor chooses; see
 `docs/touch.md`. The file contains:
 
@@ -79,8 +79,9 @@ Developer options and USB debugging are **not** needed.
 
 - **Wi-Fi**: open the app, type the PC's address, press Go. The first time, a notification on the PC asks whether to allow the device; the code it shows
   must match the code on the device's screen. "Allow always" remembers the device (`pdisp-keys list` and `pdisp-keys remove` manage them).
-- **USB**: plug the cable in. The PC switches the device into accessory mode and Android offers to open pdisp: accept. The USB mode does not have to
-  be File transfer; "charging only" is fine on most phones (the notification may need a tap on some). See `docs/usb.md` if nothing happens.
+- **USB**: plug the cable in. The PC switches the device into accessory mode and Android offers to open pdisp: accept. The USB mode did not have to
+  be File transfer on the two devices tried (charging only worked, with USB debugging on or off); a phone that hides itself until the user allows data was not
+  available. See `docs/usb.md` for the modes measured and what to do if nothing happens.
 
 ## Checking it
 

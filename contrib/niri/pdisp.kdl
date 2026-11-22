@@ -1,6 +1,6 @@
 // pdisp: touch and pen input of the Android device go to the virtual monitor only, never to another display (docs/touch.md).
 // "PNP(PDI) pdisp PDISP0001" is the monitor's identity (make, model, serial) with the daemon's defaults; it does not depend on the connector name.
-// Add `include "pdisp.kdl"` to your niri config (niri 25.11 or newer), or paste the block into it.
+// Add `include "pdisp.kdl"` to your niri config, or paste the block into it.
 input {
     touch {
         map-to-output "PNP(PDI) pdisp PDISP0001"
