@@ -88,6 +88,7 @@ struct vsend *vsend_create(const struct vsend_config *cfg, const struct vsend_ca
 	if (!vs->cfg.fec_percent_max) vs->cfg.fec_percent_max = 30;
 	if (!vs->cfg.pace_factor_percent) vs->cfg.pace_factor_percent = 150;
 	if (!vs->cfg.keepalive_us) vs->cfg.keepalive_us = 100000;
+	if (!vs->cfg.frame_interval_us) vs->cfg.frame_interval_us = 16667;
 	if (!vs->cfg.repair_gap_us) vs->cfg.repair_gap_us = 8000;
 	if (!vs->cfg.pace_burst_us) vs->cfg.pace_burst_us = 2000;
 	if (!vs->cfg.max_resend_bytes) vs->cfg.max_resend_bytes = 64 * 1024;
@@ -241,10 +242,13 @@ uint64_t vsend_rtt_us(const struct vsend *vs) { return vs->rtt_us; }
 
 bool vsend_must_idr(const struct vsend *vs, uint64_t now_us)
 {
-	/* a healthy link leaves about rtt / frame interval frames in flight: allow twice that, and never fewer than 8 */
-	unsigned limit = 8;
+	/* a healthy link leaves about rtt / frame interval frames in flight: allow twice that, and never fewer than 8 at 60 Hz (the same
+	 * time, 133 ms, at other rates: the feedback arrives at a fixed pace, so more frames are in flight at 120 Hz) */
+	uint64_t fi = vs->cfg.frame_interval_us;
+	unsigned limit = (unsigned)(133333 / fi);
+	if (limit < 8) limit = 8;
 	if (vs->rtt_us) {
-		unsigned rtt_frames = (unsigned)(2 * vs->rtt_us / 16667) + 4;
+		unsigned rtt_frames = (unsigned)(2 * vs->rtt_us / fi) + 4;
 		if (rtt_frames > limit) limit = rtt_frames;
 	}
 	uint64_t last_idr = vs->last_idr_request_us > vs->last_idr_submit_us ? vs->last_idr_request_us : vs->last_idr_submit_us;

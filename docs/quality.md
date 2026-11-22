@@ -83,3 +83,21 @@ The NixOS firewall blocks port 47110 after every reboot until a rule is added (`
 90 Hz is delivered, but Wi-Fi needs about 30 times the repairs and the receiver asked for 6 extra keyframes ("9 frames unresolved ... sending an
 IDR"). Nothing was lost in the end. Whether it looks smooth was not judged by eye. 60 Hz stays the default. The phone's decode time is still not
 reported, so the PC cannot tell whether the phone or the network is the limit.
+
+## Pixel 8a over USB (accessory mode, full motion and text page)
+| test | result |
+|---|---|
+| 60 Hz full motion, 50 s | 60 fps (3000 frames), 0 lost, 1 keyframe, queue 0 ms, 58 repair packets |
+| 120 Hz (`-R 120`), before the fix | about 120 fps, but 116 keyframes in 44 s ("9 frames unresolved ... sending an IDR") with next to no loss |
+| 120 Hz, after the fix | about 118 fps, 2 keyframes in 44 s. The target dips to 17 to 26 Mbit/s at times and the phone's queue reaches 40 ms: the phone is near its limit |
+| text page, changes every 1.5 s, refinement on | 3 lost frames and 40 Mbit/s, or (see below) a bad start |
+
+- **120 Hz keyframe storm.** `vsend_must_idr` assumed 60 Hz: a floor of 8 unresolved frames and a 16.7 ms frame interval. The feedback arrives at a
+  fixed pace, so at 120 Hz twice as many frames are normally in flight and the floor was hit constantly. The limit now scales with the refresh rate
+  (`vsend_config.frame_interval_us`).
+- **Bad start with the text page.** The first keyframe of this page (about 1 MB) sometimes leaves the target at 2 to 3 Mbit/s with a queue of 0.5 to 1.3 s
+  (3 of 5 runs, with refinement on or off). In one run the refinement frames at a 5.7 Mbit/s target were then lost all the time (272 frames lost
+  in 44 s) and kept the rate down. Refinement now waits while the send queue is over 20 ms or the target is under 12 Mbit/s. Three runs afterwards:
+  the rate recovers to 40 Mbit/s within 30 s every time (13 to 16 frames lost at startup, none later). Why the start rate falls to 2 Mbit/s over a
+  cable is not understood.
+- The phone's decode time still is not reported.

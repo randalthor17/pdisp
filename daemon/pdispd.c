@@ -260,7 +260,8 @@ static int make_sender(void)
 {
 	if (D.vs) vsend_destroy(D.vs);
 	struct vsend_config vc = { .session_id = D.session_id, .epoch = D.epoch, .shard_size = 1200, .bitrate_kbps = C.bitrate,
-				   .min_bitrate_kbps = 2000, .max_bitrate_kbps = C.max_bitrate };
+				   .min_bitrate_kbps = 2000, .max_bitrate_kbps = C.max_bitrate,
+				   .frame_interval_us = D.refresh_mhz ? 1000000000ull / D.refresh_mhz : 0 };
 	struct vsend_callbacks vcb = { .invalidate = cb_invalidate, .need_idr = cb_need_idr };
 	D.vs = vsend_create(&vc, &vcb);
 	return D.vs ? 0 : -ENOMEM;
@@ -908,6 +909,8 @@ static enum end_reason serve(struct conn *c, double run_secs)
 			D.refresh_due_us = 0;
 			encode_and_submit(cur.data, cur.stride, now, PIC_REPAIR); /* same screen again, predicted from a frame the phone has */
 		}
+		if (D.refine_due_us && now >= D.refine_due_us && (vsend_queue_delay_us(D.vs) > 20000 || vsend_bitrate_kbps(D.vs) < 12000))
+			D.refine_due_us = now + C.refine_gap_ms * 1000ull; /* the link is busy or slow: refinement frames would only queue up, get lost and keep the rate down. Wait. */
 		if (D.refine_due_us && now >= D.refine_due_us && D.streaming && vdisplay_current_frame(D.vd, &cur) &&
 		    (unsigned)cur.width == D.width && (unsigned)cur.height == D.height) {
 			D.refine_due_us = 0;

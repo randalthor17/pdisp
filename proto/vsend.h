@@ -26,6 +26,7 @@ struct vsend_config {
 	uint64_t repair_gap_us;        /* minimum time between repairs for the same block, default 8 ms */
 	uint64_t pace_burst_us;        /* how far behind schedule the pacer may catch up in one go, default 2 ms */
 	uint32_t max_resend_bytes;     /* largest frame resent in answer to a whole-frame NACK, default 64 KiB */
+	uint64_t frame_interval_us;    /* 1e6 / refresh rate, default 16667: scales how many frames in flight count as a problem */
 };
 
 struct vsend_callbacks {
