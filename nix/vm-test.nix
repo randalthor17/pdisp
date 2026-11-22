@@ -21,7 +21,7 @@ pkgs.testers.runNixOSTest {
 
     with subtest("the udev rule is installed, the tools are on the path"):
         machine.succeed("grep -rq 'ATTR{idVendor}==\"04e8\"' /etc/udev/rules.d/")  # Samsung, from 70-pdisp.rules
-        machine.succeed("which pdispd pdisp-keys pdisp-pair-prompt notify-send")
+        machine.succeed("which pdispd pdisp pdisp-pair-prompt notify-send")
 
     with subtest("the firewall lets the device in on the port"):
         out = machine.succeed("nft list ruleset")
@@ -36,6 +36,6 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("ss -ltn | grep -q 47110")
         user("is-active pdispd")
         gui = user("cat pdisp-gui")
-        assert "pdisp-gui --background" in gui, gui
+        assert "pdisp gui --background" in gui, gui
   '';
 }

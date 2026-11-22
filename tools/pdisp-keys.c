@@ -1,8 +1,8 @@
-/* pdisp-keys: look at and edit the devices this PC authorises (the daemon's authorized_keys) and its own identity.
+/* pdisp keys: look at and edit the devices this PC authorises (the daemon's authorized_keys) and its own identity.
  *
- *   pdisp-keys [-K DIR] list                    devices that may connect, with their key fingerprints
- *   pdisp-keys [-K DIR] remove FINGERPRINT      revoke: remove the device whose fingerprint starts with this (4+ characters)
- *   pdisp-keys [-K DIR] identity                this PC's own key fingerprint (what a phone pins after pairing)
+ *   pdisp keys [-K DIR] list                    devices that may connect, with their key fingerprints
+ *   pdisp keys [-K DIR] remove FINGERPRINT      revoke: remove the device whose fingerprint starts with this (4+ characters)
+ *   pdisp keys [-K DIR] identity                this PC's own key fingerprint (what a phone pins after pairing)
  *
  * DIR defaults to ~/.config/pdisp, like pdispd. A running daemon reads the file for every new connection, so a removed device is
  * refused the next time it connects (a session that is already running is not interrupted).
@@ -22,20 +22,20 @@ static void print_entry(const struct keystore_entry *e, void *user)
 	(*(int *)user)++;
 }
 
-int main(int argc, char **argv)
+int keys_main(int argc, char **argv)
 {
 	const char *dir = NULL;
 	int opt;
 	while ((opt = getopt(argc, argv, "K:h")) != -1) {
 		if (opt == 'K') dir = optarg;
-		else { fprintf(stderr, "usage: %s [-K DIR] list | remove FINGERPRINT | identity\n", argv[0]); return 2; }
+		else { fprintf(stderr, "usage: pdisp keys [-K DIR] list | remove FINGERPRINT | identity\n"); return 2; }
 	}
 	char def[900];
 	if (!dir) {
 		if (identity_default_dir(def, sizeof def) != 0) { fprintf(stderr, "no config directory: use -K DIR\n"); return 1; }
 		dir = def;
 	}
-	if (optind >= argc) { fprintf(stderr, "usage: %s [-K DIR] list | remove FINGERPRINT | identity\n", argv[0]); return 2; }
+	if (optind >= argc) { fprintf(stderr, "usage: pdisp keys [-K DIR] list | remove FINGERPRINT | identity\n"); return 2; }
 	char path[1100];
 	snprintf(path, sizeof path, "%s/authorized_keys", dir);
 	const char *cmd = argv[optind];
@@ -62,6 +62,6 @@ int main(int argc, char **argv)
 		printf("%s%s\n", fp, created ? "  (just created)" : "");
 		return 0;
 	}
-	fprintf(stderr, "usage: %s [-K DIR] list | remove FINGERPRINT | identity\n", argv[0]);
+	fprintf(stderr, "usage: pdisp keys [-K DIR] list | remove FINGERPRINT | identity\n");
 	return 2;
 }

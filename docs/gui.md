@@ -1,4 +1,4 @@
-# pdisp-gui, the desktop application
+# pdisp gui, the desktop application
 
 A Qt 6 / QML application for the PC: a tray icon and a window. It talks to the daemon over the control socket (`docs/control.md`), so it can run or be closed
 at any time without touching a stream.
@@ -13,7 +13,7 @@ at any time without touching a stream.
 Without a daemon connection the window says so and offers `systemctl --user start pdispd`.
 
 ## Running it
-- `pdisp-gui` opens the window. `pdisp-gui --background` starts it in the tray only (the NixOS module does this as the user service `pdisp-gui`, after `pdispd`).
+- `pdisp gui` opens the window. `pdisp gui --background` starts it in the tray only (the NixOS module does this as the user service `pdisp-gui`, after `pdispd`).
 - Closing the window hides it when a tray is available (a StatusNotifier host: DankMaterialShell, KDE, waybar's tray, ...), and quits when there is none.
 - With a GUI connected, new devices are approved there. With none, the daemon falls back to the prompt command (`pdisp-pair-prompt`, a notification) or the terminal.
 - `--socket PATH` for a daemon with another control socket. For tests: `--screenshot FILE [--page N] [--delay MS]` writes the window to a PNG and quits (works with

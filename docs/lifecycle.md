@@ -168,12 +168,12 @@ under it and watches the stream (`daemon/ratestep.c`, every 2 s while frames are
   lower rate the device offers, never below 30 Hz, and starts counting again;
 - 10 ticks (20 s) of healthy streaming at a lowered rate are remembered per device and per transport (its key plus USB or network: the device decides what its decoder can do, the link what it can carry) in `learned_rates` beside the settings, with the cap at the time;
   the next connection starts at that rate. A remembered rate is ignored if the cap is raised above what it was learned under, and every remembered rate is
-  forgotten when the cap is set (GUI, `pdisp-ctl set refresh_cap_hz`): the user asked a new question.
+  forgotten when the cap is set (GUI, `pdisp set refresh_cap_hz`): the user asked a new question.
 - It never goes back up by itself within a session; to try a higher rate again, set the cap again.
 
 Each step is one output reconfiguration (a hot-plug of the virtual monitor, see the memory note above), so it happens at most a few times per device, not per session.
 The first case: the Tab S9 FE at 90 Hz over USB (docs/quality.md): keyframes forced every few seconds, queue 100 to 650 ms; at 60 Hz it is clean.
 Tested by `tests/m12_rate_step_check.sh` (a viewer that loses 20% of the datagrams above 60 Hz: steps down, remembers, starts there, forgets).
 `tests/niri-session.sh` also prints the shared VRAM of your desktop niri before and after, to show what the tests cost it. With only one evdi device it pauses
-your `pdispd` and `pdisp-gui` services while it runs (the tests need the device), which itself removes and recreates an output if a device was streaming:
+your `pdispd` and `pdisp-gui` (the tray, `pdisp gui`) services while it runs (the tests need the device), which itself removes and recreates an output if a device was streaming:
 with `services.pdisp.evdiDevices = 2` the tests take the second device and nothing is paused.

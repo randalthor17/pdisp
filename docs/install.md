@@ -37,7 +37,7 @@ One rebuild does all of this:
 | Wi-Fi | with `openFirewall`, TCP and UDP 47110 are opened (all interfaces; every device must be paired and the traffic is encrypted) |
 | the daemon | a systemd **user** service `pdispd`, started with the graphical session, with `-u -W -P ask -A pdisp-pair-prompt` |
 | pairing prompt | `libnotify` (`notify-send`) is installed; your notification daemon must show actions (mako, dunst, GNOME, KDE and DankMaterialShell do) |
-| tray application | `services.pdisp.gui.enable` (default on) installs `pdisp-gui` and starts it with the session (`pdisp-gui --background`): status, paired devices, settings and a dialog to approve new devices (`docs/gui.md`) |
+| tray application | `services.pdisp.gui.enable` (default on) installs the tray application (`pdisp gui`) and starts it with the session (`pdisp gui --background`): status, paired devices, settings and a dialog to approve new devices (`docs/gui.md`) |
 
 **niri: touch and pen only on the pdisp monitor.** With home-manager:
 
@@ -69,7 +69,7 @@ accessory whose app is not running (it never answers) is dropped as soon as a ne
 ## Other distributions (manual)
 
 1. **Build**: `meson setup build && meson compile -C build && meson install -C build` (needs meson, ninja, pkg-config, wayland-scanner, libevdi with its
-   header, libdrm, libva, libusb-1.0, wayland, zlib, ffmpeg libraries and SDL2). This installs `pdispd`, `pdisp-keys`, `pdisp-pair-prompt`, the udev rule, the
+   header, libdrm, libva, libusb-1.0, wayland, zlib, ffmpeg libraries and SDL2). This installs `pdispd`, `pdisp` (the command line), `pdisp-pair-prompt`, the udev rule, the
    niri snippet (`share/pdisp/pdisp.kdl`) and a systemd user unit (`lib/systemd/user/pdispd.service`).
 2. **evdi**: install the evdi kernel module for your kernel (DKMS) and load it with a device already created:
    `echo evdi > /etc/modules-load.d/evdi.conf` and `echo "options evdi initial_device_count=1" > /etc/modprobe.d/evdi.conf`.
@@ -85,7 +85,7 @@ Install the APK (`android/build.sh` builds `android/app/build/outputs/apk/debug/
 Developer options and USB debugging are **not** needed.
 
 - **Wi-Fi**: open the app, tap Add a PC and type its address. The first time, a notification on the PC asks whether to allow the device; the code it shows
-  must match the code on the device's screen. Later, tap the PC in the list. The screens are described in `docs/app.md`. "Allow always" remembers the device (`pdisp-keys list` and `pdisp-keys remove` manage them).
+  must match the code on the device's screen. Later, tap the PC in the list. The screens are described in `docs/app.md`. "Allow always" remembers the device (`pdisp keys list` and `pdisp keys remove` manage them).
 - **USB**: plug the cable in. The PC switches the device into accessory mode and Android offers to open pdisp: accept. The USB mode did not have to
   be File transfer on the two devices tried (charging only worked, with USB debugging on or off); a phone that hides itself until the user allows data was not
   available. See `docs/usb.md` for the modes measured and what to do if nothing happens.

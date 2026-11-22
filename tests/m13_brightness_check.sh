@@ -3,9 +3,9 @@
 #   1. with a phone connected, the brightness (VCP 0x10) reads as 100 of 100
 #   2. setting it to 35 reaches the phone as a BRIGHTNESS message, and reading it back gives 35
 #   3. a phone that connects later is told the level at once (the host set it earlier)
-# Uses pdisp-ddc, not ddcutil (which refuses the bus before it sends anything). Needs an evdi device, and read/write access to its /dev/i2c-N (the i2c group). Exits 77 (skipped) otherwise. It makes no output in your
+# Uses `pdisp brightness`, not ddcutil (which refuses the bus before it sends anything). Needs an evdi device, and read/write access to its /dev/i2c-N (the i2c group). Exits 77 (skipped) otherwise. It makes no output in your
 # compositor beyond the virtual one, and needs no niri.
-# usage: m13_brightness_check.sh <pdispd> <pdisp-view> <pdisp-ddc> [artifact-dir]
+# usage: m13_brightness_check.sh <pdispd> <pdisp-view> <pdisp> [artifact-dir]
 set -u
 daemon=$1; viewer=$2; ddc=$3
 art=${4:-$(mktemp -d)}; mkdir -p "$art"; rm -rf "${art:?}"/*
@@ -28,7 +28,7 @@ bus_of() { # the I2C bus of the evdi card the daemon uses
 	local d; d=$(ls -d /sys/class/drm/card"$card"/device/i2c-* 2>/dev/null | head -1)
 	[ -n "$d" ] && echo "${d##*i2c-}"
 }
-vcp() { "$ddc" "/dev/i2c-$1" get 2>&1; }
+vcp() { "$ddc" brightness -d "/dev/i2c-$1" 2>&1; }
 
 echo "-- 1. a connected phone: the brightness reads as 100"
 phone 30
@@ -45,7 +45,7 @@ fi
 echo "   ok: $out"
 
 echo "-- 2. setting it reaches the phone, and reads back"
-"$ddc" "/dev/i2c-$bus" set 35 >"$art/set.log" 2>&1 || fail "setting failed: $(cat "$art/set.log")"
+"$ddc" brightness -d "/dev/i2c-$bus" 35 >"$art/set.log" 2>&1 || fail "setting failed: $(cat "$art/set.log")"
 sleep 1
 grep -q "BRIGHTNESS: 35 %" "$art/viewer.log" || fail "the phone was not told"
 out=$(vcp "$bus"); echo "$out" | grep -q "brightness 35 of 100" || fail "reads back as: $out"

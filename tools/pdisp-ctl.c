@@ -1,12 +1,12 @@
-/* pdisp-ctl: talk to a running pdispd over its control socket (docs/control.md).
- *   pdisp-ctl [-s SOCKET] status               one line: the daemon's state as JSON
- *   pdisp-ctl [-s SOCKET] watch [N]            print events as they come (N lines, default: until interrupted)
- *   pdisp-ctl [-s SOCKET] devices              the paired devices
- *   pdisp-ctl [-s SOCKET] remove FINGERPRINT   revoke one (a prefix of at least 4 characters)
- *   pdisp-ctl [-s SOCKET] set KEY VALUE        change a setting (refresh_cap_hz, bitrate_kbps, max_bitrate_kbps, grace_secs, refine_frames)
- *   pdisp-ctl [-s SOCKET] disconnect           end the session and remove the monitor
- *   pdisp-ctl [-s SOCKET] pairing [SECS]       listen for pairing requests and print them (and the answers); SECS default 30
- *   pdisp-ctl [-s SOCKET] answer ID always|once|deny
+/* pdisp (the control commands): talk to a running pdispd over its control socket (docs/control.md).
+ *   pdisp [-s SOCKET] status               one line: the daemon's state as JSON
+ *   pdisp [-s SOCKET] watch [N]            print events as they come (N lines, default: until interrupted)
+ *   pdisp [-s SOCKET] devices              the paired devices
+ *   pdisp [-s SOCKET] remove FINGERPRINT   revoke one (a prefix of at least 4 characters)
+ *   pdisp [-s SOCKET] set KEY VALUE        change a setting (refresh_cap_hz, bitrate_kbps, max_bitrate_kbps, grace_secs, refine_frames)
+ *   pdisp [-s SOCKET] disconnect           end the session and remove the monitor
+ *   pdisp [-s SOCKET] pairing [SECS]       listen for pairing requests and print them (and the answers); SECS default 30
+ *   pdisp [-s SOCKET] answer ID always|once|deny
  * The exit status is 0 if the daemon said ok. */
 #include <errno.h>
 #include <poll.h>
@@ -57,12 +57,12 @@ static int next_line(char *out, size_t cap, int timeout_ms)
 static int is_reply(const char *l) { return strstr(l, "\"reply\"") != NULL; }
 static int is_ok(const char *l) { return strstr(l, "\"ok\":true") != NULL; }
 
-int main(int argc, char **argv)
+int ctl_main(int argc, char **argv)
 {
 	const char *sock = NULL;
 	int a = 1;
 	if (a + 1 < argc && !strcmp(argv[a], "-s")) { sock = argv[a + 1]; a += 2; }
-	if (a >= argc) { fprintf(stderr, "usage: pdisp-ctl [-s SOCKET] status|watch|devices|remove|set|disconnect|pairing|answer ... (see the top of tools/pdisp-ctl.c)\n"); return 2; }
+	if (a >= argc) { fprintf(stderr, "usage: pdisp [-s SOCKET] status|watch|devices|remove|set|disconnect|pairing|answer ... (see the top of tools/pdisp-ctl.c)\n"); return 2; }
 	char path[104]; /* a socket path is at most 107 characters */
 	if (!sock) {
 		const char *rt = getenv("XDG_RUNTIME_DIR");

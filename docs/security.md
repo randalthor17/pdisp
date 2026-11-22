@@ -14,7 +14,7 @@ have the keys), and traffic analysis (packet sizes and timing reveal that a stre
 - Each side has a long-term **X25519** key pair, created on first use: the PC's in `~/.config/pdisp/identity`, the phone's in the app's
   private storage. The file is 64 hex digits, mode 0600 in a 0700 directory; a key file other users can read is refused, not fixed.
 - The PC keeps `~/.config/pdisp/authorized_keys`: one line per device, the public key in hex, then its name. Hand-editable;
-  comments and malformed lines are ignored. The phone keeps `known_pcs` in the same format. `pdisp-keys list | remove | identity`
+  comments and malformed lines are ignored. The phone keeps `known_pcs` in the same format. `pdisp keys list | remove | identity`
   manages the PC's side. The daemon reads the file for each new connection, so a revoked device is refused immediately.
 - A **fingerprint** (80 bits of the key's BLAKE2b hash, `xxxx-xxxx-xxxx-xxxx-xxxx`) is how keys are shown to people and logs.
 

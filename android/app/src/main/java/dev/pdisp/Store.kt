@@ -71,7 +71,7 @@ class Store(private val ctx: Context) {
                 .putBoolean("showStats", v.showStats).putInt("maxRefreshHz", v.maxRefreshHz).apply()
         }
 
-    /** Forgets this device's key and every PC it trusted: the next connection pairs again (the PC may also have to forget this device: pdisp-keys). */
+    /** Forgets this device's key and every PC it trusted: the next connection pairs again (the PC may also have to forget this device: pdisp keys). */
     fun forgetPairing() {
         for (name in listOf("identity", "known_pcs")) File(ctx.filesDir, name).delete()
     }

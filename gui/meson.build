@@ -8,7 +8,7 @@ pdisp_gui = executable('pdisp-gui', 'main.cpp', 'backend.cpp', gui_moc, gui_res,
   dependencies: qt6_dep,
   override_options: ['werror=false', 'warning_level=1', 'cpp_std=c++17'],
   cpp_args: get_option('symbols_font') != '' ? ['-DPDISP_SYMBOLS_FONT="' + get_option('symbols_font') + '"'] : [],
-  install: true, install_tag: 'gui')
+  install: true, install_dir: get_option('libexecdir') / 'pdisp', install_tag: 'gui') # started as `pdisp gui`
 
 install_data('pdisp-gui.desktop', install_dir: get_option('datadir') / 'applications', install_tag: 'gui')
 install_data('pdisp.svg', rename: 'pdisp-gui.svg', install_dir: get_option('datadir') / 'icons/hicolor/scalable/apps', install_tag: 'gui')

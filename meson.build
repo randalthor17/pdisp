@@ -198,11 +198,11 @@ test('secure channels', test_secure)
 test_handshake = executable('test_handshake', 'tests/test_handshake.c', dependencies: [proto_dep, dependency('threads')])
 test('handshake driver', test_handshake)
 
-pdisp_keys = executable('pdisp-keys', 'tools/pdisp-keys.c', dependencies: proto_dep, install: true)
-pdisp_ctl = executable('pdisp-ctl', 'tools/pdisp-ctl.c', install: true)
+# the command line: control socket, keys, brightness and the tray application as subcommands
+pdisp_ctl = executable('pdisp', 'tools/pdisp.c', 'tools/pdisp-ctl.c', 'tools/pdisp-keys.c', 'tools/pdisp-brightness.c', dependencies: proto_dep, install: true)
 m6_pairing = find_program('tests/m6_pairing_check.sh')
 test('m6 pairing and authorisation', m6_pairing,
-  args: [pdispd, pdisp_view, meson.current_build_dir() / 'm6-pairing-artifacts', pdisp_keys],
+  args: [pdispd, pdisp_view, meson.current_build_dir() / 'm6-pairing-artifacts', pdisp_ctl],
   protocol: 'exitcode',
   is_parallel: false,
   timeout: 300,
@@ -321,10 +321,9 @@ if qt6_dep.found() and have_cpp
   subdir('gui')
 endif
 
-pdisp_ddc = executable('pdisp-ddc', 'tools/pdisp-ddc.c')
 m13_brightness = find_program('tests/m13_brightness_check.sh')
 test('m13 brightness over DDC/CI', m13_brightness,
-  args: [pdispd, pdisp_view, pdisp_ddc, meson.current_build_dir() / 'm13-artifacts'],
+  args: [pdispd, pdisp_view, pdisp_ctl, meson.current_build_dir() / 'm13-artifacts'],
   protocol: 'exitcode',
   is_parallel: false,
   timeout: 90,

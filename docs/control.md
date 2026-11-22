@@ -1,7 +1,7 @@
 # The control socket
 
 `pdispd` listens on a Unix socket so a GUI, a tray applet or a script can see what it is doing and ask it to do things. The pdisp GUI uses it, and
-`pdisp-ctl` is a small command-line client for it.
+`pdisp` (the command `pdisp status`, `pdisp set` ...) is a small command-line client for it.
 
 - **Where**: `$XDG_RUNTIME_DIR/pdisp/control.sock` (mode 0600 in a 0700 directory). `-C PATH` chooses another path, `-C none` turns it off. Only the
   same user may connect (`SO_PEERCRED`). If another daemon of that user is already listening on the path, a second daemon leaves it alone and runs without
@@ -32,8 +32,8 @@ Every command may carry a `"req"` string, which comes back in the reply. A reply
 
 The settings file `pdispd.conf` (`key=value` lines in the config directory) is read at start; an option given on the command line (`-R`, `-b`, `-B`, `-g`, `-F`) wins.
 
-## pdisp-ctl
-`pdisp-ctl status | watch [N] | devices | remove FINGERPRINT | set KEY VALUE | disconnect | pairing [SECS] | answer ID always|once|deny` (`-s SOCKET` to choose the
+## pdisp (the control commands)
+`pdisp status | watch [N] | devices | remove FINGERPRINT | set KEY VALUE | disconnect | pairing [SECS] | answer ID always|once|deny` (`-s SOCKET` to choose the
 socket). Exit status 0 if the daemon said ok. `tests/m11_control_check.sh` drives all of it against a real daemon with a viewer as the device.
 
 ## Not in it yet

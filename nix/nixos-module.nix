@@ -66,7 +66,7 @@ in
     boot.extraModprobeConfig = "options evdi initial_device_count=${toString cfg.evdiDevices}";
 
     services.udev.packages = [ cfg.package ]; # lib/udev/rules.d/70-pdisp.rules: the user may open the Android devices (uaccess)
-    environment.systemPackages = [ cfg.package pkgs.libnotify ]; # pdisp-keys, and notify-send for the pairing prompt
+    environment.systemPackages = [ cfg.package pkgs.libnotify ]; # pdisp, and notify-send for the pairing prompt
 
     networking.firewall = lib.mkIf cfg.openFirewall {
       allowedTCPPorts = [ cfg.port ];
@@ -79,7 +79,7 @@ in
       partOf = [ "graphical-session.target" ];
       after = [ "graphical-session.target" "pdispd.service" ];
       serviceConfig = {
-        ExecStart = "${cfg.package}/bin/pdisp-gui --background";
+        ExecStart = "${cfg.package}/bin/pdisp gui --background";
         Restart = "on-failure";
         RestartSec = 3;
       };

@@ -32,7 +32,7 @@ stdenv.mkDerivation {
   # only the GUI is a Qt program: do not wrap the daemon and the tools
   dontWrapQtApps = true;
   postFixup = lib.optionalString withGui ''
-    wrapQtApp $out/bin/pdisp-gui
+    wrapQtApp $out/libexec/pdisp/pdisp-gui
   '';
 
   # the integration tests need niri, a GPU and a device; `meson test` in the development shell runs them

@@ -18,8 +18,10 @@ desktop shell that supports external monitors (DMS lists the output as `ddc:i2c-
 
 The bus is the one of the virtual output's card (`/sys/class/drm/cardN/device/i2c-*`; DMS lists it as `ddc:i2c-N`).
 
-    pdisp-ddc /dev/i2c-N get         # tools/pdisp-ddc.c: a bare DDC/CI client
-    pdisp-ddc /dev/i2c-N set 40
+    pdisp brightness           # read (tools/pdisp-brightness.c: a bare DDC/CI client; it finds the bus of the connected phone by itself)
+    pdisp brightness 40         # set
+    pdisp brightness +10        # or change it, for a keybinding (niri: spawn "pdisp" "brightness" "+10")
+    pdisp brightness -d /dev/i2c-N 40   # a particular bus
 
 `ddcutil` itself refuses this bus ("cannot be used for DDC/CI communication") before it sends anything: it probes a monitor first, which evdi
 cannot fully answer (the kernel passes only address 0x37 on). A client that talks to the bus directly, as a shell slider does, works.
@@ -31,5 +33,5 @@ A brightness of 0 is applied as the lowest level the panel allows (an exact 0 sw
 
 ## Not done
 
-- `pdisp-ctl brightness` (the same without DDC/CI), and a slider in the tray GUI.
+- A control-socket version of `pdisp brightness` (no I2C group needed), and a slider in the tray GUI.
 - Remembering the level across daemon restarts.

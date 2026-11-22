@@ -7,7 +7,7 @@
 #   - plain clients and a secure client against an insecure daemon fail; the daemon survives strangers
 #   - a world-readable identity file is refused
 # Needs niri, a free evdi device and a VAAPI HEVC encoder (the streaming cases). Exits 77 (meson: skipped) otherwise.
-# usage: m6_pairing_check.sh <pdispd> <pdisp-view> [artifact-dir] [pdisp-keys]
+# usage: m6_pairing_check.sh <pdispd> <pdisp-view> [artifact-dir] [pdisp]
 set -u
 daemon=$1; viewer=$2
 art=${3:-$(mktemp -d)}; keys=${4:-}; mkdir -p "$art"; rm -rf "$art"/*
@@ -151,13 +151,13 @@ echo "ok 7: insecure daemon detected by a secure client"
 
 # 9. revoking: list and remove with the tool; the removed device is refused at once, the other one still works
 if [ -n "$keys" ]; then
-	"$keys" -K "$art/pc" list >"$art/list.txt" 2>&1 || fail "pdisp-keys list failed"
+	"$keys" keys -K "$art/pc" list >"$art/list.txt" 2>&1 || fail "pdisp keys list failed"
 	[ "$(grep -c . "$art/list.txt")" = 3 ] || fail "the list should show three devices: $(cat "$art/list.txt")"
-	"$keys" -K "$art/pc" identity | grep -q '^[0-9a-f]\{4\}-' || fail "pdisp-keys identity printed no fingerprint"
-	"$keys" -K "$art/pc" remove ab >/dev/null 2>&1 && fail "a 2-character prefix removed something"
-	victim=$("$keys" -K "$art/phoneA" identity | cut -d' ' -f1)
+	"$keys" keys -K "$art/pc" identity | grep -q '^[0-9a-f]\{4\}-' || fail "pdisp keys identity printed no fingerprint"
+	"$keys" keys -K "$art/pc" remove ab >/dev/null 2>&1 && fail "a 2-character prefix removed something"
+	victim=$("$keys" keys -K "$art/phoneA" identity | cut -d' ' -f1)
 	grep -q "$victim" "$art/list.txt" || fail "phone A is not in the list"
-	"$keys" -K "$art/pc" remove "$victim" | grep -q "removed 1" || fail "pdisp-keys remove did not remove the device"
+	"$keys" keys -K "$art/pc" remove "$victim" | grep -q "removed 1" || fail "pdisp keys remove did not remove the device"
 	[ "$(nkeys)" = 2 ] || fail "after one removal $(nkeys) keys remain"
 	start_daemon deny -o
 	run_viewer "$art/phoneA"

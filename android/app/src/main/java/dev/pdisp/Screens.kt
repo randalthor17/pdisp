@@ -296,7 +296,7 @@ fun SettingsScreen(c: SessionController, settings: Settings, onChange: (Settings
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         Text("Pairing", style = MaterialTheme.typography.titleMedium)
-        Text("This device proves who it is to a PC with a key. Forgetting it makes every PC treat this device as new: you approve it again, and the PC's old entry can be removed with pdisp-keys.",
+        Text("This device proves who it is to a PC with a key. Forgetting it makes every PC treat this device as new: you approve it again, and the PC's old entry can be removed with pdisp keys.",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 4.dp))
         OutlinedButton(onClick = { confirm = true }, modifier = Modifier.padding(top = 8.dp)) { Text("Forget this device's pairing") }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
