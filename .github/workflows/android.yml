@@ -18,18 +18,18 @@ jobs:
     permissions:
       contents: write # only used to attach the APK to a release on a v* tag
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
 
-      - uses: android-actions/setup-android@v3
+      - uses: android-actions/setup-android@v4
         with:
           packages: 'platforms;android-36 build-tools;36.0.0 ndk;27.2.12479018 cmake;3.22.1'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
         with:
           gradle-version: '8.14.3'
 
@@ -60,7 +60,7 @@ jobs:
           cp android/app/build/outputs/apk/release/app-release.apk "dist/pdisp-${GITHUB_REF_NAME//\//-}-${GITHUB_SHA::7}.apk"
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs dist/*.apk | head -4
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: pdisp-apk
           path: dist/*.apk
