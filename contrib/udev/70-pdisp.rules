@@ -38,3 +38,7 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="2ae5", TAG+="uaccess"
 SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", TAG+="uaccess"
 # Qualcomm
 SUBSYSTEM=="usb", ATTR{idVendor}=="05c6", TAG+="uaccess"
+
+# the virtual touchscreen and stylus pdispd creates for the device ("pdisp touchscreen", "pdisp stylus", and the ones the tests make): readable by the user at the
+# active seat (evtest, the test suite), as a normal touchscreen is by the compositor. Nothing is writable: that stays with /dev/uinput.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="pdisp *", TAG+="uaccess"
