@@ -88,6 +88,7 @@ struct viewer {
 
 	/* glass-to-glass: the stamp the application drew into the frame, read back from the decoded picture */
 	bool read_stamps;
+	uint64_t glass_skip_us; /* -g: ignore stamps this long after the first picture (the opening keyframe of a big page is slow) */
 	uint64_t last_stamp;
 	uint64_t *glass_us;
 	size_t n_glass, cap_glass;
@@ -243,7 +244,7 @@ static void decode_job(const struct job *jb)
 				V.last_stamp = stamp;
 				uint64_t sn2 = server_now() & ((1ull << STAMP_VALUE_BITS) - 1);
 				uint64_t d = (sn2 - stamp) & ((1ull << STAMP_VALUE_BITS) - 1); /* the stamp holds the low 48 bits of the clock */
-				if (d < 5000000 && !again) { /* anything older than 5 s is a misread, not a measurement */
+				if (d < 5000000 && !again && now >= V.first_frame_us + V.glass_skip_us) { /* anything older than 5 s is a misread, not a measurement */
 					if (V.n_glass == V.cap_glass) {
 						V.cap_glass = V.cap_glass ? V.cap_glass * 2 : 1024;
 						V.glass_us = realloc(V.glass_us, V.cap_glass * sizeof *V.glass_us);
@@ -463,6 +464,7 @@ static void usage(const char *argv0)
 		"  -c            require the decoded picture to match the test pattern\n"
 		"  -w            show the stream in a window (SDL2)\n"
 		"  -G            read the timestamp the pattern client draws (-T there) and report glass-to-glass latency\n"
+		"  -g SECS      with -G: ignore the first SECS seconds of stamps\n"
 		"  -L pct        drop this percentage of incoming datagrams at random\n"
 		"  -X secs:WxH   after this long, report a display change to this size (a rotation), exercising RECONFIGURE\n"
 		"  -j SCRIPT     play these touches to the PC (after a second): tap:X,Y swipe:X1,Y1:X2,Y2 pinch:CX,CY:R1:R2 hold:MS, X and Y\n"
@@ -494,7 +496,7 @@ int main(int argc, char **argv)
 	bool insecure = false;
 	double change_after = 0;
 	unsigned change_w = 0, change_h = 0;
-	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGwL:K:X:i:j:J:q:C:IQvh")) != -1) {
+	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGg:wL:K:X:i:j:J:q:C:IQvh")) != -1) {
 		switch (opt) {
 		case 'W': nw = (unsigned)atoi(optarg); break;
 		case 'H': nh = (unsigned)atoi(optarg); break;
@@ -505,6 +507,7 @@ int main(int argc, char **argv)
 		case 'c': check = true; break;
 		case 'Q': V.textq = true; break;
 		case 'G': V.read_stamps = true; break;
+		case 'g': V.glass_skip_us = (uint64_t)(atof(optarg) * 1e6); break;
 		case 'w': V.window = true; break;
 		case 'L': drop_pct = atof(optarg); break;
 		case 'K': V.skew_us = atoll(optarg); break;

@@ -2,7 +2,7 @@
 # M10: what static refinement costs a change that arrives right after it. The text page stays static and only a pixel timestamp changes
 # once a second (pdisp-pattern -X -T -B 1), so each change lands 0.15 s to 1.3 s after the previous one, inside or after a refinement burst.
 # pdisp-view -G reports glass-to-glass latency of the first picture carrying each stamp (refinement repeats of a stamp are not counted).
-# Run it with DAEMON_ARGS="-F 0" for the baseline. Prints the GLASS line; fails when p90 exceeds GLASS_MAX_MS (default 50). p99 is not used: the first two or three stamps of a run (the opening keyframe of this page is about 1 MB) take 400 to 800 ms with or without refinement, and a 20-second run has too few stamps to leave them out of p99.
+# Run it with DAEMON_ARGS="-F 0" for the baseline. The first 3 s of stamps are ignored (-g 3): the opening keyframe of this page (about 1 MB) takes 400 to 800 ms with or without refinement. Fails when p99 exceeds GLASS_MAX_MS (default 150; six runs gave p99 12 to 86 ms, worst stamp 111 ms).
 # usage: m10_burst_latency.sh <pdispd> <pdisp-view> <pdisp-pattern> [artifact-dir]
 set -u
 daemon=$1; viewer=$2; pattern=$3
@@ -21,7 +21,7 @@ fail() { echo "FAIL: $*"; grep -v '^\[libevdi\]\|^libva' "$dlog" | tail -8; tail
 dpid=$!
 sleep 0.5
 if ! kill -0 "$dpid" 2>/dev/null; then wait "$dpid"; rc=$?; [ "$rc" = 3 ] && skip "no free evdi device"; fail "daemon exited early (rc=$rc)"; fi
-"$viewer" 127.0.0.1 "$PORT" -i "$art/phone-id" -W 2304 -H 1440 -r 60 -S "$SECS" -G -o "$art/view.png" >"$vlog" 2>&1 &
+"$viewer" 127.0.0.1 "$PORT" -i "$art/phone-id" -W 2304 -H 1440 -r 60 -S "$SECS" -G -g 3 -o "$art/view.png" >"$vlog" 2>&1 &
 vpid=$!
 name=; i=0
 while [ $i -lt 60 ]; do
@@ -38,7 +38,7 @@ kill "$ppid" 2>/dev/null; wait "$ppid" 2>/dev/null; ppid=
 wait "$dpid" 2>/dev/null; dpid=
 grep '^GLASS' "$vlog"
 grep '^DAEMON' "$dlog" | cut -c1-140
-p90=$(grep '^GLASS' "$vlog" | sed -n 's/.*p90=\([0-9.]*\).*/\1/p')
-[ -n "$p90" ] || fail "no glass samples"
-awk -v g="$p90" -v m="${GLASS_MAX_MS:-50}" 'BEGIN { exit !(g < m) }' || fail "glass-to-glass p90 ${p90} ms is over ${GLASS_MAX_MS:-50} ms"
+p99=$(grep '^GLASS' "$vlog" | sed -n 's/.*p99=\([0-9.]*\).*/\1/p')
+[ -n "$p99" ] || fail "no glass samples"
+awk -v g="$p99" -v m="${GLASS_MAX_MS:-150}" 'BEGIN { exit !(g < m) }' || fail "glass-to-glass p99 ${p99} ms is over ${GLASS_MAX_MS:-150} ms"
 echo PASS

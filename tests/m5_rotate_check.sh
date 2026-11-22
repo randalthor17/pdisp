@@ -40,7 +40,8 @@ adb shell am force-stop dev.pdisp; adb shell am start -n dev.pdisp/.MainActivity
 adb shell settings put system accelerometer_rotation 0; adb shell settings put system user_rotation 1; sleep 3 # landscape (only works with the app in front)
 adb shell input tap $(view_center EditText); sleep 1
 adb shell input keyevent KEYCODE_MOVE_END $(printf 'KEYCODE_DEL %.0s' $(seq 1 40)); adb shell input text "$hostip"; sleep 1; adb shell input keyevent KEYCODE_ENTER
-i=0; while [ $i -lt 40 ] && ! grep -q "streaming to" "$dlog"; do sleep 0.5; i=$((i + 1)); done
+# a cable-attached device first tries USB for 10 s, and a loaded machine slows the rest: allow a minute
+i=0; while [ $i -lt 120 ] && ! grep -q "streaming to" "$dlog"; do sleep 0.5; i=$((i + 1)); done
 grep -q "streaming to" "$dlog" || fail "the device never connected"
 first=$(sed -n 's/.*virtual output \([0-9]*x[0-9]*\)@.*/\1/p' "$dlog" | head -1)
 w=${first%x*}; h=${first#*x}

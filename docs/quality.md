@@ -54,7 +54,8 @@ change lands inside a refinement burst (40 frames x 33 ms = 1.3 s). `pdisp-view 
 
 Refinement costs a change nothing measurable in steady state: a new capture is encoded at once and refinement stops. Findings:
 - The first two or three stamps of every run take 400 to 800 ms with or without refinement. That is the opening keyframe of this page (about
-  1 MB). It is why the test checks p90 (default limit 50 ms), not p99.
+  1 MB). The test ignores the first 3 s of stamps (`pdisp-view -g 3`) and checks p99 against 150 ms: six runs gave p50 7 to 9 ms, p90 8 to 10 ms,
+  p99 12 to 86 ms, worst stamp 111 ms.
 - With the 200% budget, 1 run in 4 had a loss episode in the middle (1900 repair packets, 27 NACKs) that delayed three changes by 140 to 520 ms; the
   `-F 0` runs and all six runs at 100% had none. The final quality is the same at 100% (30.35 dB against 30.37 dB), so 100% is the default. If a
   real Wi-Fi link shows the same, the budget or the frame size needs a cap tied to the measured link rate.
