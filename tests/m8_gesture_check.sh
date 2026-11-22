@@ -18,13 +18,13 @@ niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
 [ -w /dev/uinput ] || skip "no write access to /dev/uinput"
 
 PORT=${PDISP_TEST_PORT:-47118}; SERIAL=PDISPGEST; ID="PNP(PDI) pdisp $SERIAL"
-real_dir=$HOME/.config/niri
+real_file=${PDISP_TEST_NIRI_REAL_CONFIG:-$HOME/.config/niri/config.kdl}; real_dir=$(dirname "$real_file") # what to put back afterwards (the throwaway niri of tests/niri-session.sh has its own)
 orig_out=$(niri msg --json focused-output | jq -r '.name'); orig_win=$(niri msg --json focused-window | jq -r '.id // empty')
 dpid=; vpid=; lpid=
 restore() {
 	[ -n "$lpid" ] && kill "$lpid" 2>/dev/null
 	for p in $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; wait 2>/dev/null; sleep 1
-	niri msg action load-config-file --path "$real_dir/config.kdl" >/dev/null 2>&1   # the explicit path: without one niri reloads the last loaded file
+	niri msg action load-config-file --path "$real_file" >/dev/null 2>&1   # the explicit path: without one niri reloads the last loaded file
 	[ -n "$orig_out" ] && niri msg action focus-monitor "$orig_out" >/dev/null 2>&1
 	[ -n "$orig_win" ] && niri msg action focus-window --id "$orig_win" >/dev/null 2>&1
 }
@@ -32,7 +32,7 @@ trap restore EXIT
 fail() { echo "FAIL: $*"; grep -v '^\[libevdi\|^libva' "$art/daemon.log" | tail -5; tail -4 "$art/viewer.log"; exit 1; }
 
 cfg="$art/niri-touch.kdl"
-sed "s|^\(include[^\"]*\)\"\([^/][^\"]*\)\"|\1\"$real_dir/\2\"|" "$real_dir/config.kdl" > "$cfg.base"
+sed "s|^\(include[^\"]*\)\"\([^/][^\"]*\)\"|\1\"$real_dir/\2\"|" "$real_file" > "$cfg.base"
 awk -v v="$ID" '{ print } /^input \{/ && !done { printf "    touch {\n        map-to-output \"%s\"\n    }\n", v; done=1 }' "$cfg.base" > "$cfg"
 niri validate --config "$cfg" >/dev/null 2>&1 || skip "cannot build a valid test config from yours"
 magick -size 1600x1200 gradient:'#203060-#c0a040' -fill '#e03030' -draw 'rectangle 0,0 400,300' -fill '#30c050' -draw 'rectangle 1200,0 1600,300' \

@@ -26,8 +26,9 @@ SERIAL=PDISPTOUCH
 ID="PNP(PDI) pdisp $SERIAL"
 W=2304; H=1440
 dpid=; vpid=; ppid=
-real_cfg=$(readlink -f ~/.config/niri/config.kdl 2>/dev/null); real_dir=$HOME/.config/niri
-restore_niri() { niri msg action load-config-file --path "$HOME/.config/niri/config.kdl" >/dev/null 2>&1; } # the explicit path: see the header
+real_file=${PDISP_TEST_NIRI_REAL_CONFIG:-$HOME/.config/niri/config.kdl} # the config to put back afterwards (the throwaway niri of tests/niri-session.sh has its own)
+real_cfg=$(readlink -f "$real_file" 2>/dev/null); real_dir=$(dirname "$real_file")
+restore_niri() { niri msg action load-config-file --path "$real_file" >/dev/null 2>&1; } # the explicit path: see the header
 cleanup() { for p in $ppid $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; wait 2>/dev/null; restore_niri; }
 trap cleanup EXIT
 fail() { echo "FAIL: $*"; echo "--- daemon:"; grep -v '^\[libevdi\|^libva' "$art/daemon.log" | tail -8; echo "--- viewer:"; tail -5 "$art/viewer.log"; echo "--- window:"; tail -8 "$art/window.log"; exit 1; }
@@ -35,7 +36,7 @@ fail() { echo "FAIL: $*"; echo "--- daemon:"; grep -v '^\[libevdi\|^libva' "$art
 # a copy of the user's config with the touchscreen mapped to the virtual output (inside the existing input block, or a new one)
 cfg="$art/niri-touch.kdl"; rm -f "$cfg"
 # relative includes would resolve against the copy's directory and silently vanish (they are often optional): make them absolute
-sed "s|^\(include[^\"]*\)\"\([^/][^\"]*\)\"|\1\"$real_dir/\2\"|" ~/.config/niri/config.kdl > "$cfg.base"
+sed "s|^\(include[^\"]*\)\"\([^/][^\"]*\)\"|\1\"$real_dir/\2\"|" "$real_file" > "$cfg.base"
 if grep -q '^input {' "$cfg.base"; then
 	awk -v v="$ID" '{ print } /^input \{/ && !done { printf "    touch {\n        map-to-output \"%s\"\n    }\n", v; done=1 }' "$cfg.base" > "$cfg"
 else
