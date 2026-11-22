@@ -301,7 +301,7 @@ fun SettingsScreen(c: SessionController, settings: Settings, onChange: (Settings
         OutlinedButton(onClick = { confirm = true }, modifier = Modifier.padding(top = 8.dp)) { Text("Forget this device's pairing") }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         Text("About", style = MaterialTheme.typography.titleMedium)
-        Text("pdisp ${BuildConfigInfo.version}. This device shows up on the PC as \"${android.os.Build.MODEL}\".", style = MaterialTheme.typography.bodyMedium,
+        Text("pdisp ${BuildConfigInfo.version(androidx.compose.ui.platform.LocalContext.current)}. This device shows up on the PC as \"${android.os.Build.MODEL}\".", style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 4.dp, bottom = 24.dp))
     }
     if (confirm) AlertDialog(
@@ -367,6 +367,8 @@ fun StreamMenu(c: SessionController, settings: Settings, onChange: (Settings) ->
 /** A screen that does not change sends no new pictures: that is not a stalled stream. */
 private fun fpsText(fps: Float) = if (fps < 0.5f) "picture still" else "%.0f fps".format(fps)
 
+/** The version of this build, from the package itself (versionName in android/app/build.gradle.kts), so it cannot be left behind. */
 object BuildConfigInfo {
-    val version: String get() = "0.1"
+    fun version(ctx: android.content.Context): String =
+        try { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName ?: "?" } catch (_: Exception) { "?" }
 }
