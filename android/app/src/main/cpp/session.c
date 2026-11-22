@@ -44,6 +44,9 @@ struct session {
 	atomic_bool stop, finished;
 	atomic_int close_reason; /* what to tell the PC when we leave: 0 on purpose, 1 the screen locked, 3 error */
 	atomic_int end_kind;     /* why the session ended: 0 we stopped it, 1 the link failed (try again), 2 refused or impossible (do not retry) */
+	atomic_int stage;        /* what the connection is doing, for the UI: STAGE_* */
+	atomic_uint pair_code;   /* the pairing code to compare, while stage is STAGE_PAIRING */
+	atomic_uint info[8];     /* live numbers while streaming: width, height, fps x 10, decoded, lost frames, IDR requests, touches sent, touches acknowledged */
 	ANativeWindow *window;
 	char host[128], name[PROTO_NAME_MAX];
 	atomic_uint pending_w, pending_h; /* a new display size reported by the UI thread, sent by the session thread */
@@ -134,6 +137,8 @@ static void report_cadence(struct session *s)
 	s->n_intervals = 0;
 	s->over25 = s->over40 = s->over70 = 0;
 }
+
+enum { STAGE_CONNECTING, STAGE_USB_WAIT, STAGE_SECURING, STAGE_MONITOR, STAGE_PAIRING, STAGE_VIDEO, STAGE_STREAMING };
 
 static void set_status(struct session *s, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
 static void set_status(struct session *s, const char *fmt, ...)
@@ -378,11 +383,13 @@ static void *run(void *arg)
 	int cfd = -1, usb_dgram = -1;
 	struct usbmux *mux = NULL;
 	if (s->usb_fd >= 0) {
+		atomic_store(&s->stage, STAGE_USB_WAIT);
 		set_status(s, "connected over USB, waiting for the PC");
 		int e = usbmux_start(s->usb_fd, s->usb_fd, USBMUX_LINK_BLOCKING_READ, &mux, &cfd, &usb_dgram);
 		if (e) { set_status(s, "cannot start the USB link: %s", strerror(-e)); atomic_store(&s->finished, true); return NULL; }
 		fcntl(usb_dgram, F_SETFL, fcntl(usb_dgram, F_GETFL) | O_NONBLOCK);
 	} else {
+		atomic_store(&s->stage, STAGE_CONNECTING);
 		set_status(s, "connecting to %s:%u", s->host, s->port);
 		cfd = net_tcp_connect(s->host, s->port);
 		if (cfd < 0) { set_status(s, "cannot connect to %s:%u: %s", s->host, s->port, strerror(-cfd)); atomic_store(&s->finished, true); return NULL; }
@@ -406,6 +413,7 @@ static void *run(void *arg)
 		struct identity id;
 		int created, e = identity_load_or_create(s->identity_dir, &id, &created);
 		if (e) { set_status(s, "cannot use this device's key: %s", strerror(-e)); atomic_store(&s->end_kind, 2); goto out; }
+		atomic_store(&s->stage, STAGE_SECURING);
 		set_status(s, "securing the connection");
 		e = hs_initiate(&ctl, &id, s->name, 10000, &pc, &udp);
 		pc_wipe(&id, sizeof id);
@@ -429,11 +437,14 @@ static void *run(void *arg)
 	size_t plen;
 	limit_rates_to_decoder(s);
 	if (send_hello(s, &ctl, PROTO_CTL_HELLO) != 0) { set_status(s, "cannot send HELLO"); goto out; }
+	atomic_store(&s->stage, STAGE_MONITOR);
 	set_status(s, "waiting for the PC to create the monitor (%ux%u)", s->width, s->height);
 	int r = 0;
 	while (!atomic_load(&s->stop) && (r = net_ctl_recv(&ctl, &type, &payload, &plen, 200)) == 0) {}
 	if (atomic_load(&s->stop)) goto out;
 	if (r == 1 && type == PROTO_CTL_PAIRING_REQUIRED) { /* the PC asks its user to approve this device: show the code to compare */
+		atomic_store(&s->pair_code, pc.sas);
+		atomic_store(&s->stage, STAGE_PAIRING);
 		set_status(s, "Pairing: approve this device on the PC. The code there must be %06u", pc.sas);
 		for (int i = 0; i < 600 && !atomic_load(&s->stop) && (r = net_ctl_recv(&ctl, &type, &payload, &plen, 200)) == 0; i++) {}
 		if (atomic_load(&s->stop)) goto out;
@@ -483,6 +494,7 @@ static void *run(void *arg)
 	timesync_init(&s->ts);
 	bool streaming = false;
 	unsigned width = su.params.width, height = su.params.height;
+	atomic_store(&s->stage, STAGE_VIDEO);
 	set_status(s, "connected, waiting for video");
 	while (!atomic_load(&s->stop)) {
 		struct pollfd p[2] = { { .fd = ufd, .events = POLLIN }, { .fd = cfd, .events = POLLIN } };
@@ -624,6 +636,12 @@ static void *run(void *arg)
 				   (s->rendered - last_rendered) / secs, (unsigned long long)st->frames_decoded,
 				   (unsigned long long)st->frames_given_up, (unsigned long long)st->idr_decoded,
 				   (unsigned long long)s->touch_pushed, (unsigned long long)s->touch_acked);
+			atomic_store(&s->stage, STAGE_STREAMING);
+			atomic_store(&s->info[0], width); atomic_store(&s->info[1], height);
+			atomic_store(&s->info[2], (unsigned)((s->rendered - last_rendered) / secs * 10.0 + 0.5));
+			atomic_store(&s->info[3], (unsigned)st->frames_decoded); atomic_store(&s->info[4], (unsigned)st->frames_given_up);
+			atomic_store(&s->info[5], (unsigned)st->idr_decoded);
+			atomic_store(&s->info[6], (unsigned)s->touch_pushed); atomic_store(&s->info[7], (unsigned)s->touch_acked);
 			last_stat = now;
 			last_rendered = s->rendered;
 			if (now - last_cadence >= 5000000) { last_cadence = now; report_cadence(s); }
@@ -711,6 +729,22 @@ JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStartUsb(JNIEnv *env, j
 }
 
 /* Why the session ended on its own: 0 we stopped it, 1 the link failed (the app should try again), 2 it was refused or cannot work (it should not). */
+/* The connection stage, the pairing code and the live numbers (see struct session): int[10] = stage, pair code, then info[0..7]. */
+JNIEXPORT jintArray JNICALL Java_dev_pdisp_PdispNative_nativeInfo(JNIEnv *env, jclass cls, jlong handle)
+{
+	(void)cls;
+	struct session *s = (struct session *)(intptr_t)handle;
+	jint v[10] = { 0 };
+	if (s) {
+		v[0] = atomic_load(&s->stage);
+		v[1] = (jint)atomic_load(&s->pair_code);
+		for (int i = 0; i < 8; i++) v[2 + i] = (jint)atomic_load(&s->info[i]);
+	}
+	jintArray out = (*env)->NewIntArray(env, 10);
+	if (out) (*env)->SetIntArrayRegion(env, out, 0, 10, v);
+	return out;
+}
+
 JNIEXPORT jint JNICALL Java_dev_pdisp_PdispNative_nativeEndKind(JNIEnv *env, jclass cls, jlong handle)
 {
 	(void)env; (void)cls;

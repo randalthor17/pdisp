@@ -36,6 +36,8 @@ object PdispNative {
 
     /** Why a finished session ended: 0 we stopped it, 1 the link failed (try again), 2 refused or impossible (do not retry). */
     external fun nativeEndKind(handle: Long): Int
+    /** int[10]: stage (STAGE_*), the pairing code, then width, height, fps x 10, decoded, lost frames, IDR requests, touches sent, touches acknowledged. */
+    external fun nativeInfo(handle: Long): IntArray
     external fun nativeStatus(handle: Long): String
     external fun nativeFinished(handle: Long): Boolean
 }

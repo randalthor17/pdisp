@@ -7,8 +7,8 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.hardware.usb.accessory" android:required="false" />
 
-    <application android:label="pdisp" android:allowBackup="false"
-        android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
+    <application android:label="pdisp" android:allowBackup="false" android:icon="@mipmap/ic_launcher"
+        android:theme="@style/Theme.Pdisp">
         <activity android:name=".MainActivity" android:exported="true"
             android:screenOrientation="fullUser" android:launchMode="singleTop"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden">
