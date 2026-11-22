@@ -11,7 +11,7 @@ pairing code, live numbers).
 | Connecting | Progress and what is happening (connecting, securing, waiting for the PC's monitor, starting the video, or "lost the PC, reconnecting (attempt N)"), Cancel. |
 | Pairing | The code to compare with the PC's notification, in large type. Cancel. |
 | Streaming | The picture, edge to edge, system bars hidden. Every touch and pen event goes to the PC. **Back** opens a small menu (connection, picture size and rate, statistics switch, Disconnect, Close); Back again closes it. An optional statistics line sits in a corner and lets touches through. |
-| Settings | Keep the screen on, palm rejection, statistics, the highest refresh rate this device offers the PC (Auto or one of the display's rates), forget this device's pairing (deletes its key and trusted PCs), about. |
+| Settings | Keep the screen on, full brightness while streaming (this app's window only; on by default), palm rejection, statistics, the highest refresh rate this device offers the PC (Auto or one of the display's rates), forget this device's pairing (deletes its key and trusted PCs), about. |
 
 ## Behaviour kept from before
 Connecting survives a lost link (reconnect with backoff up to 5 s); leaving the app or locking the screen tells the PC why; an address chosen on purpose replaces

@@ -11,6 +11,8 @@ data class Pc(val id: String, val name: String, val host: String, val lastUsed: 
 
 data class Settings(
     val keepScreenOn: Boolean = true,
+    /** Full panel brightness while the picture is showing (this app's window only; the system setting is untouched). */
+    val fullBrightness: Boolean = true,
     val palmRejection: Boolean = true,
     val showStats: Boolean = false,
     /** Highest refresh rate (Hz) this device offers the PC; 0 = everything the display and decoder can do. */
@@ -61,11 +63,11 @@ class Store(private val ctx: Context) {
 
     var settings: Settings
         get() = Settings(
-            prefs.getBoolean("keepScreenOn", true), prefs.getBoolean("palmRejection", true),
+            prefs.getBoolean("keepScreenOn", true), prefs.getBoolean("fullBrightness", true), prefs.getBoolean("palmRejection", true),
             prefs.getBoolean("showStats", false), prefs.getInt("maxRefreshHz", 0),
         )
         set(v) {
-            prefs.edit().putBoolean("keepScreenOn", v.keepScreenOn).putBoolean("palmRejection", v.palmRejection)
+            prefs.edit().putBoolean("keepScreenOn", v.keepScreenOn).putBoolean("fullBrightness", v.fullBrightness).putBoolean("palmRejection", v.palmRejection)
                 .putBoolean("showStats", v.showStats).putInt("maxRefreshHz", v.maxRefreshHz).apply()
         }
 

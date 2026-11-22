@@ -270,6 +270,7 @@ fun SettingsScreen(c: SessionController, settings: Settings, onChange: (Settings
             Text("Settings", style = MaterialTheme.typography.titleLarge)
         }
         SwitchRow("Keep the screen on", "While connected, so the monitor does not go dark.", settings.keepScreenOn) { onChange(settings.copy(keepScreenOn = it)) }
+        SwitchRow("Full brightness", "While the monitor is showing, so it is as bright as the panel gets. Your normal brightness comes back afterwards.", settings.fullBrightness) { onChange(settings.copy(fullBrightness = it)) }
         SwitchRow("Palm rejection", "Ignore large contacts, such as a hand resting on the screen while writing with a pen.", settings.palmRejection) { onChange(settings.copy(palmRejection = it)) }
         SwitchRow("Show statistics", "Frame rate and lost frames in a corner while streaming.", settings.showStats) { onChange(settings.copy(showStats = it)) }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
