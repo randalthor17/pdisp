@@ -107,6 +107,28 @@ run_viewer "$art/phoneB"
 stop_daemon
 echo "ok 5: the prompt's n / o / y behave, and y is remembered"
 
+# 5b. the prompt command (-A), as the systemd service uses it: exit 1 denies, 2 is this time only, 0 is for good; it sees the peer's name, key and code
+mkdir -p "$art/phoneC"
+ask_cmd() { # ask_cmd <shell command>
+	"$daemon" -p "$PORT" -K "$art/pc" -P ask -A "$1" -o </dev/null >"$art/daemon.log" 2>&1 &
+	dpid=$!
+	local i=0; while [ $i -lt 40 ] && ! grep -q "listening on port" "$art/daemon.log"; do sleep 0.25; i=$((i + 1)); done
+	run_viewer "$art/phoneC"
+	stop_daemon
+}
+ask_cmd "echo \"\$PDISP_PEER_NAME \$PDISP_PAIR_CODE \$PDISP_PEER_KEY\" > \"$art/prompt.env\"; exit 1"
+[ "$vrc" = 5 ] && grep -q "rejected (5)" "$art/viewer.log" || fail "-A: exit 1 did not deny (exit $vrc)"
+[ "$(awk '{print $2}' "$art/prompt.env")" = "$(viewer_code)" ] || fail "-A: the command saw code '$(awk '{print $2}' "$art/prompt.env")', the device shows '$(viewer_code)'"
+[ -n "$(awk '{print $1}' "$art/prompt.env")" ] && [ "$(awk '{print length($3)}' "$art/prompt.env")" -ge 16 ] || fail "-A: the command did not get the name and the key"
+[ "$(nkeys)" = 2 ] || fail "-A: a denied device was stored"
+ask_cmd "exit 2"
+[ "$vrc" = 0 ] && streams || fail "-A: exit 2 did not let it in (exit $vrc)"
+[ "$(nkeys)" = 2 ] || fail "-A: 'this time only' stored the key"
+ask_cmd "exit 0"
+[ "$vrc" = 0 ] && streams || fail "-A: exit 0 did not let it in (exit $vrc)"
+[ "$(nkeys)" = 3 ] || fail "-A: 'always' did not store the key"
+echo "ok 5b: the prompt command (-A): exit 1 denies, 2 is this time only, 0 is for good, and it sees name, key and code"
+
 # 6. a stranger cannot take the daemon down: a plain client fails, a secure one still works afterwards
 start_daemon deny
 run_viewer "$art/phoneA" -I
@@ -130,13 +152,13 @@ echo "ok 7: insecure daemon detected by a secure client"
 # 9. revoking: list and remove with the tool; the removed device is refused at once, the other one still works
 if [ -n "$keys" ]; then
 	"$keys" -K "$art/pc" list >"$art/list.txt" 2>&1 || fail "pdisp-keys list failed"
-	[ "$(grep -c . "$art/list.txt")" = 2 ] || fail "the list should show two devices: $(cat "$art/list.txt")"
+	[ "$(grep -c . "$art/list.txt")" = 3 ] || fail "the list should show three devices: $(cat "$art/list.txt")"
 	"$keys" -K "$art/pc" identity | grep -q '^[0-9a-f]\{4\}-' || fail "pdisp-keys identity printed no fingerprint"
 	"$keys" -K "$art/pc" remove ab >/dev/null 2>&1 && fail "a 2-character prefix removed something"
 	victim=$("$keys" -K "$art/phoneA" identity | cut -d' ' -f1)
 	grep -q "$victim" "$art/list.txt" || fail "phone A is not in the list"
 	"$keys" -K "$art/pc" remove "$victim" | grep -q "removed 1" || fail "pdisp-keys remove did not remove the device"
-	[ "$(nkeys)" = 1 ] || fail "after one removal $(nkeys) keys remain"
+	[ "$(nkeys)" = 2 ] || fail "after one removal $(nkeys) keys remain"
 	start_daemon deny -o
 	run_viewer "$art/phoneA"
 	[ "$vrc" = 5 ] || fail "the revoked device was not refused (exit $vrc)"

@@ -52,6 +52,7 @@ static struct {
 	int card;
 	const char *config_dir;  /* identity and authorized_keys live here (default ~/.config/pdisp) */
 	int pair_mode;           /* what to do with a device that is not in authorized_keys */
+	const char *pair_cmd;    /* -A: command that asks the user (no terminal under systemd); see ask_command */
 	bool insecure;           /* development only: no handshake, no encryption (the M4 behaviour) */
 	bool no_touch;           /* do not create a touchscreen for the phone */
 	const char *touch_hook;  /* a command run when the touchscreen exists, to bind it to the virtual output (docs/touch.md) */
@@ -322,6 +323,8 @@ static void usage(const char *argv0)
 		"  -V VID      with -u, only consider this USB vendor id in hex (e.g. 04e8)\n"
 		"  -K DIR      identity and authorized_keys directory (default ~/.config/pdisp)\n"
 		"  -P MODE     a device that is not authorised yet: ask (prompt on stdin, the default), accept (add it: development)\n"
+		"  -A COMMAND  with -P ask: run COMMAND (through sh) to ask the user instead of reading stdin; PDISP_PEER_NAME, PDISP_PEER_KEY and PDISP_PAIR_CODE are set;\n"
+		"              exit status 0 allows the device for good, 2 this time only, anything else denies (contrib/pdisp-pair-prompt)\n"
 		"              or deny\n"
 		"  -T          do not create a touchscreen for the phone's touches\n"
 		"  -H CMD      run this shell command once the touchscreen exists, with PDISP_OUTPUT (connector, if known), PDISP_OUTPUT_ID\n"
@@ -351,7 +354,7 @@ int main(int argc, char **argv)
 		C.refine_start_qp = (e = getenv("PDISP_REFINE_QP0")) ? (unsigned)atoi(e) : 22;
 		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 50;
 	}
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uV:K:P:H:F:TIho")) != -1) {
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uV:K:P:A:H:F:TIho")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
 		case 'F': C.refine_frames = (unsigned)atoi(optarg); break; /* static refinement pictures; 0 = off */
@@ -372,6 +375,7 @@ int main(int argc, char **argv)
 		case 'S': run_secs = atof(optarg); break;
 		case 'u': C.usb = true; break;
 		case 'K': C.config_dir = optarg; break;
+		case 'A': C.pair_cmd = optarg; break;
 		case 'P':
 			if (!strcmp(optarg, "ask")) C.pair_mode = PAIR_ASK;
 			else if (!strcmp(optarg, "accept")) C.pair_mode = PAIR_ACCEPT;
@@ -544,6 +548,41 @@ static int read_answer(int timeout_ms)
 	}
 }
 
+/* Runs the pairing prompt command (-A) through sh with PDISP_PEER_NAME, PDISP_PEER_KEY and PDISP_PAIR_CODE set, and waits for it: exit status 0 allows
+ * the device for good, 2 allows it this time only, anything else denies. Returns the same letters as read_answer: y, o, n, or -1 on timeout. */
+static int ask_command(const char *cmd, const char *name, const char *fp, unsigned code, int timeout_ms)
+{
+	pid_t pid = fork();
+	if (pid < 0) return 'n';
+	if (pid == 0) {
+		char codebuf[16];
+		snprintf(codebuf, sizeof codebuf, "%06u", code);
+		setenv("PDISP_PEER_NAME", name, 1);
+		setenv("PDISP_PEER_KEY", fp, 1);
+		setenv("PDISP_PAIR_CODE", codebuf, 1);
+		int dn = open("/dev/null", O_RDONLY);
+		if (dn >= 0) { dup2(dn, 0); close(dn); }
+		execl("/bin/sh", "sh", "-c", cmd, (char *)NULL);
+		_exit(127);
+	}
+	uint64_t deadline = net_now_us() + (uint64_t)timeout_ms * 1000;
+	int st = 0;
+	for (;;) {
+		pid_t w = waitpid(pid, &st, WNOHANG);
+		if (w == pid) break;
+		if (w < 0 && errno != EINTR) return 'n';
+		if (stop || net_now_us() >= deadline) {
+			kill(pid, SIGTERM);
+			waitpid(pid, &st, 0);
+			return stop ? 'n' : -1;
+		}
+		struct timespec ts = { 0, 50 * 1000 * 1000 };
+		nanosleep(&ts, NULL);
+	}
+	if (!WIFEXITED(st)) return 'n';
+	return WEXITSTATUS(st) == 0 ? 'y' : WEXITSTATUS(st) == 2 ? 'o' : 'n';
+}
+
 /* Decides whether a device whose key the handshake proved may use this PC. Returns 1 to continue; otherwise the device has been
  * told why and the caller ends the session. */
 static int authorize(struct net_ctl *ctl, const struct hs_peer *peer, const char *ks_path)
@@ -562,10 +601,15 @@ static int authorize(struct net_ctl *ctl, const struct hs_peer *peer, const char
 		return 1;
 	}
 	net_ctl_send(ctl, PROTO_CTL_PAIRING_REQUIRED, NULL, 0); /* the device shows its own copy of the code */
+	int a;
+	if (C.pair_cmd) {
+		a = ask_command(C.pair_cmd, peer->name, fp, peer->sas, 90000);
+	} else {
 	fprintf(stderr, "\nA device wants to use this PC as a second monitor.\n   name: %s\n   key:  %s\n   code: %06u   (it must be the same on the device's screen)\n"
 			"Allow it?  [y] always  [o] this time only  [N] no: ", peer->name, fp, peer->sas);
-	fflush(stderr);
-	int a = read_answer(90000);
+		fflush(stderr);
+		a = read_answer(90000);
+	}
 	if (a == 'y' || a == 'o') {
 		fprintf(stderr, "\n");
 		if (a == 'y') {

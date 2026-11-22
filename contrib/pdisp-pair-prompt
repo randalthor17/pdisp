@@ -1,0 +1,18 @@
+#!/bin/sh
+# Asks the user, with a desktop notification, whether an unknown device may use this PC as a second monitor.
+# Used by `pdispd -P ask -A pdisp-pair-prompt` (the systemd user service does this). pdispd sets PDISP_PEER_NAME, PDISP_PEER_KEY and PDISP_PAIR_CODE.
+# Exit status: 0 allow for good, 2 allow this time only, 1 deny (also when there is no notification tool or nobody answers).
+# Needs `notify-send` from libnotify 0.8 or newer (actions) and a notification daemon that shows actions (mako, dunst, GNOME, KDE, DankMaterialShell).
+if ! command -v notify-send >/dev/null 2>&1; then
+	echo "pdisp-pair-prompt: notify-send not found: denying $PDISP_PEER_NAME" >&2
+	exit 1
+fi
+answer=$(notify-send --app-name=pdisp --urgency=critical --expire-time=85000 --wait \
+	--action=always="Allow always" --action=once="Allow this time" --action=deny="Deny" \
+	"\"$PDISP_PEER_NAME\" wants to use this PC as a monitor" \
+	"The code on its screen must be $PDISP_PAIR_CODE. Key: $PDISP_PEER_KEY")
+case "$answer" in
+always) exit 0 ;;
+once) exit 2 ;;
+*) exit 1 ;;
+esac
