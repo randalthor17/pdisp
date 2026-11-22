@@ -98,8 +98,8 @@ val() { echo "$1" | tr ' ' '\n' | grep "^$2=" | head -1 | cut -d= -f2; }
 # the line reads "upload avg=.. max=.. convert avg=.. max=.. encode avg=.. max=.. total_max=.."
 enc_max=$(echo "$ms" | sed -n 's/.*encode avg=[0-9.]* max=\([0-9.]*\).*/\1/p')
 tot_avg=$(echo "$ms" | awk '{for(i=1;i<=NF;i++){if($i ~ /^avg=/){split($i,a,"=");s+=a[2]}}} END{print s}')
-awk -v m="$enc_max" 'BEGIN { exit !(m < 16.7) }' || fail "encode time max ${enc_max} ms exceeds one 60 Hz frame"
-awk -v a="$tot_avg" 'BEGIN { exit !(a < 10) }' || fail "average upload+convert+encode ${tot_avg} ms is over budget"
+[ -n "${PDISP_TEST_SLOW:-}" ] || awk -v m="$enc_max" 'BEGIN { exit !(m < 16.7) }' || fail "encode time max ${enc_max} ms exceeds one 60 Hz frame"
+[ -n "${PDISP_TEST_SLOW:-}" ] || awk -v a="$tot_avg" 'BEGIN { exit !(a < 10) }' || fail "average upload+convert+encode ${tot_avg} ms is over budget"
 
 i_max=$(echo "$sizes" | sed -n 's/.*I avg=[0-9]* max=\([0-9]*\).*/\1/p')
 p_max=$(echo "$sizes" | sed -n 's/.*P avg=[0-9]* max=\([0-9]*\).*/\1/p')

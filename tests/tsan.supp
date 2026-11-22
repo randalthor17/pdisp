@@ -1,0 +1,11 @@
+# ThreadSanitizer suppressions: races inside libraries that are not instrumented (Mesa's video driver compiles shaders on its own threads, with its own
+# locking that the sanitizer cannot see). Races in our own code are not suppressed.
+called_from_lib:radeonsi_drv_video.so
+called_from_lib:radeonsi_dri.so
+called_from_lib:libva.so
+called_from_lib:libva-drm.so
+called_from_lib:libdrm.so
+called_from_lib:libdrm_amdgpu.so
+called_from_lib:libLLVM.so
+race:radeonsi_drv_video.so
+race:radeonsi_dri.so

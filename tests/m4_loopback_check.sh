@@ -9,6 +9,8 @@
 # GLASS_MAX_MS (100: the pixel-stamped application-to-decoded latency, p99), EXPECT_OFFSET_US (0) and OFFSET_TOL_US (2000):
 # the clock offset the viewer must estimate, for a viewer run with a skewed clock (extra argument -K).
 set -u
+# PDISP_TEST_SLOW: the run is slowed by sanitizers, so the timing budgets are not checked (what is checked is that nothing breaks)
+if [ -n "${PDISP_TEST_SLOW:-}" ]; then MIN_FPS=1; MAX_P99_MS=100000; GLASS_MAX_MS=100000; unset MAX_FREEZE_MS; fi
 daemon=$1; viewer=$2; pattern=$3
 art=${4:-$(mktemp -d)}
 [ $# -ge 4 ] && shift 4 || shift $#

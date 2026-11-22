@@ -20,7 +20,7 @@ for t in $trees; do
 	meson compile -C "$dir" >/dev/null 2>&1 || { meson compile -C "$dir" 2>&1 | grep -E "error|FAILED" -A3 | head -20; rc=1; continue; }
 	# sanitized code is several times slower: give the tests more time
 	out=$(mktemp)
-	ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1 meson test -C "$dir" --no-suite integration --timeout-multiplier 6 --print-errorlogs >"$out" 2>&1 || rc=1
+	ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1 TSAN_OPTIONS="suppressions=$PWD/tests/tsan.supp" PDISP_TEST_SLOW=1 meson test -C "$dir" --no-suite integration --timeout-multiplier 6 --print-errorlogs >"$out" 2>&1 || rc=1
 	grep -E "^ *[0-9]+/[0-9]+|^Ok:|^Fail:|^Timeout:|ERROR: |WARNING: |runtime error" "$out" | grep -v " OK "
 	rm -f "$out"
 done

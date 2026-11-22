@@ -96,7 +96,7 @@ echo "$stats"
 
 num() { echo "$stats" | tr ' ' '\n' | grep "^$1=" | cut -d= -f2 | tr -d 's%'; }
 fps=$(num fps); partial=$(num partial); full=$(num full); grab_max=$(num max)
-awk -v f="$fps" 'BEGIN { exit !(f >= 50 && f <= 61) }' || fail "update rate $fps fps is not near the 60 Hz refresh"
+[ -n "${PDISP_TEST_SLOW:-}" ] || awk -v f="$fps" 'BEGIN { exit !(f >= 50 && f <= 61) }' || fail "update rate $fps fps is not near the 60 Hz refresh"
 [ "$partial" -gt "$full" ] || fail "dirty rects are not mostly partial for an animated bar (partial=$partial full=$full)"
 awk -v g="$grab_max" 'BEGIN { exit !(g < 16.7) }' || fail "grab time max ${grab_max} ms exceeds one frame at 60 Hz"
 

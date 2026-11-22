@@ -56,7 +56,7 @@ args=; [ $# -gt 0 ] && args=$(printf '%q ' "$@") # test names with spaces surviv
 # safe here: this niri is a throwaway, so the checks that change its config or open windows may run
 export PDISP_TEST_NIRI_CONFIG=1 PDISP_TEST_WINDOWS=1 PDISP_TEST_NIRI_REAL_CONFIG="$cfg" # the tests put this niri's own config back, not your desktop's
 # the sanitizers abort the test that trips them; leaks at exit are not looked for (the daemon's child processes just exit)
-export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 TSAN_OPTIONS=halt_on_error=0
+export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 TSAN_OPTIONS="halt_on_error=0 suppressions=$repo/tests/tsan.supp"
 
 total=0
 run_tree() { # run_tree <build directory>
@@ -67,7 +67,8 @@ run_tree() { # run_tree <build directory>
 	if [ -n "$san" ] && [ ! -d "$repo/$builddir" ]; then (cd "$repo" && nix develop -c meson setup "$builddir" -Db_sanitize=$san -Db_lundef=false >/dev/null 2>&1); fi
 	echo; echo "=================== tests in $builddir${san:+ (sanitizers: $san)}"
 	mkdir -p "$repo/$builddir"
-	if [ -n "$san" ]; then export PDISP_GUI_CLEAN_EXIT=1; else unset PDISP_GUI_CLEAN_EXIT; fi # the sanitizers should see the GUI shut down properly (see gui/main.cpp)
+	# sanitizers: the GUI shuts down properly (gui/main.cpp), and timing budgets are not checked (the code is several times slower)
+	if [ -n "$san" ]; then export PDISP_GUI_CLEAN_EXIT=1 PDISP_TEST_SLOW=1; else unset PDISP_GUI_CLEAN_EXIT PDISP_TEST_SLOW; fi
 	niri -c "$cfg" -- sh -c "
 		cd '$repo' && nix develop -c meson compile -C '$builddir' >'$log' 2>&1 && nix develop -c meson test -C '$builddir' --timeout-multiplier $mult --print-errorlogs $args >>'$log' 2>&1 ; echo \$? >'$res'
 		echo; echo 'GPU memory after the tests (still held by this niri):' | tee -a '$res.mem'; $(declare -f mem); mem | tee -a '$res.mem'

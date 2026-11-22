@@ -79,5 +79,5 @@ status=$(adb logcat -d -s pdisp:* | grep -E "[0-9]+x[0-9]+ +[0-9]+ fps" | tail -
 echo "$status" | cut -c30-
 echo "$status" | grep -q "${h}x${w}" || fail "the app is not showing the portrait stream: $status"
 fps=$(echo "$status" | sed -n 's/.* \([0-9]*\) fps.*/\1/p')
-[ "${fps:-0}" -ge 50 ] || fail "only $fps fps after the rotation"
+[ -n "${PDISP_TEST_SLOW:-}" ] || [ "${fps:-0}" -ge 50 ] || fail "only $fps fps after the rotation"
 echo "PASS: rotated from ${w}x${h} to ${h}x${w} mid-stream, the monitor followed, $fps fps afterwards"

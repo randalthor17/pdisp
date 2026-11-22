@@ -88,6 +88,8 @@
           export QML_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml
           export QML2_IMPORT_PATH=$QML_IMPORT_PATH
           export QT_PLUGIN_PATH=${pkgs.qt6.qtbase}/lib/qt-6/plugins:${pkgs.qt6.qtwayland}/lib/qt-6/plugins:${pkgs.qt6.qtsvg}/lib/qt-6/plugins
+          # sdl2-compat loads SDL3 with dlopen; under the sanitizers (build-asan, build-tsan) the loader no longer finds it by itself
+          export LD_LIBRARY_PATH=${pkgs.sdl3.lib}/lib:$LD_LIBRARY_PATH
         '';
       };
       };
