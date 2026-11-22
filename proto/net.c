@@ -73,6 +73,39 @@ int net_tcp_connect(const char *host, unsigned port)
 	return fd;
 }
 
+/* Connects like net_tcp_connect, but in 100 ms steps: gives up with -ECANCELED as soon as `cancelled(user)` is true and with -ETIMEDOUT after
+ * timeout_ms. A blocking connect to an address that does not answer holds its caller for a minute or more. */
+int net_tcp_connect_cancellable(const char *host, unsigned port, int timeout_ms, bool (*cancelled)(void *), void *user)
+{
+	char p[16];
+	snprintf(p, sizeof p, "%u", port);
+	struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res;
+	if (getaddrinfo(host, p, &hints, &res) != 0) return -EHOSTUNREACH;
+	int fd = socket(res->ai_family, res->ai_socktype | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+	if (fd < 0) { int e = errno; freeaddrinfo(res); return -e; }
+	int rc = connect(fd, res->ai_addr, res->ai_addrlen);
+	freeaddrinfo(res);
+	if (rc < 0 && errno != EINPROGRESS) { int e = errno; close(fd); return -e; }
+	for (int waited = 0; rc < 0; waited += 100) {
+		if (cancelled && cancelled(user)) { close(fd); return -ECANCELED; }
+		if (waited >= timeout_ms) { close(fd); return -ETIMEDOUT; }
+		struct pollfd pf = { .fd = fd, .events = POLLOUT };
+		int r = poll(&pf, 1, 100);
+		if (r < 0 && errno != EINTR) { int e = errno; close(fd); return -e; }
+		if (r > 0) {
+			int err = 0;
+			socklen_t l = sizeof err;
+			getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &l);
+			if (err) { close(fd); return -err; }
+			break;
+		}
+	}
+	int fl = fcntl(fd, F_GETFL);
+	fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
+	net_tune_tcp(fd);
+	return fd;
+}
+
 int net_udp_bind(unsigned port)
 {
 	int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);

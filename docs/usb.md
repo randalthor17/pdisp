@@ -47,4 +47,4 @@ address and pressing Go during that wait stopped the session on the UI thread, w
 - `nativeStop` shuts down the control socket first, which wakes a blocked handshake at once.
 - `usbmux_stop` interrupts the write thread with SIGUSR2 as it already did the read thread, waits at most 0.5 s, and detaches it if it is still stuck.
 - An address typed and confirmed on purpose replaces a USB session (`MainActivity`).
-Not covered: `net_tcp_connect` to an unreachable Wi-Fi address also blocks the session thread, so stopping then can still wait.
+Cancelling while the app is still connecting to an address that does not answer (the same freeze) is fixed too: the connect runs in 100 ms steps and ends when the user cancels (`net_tcp_connect_cancellable`, 10 s limit). Still blocking: resolving a host name (an IP address is not affected).

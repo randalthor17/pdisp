@@ -3,6 +3,7 @@
 #ifndef PDISP_NET_H
 #define PDISP_NET_H
 
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <sys/socket.h>
@@ -15,6 +16,8 @@ uint64_t net_now_us(void); /* CLOCK_MONOTONIC in microseconds */
 int net_tcp_listen(unsigned port);
 /* Connects to host:port, or returns a negative errno. */
 int net_tcp_connect(const char *host, unsigned port);
+/* Same, but ends with -ECANCELED when cancelled(user) turns true and -ETIMEDOUT after timeout_ms (checked every 100 ms). */
+int net_tcp_connect_cancellable(const char *host, unsigned port, int timeout_ms, bool (*cancelled)(void *), void *user);
 /* A UDP socket bound to `port` (0 = any), non-blocking. */
 int net_udp_bind(unsigned port);
 /* Sets TCP_NODELAY, or the low-latency TOS (DSCP AF41-ish) on a UDP socket. Failures are ignored. */

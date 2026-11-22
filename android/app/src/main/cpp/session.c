@@ -152,6 +152,8 @@ static void set_status(struct session *s, const char *fmt, ...)
 	LOGI("%s", s->status);
 }
 
+static bool session_stopped(void *u) { return atomic_load(&((struct session *)u)->stop); }
+
 static void close_codec(struct session *s)
 {
 	if (!s->codec) return;
@@ -391,7 +393,7 @@ static void *run(void *arg)
 	} else {
 		atomic_store(&s->stage, STAGE_CONNECTING);
 		set_status(s, "connecting to %s:%u", s->host, s->port);
-		cfd = net_tcp_connect(s->host, s->port);
+		cfd = net_tcp_connect_cancellable(s->host, s->port, 10000, session_stopped, s); // ends at once when the user cancels
 		if (cfd < 0) { set_status(s, "cannot connect to %s:%u: %s", s->host, s->port, strerror(-cfd)); atomic_store(&s->finished, true); return NULL; }
 		net_tune_tcp(cfd);
 	}
