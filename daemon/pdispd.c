@@ -200,6 +200,21 @@ static int reject(struct net_ctl *c, uint16_t reason, const char *text)
 	return 1;
 }
 
+/* A device connected while another one is being served: say so at once (a plain REJECT, reason 3, before any handshake) and hang up, instead of
+ * leaving it in the listen queue to time out. */
+static int g_lfd = -1; /* the listening socket (-1 when only a USB cable is served) */
+
+static void refuse_busy(void)
+{
+	int fd = accept(g_lfd, NULL, NULL);
+	if (fd < 0) return;
+	struct net_ctl c;
+	net_ctl_init(&c, fd);
+	reject(&c, 3, "this PC is already serving another device");
+	shutdown(fd, SHUT_WR); /* the REJECT is delivered before the close */
+	net_ctl_close(&c);
+}
+
 /* The mode for a phone's display fields: its native size unless forced, the best refresh rate within the cap. Returns 0, or
  * a REJECT reason (with `*why`). */
 static int choose_mode(const struct proto_hello *h, struct edid_params *ep, struct edid_timing *t, uint8_t edid[EDID_SIZE],
@@ -660,7 +675,6 @@ struct conn {
 
 static struct identity g_id;
 static char g_ks_path[1100];
-static int g_lfd = -1;
 static int g_exit_code;
 
 static void conn_init(struct conn *c)
@@ -738,6 +752,23 @@ static int acquire_peer(struct conn *c, uint64_t deadline_us)
 			}
 		}
 		net_ctl_init(&c->ctl, c->cfd);
+		if (g_usb_conn && g_lfd >= 0 && !C.insecure) {
+			/* A cable whose app is not running sends nothing: do not keep a network device waiting behind it for the whole handshake timeout. */
+			bool alive = false, net_waiting = false;
+			for (int waited = 0; waited < 10000 && !alive && !net_waiting; waited += 200) {
+				if (stop) { conn_close(c); return -ECANCELED; }
+				struct pollfd pw[2] = { { .fd = c->cfd, .events = POLLIN }, { .fd = g_lfd, .events = POLLIN } };
+				poll(pw, 2, 200);
+				service_display();
+				alive = pw[0].revents != 0;
+				net_waiting = (pw[1].revents & POLLIN) != 0;
+			}
+			if (!alive) {
+				LOG(net_waiting ? "a network device is waiting: leaving the silent USB peer" : "a peer failed the handshake (no answer over USB): dropped");
+				conn_close(c);
+				continue;
+			}
+		}
 		if (C.insecure) return 0;
 		int r = hs_respond(&c->ctl, &g_id, C.name, 10000, &c->dev, &secudp);
 		if (r == 0) return 0;
@@ -863,9 +894,10 @@ static enum end_reason serve(struct conn *c, double run_secs)
 		uint64_t due = vsend_next_due_us(D.vs, now);
 		int timeout_ms = due <= now ? 0 : (int)((due - now + 999) / 1000);
 		if (timeout_ms > 10) timeout_ms = 10;
-		struct pollfd p[3] = { { .fd = evfd, .events = POLLIN }, { .fd = ufd, .events = POLLIN }, { .fd = c->cfd, .events = POLLIN } };
+		struct pollfd p[4] = { { .fd = evfd, .events = POLLIN }, { .fd = ufd, .events = POLLIN }, { .fd = c->cfd, .events = POLLIN }, { .fd = g_lfd, .events = POLLIN } };
 		uint64_t t_a = net_now_us();
-		poll(p, 3, timeout_ms);
+		poll(p, 4, timeout_ms);
+		if (g_lfd >= 0 && (p[3].revents & POLLIN)) refuse_busy(); /* a second device must not wait in the listen queue until this session ends */
 		now = net_now_us();
 		D.t_poll_us += now - t_a;
 

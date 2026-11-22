@@ -419,6 +419,11 @@ static void *run(void *arg)
 		set_status(s, "securing the connection");
 		e = hs_initiate(&ctl, &id, s->name, 10000, &pc, &udp);
 		pc_wipe(&id, sizeof id);
+		if (e == -EBUSY) { /* the PC is serving another device */
+			set_status(s, "the PC is busy with another device");
+			atomic_store(&s->end_kind, 2);
+			goto out;
+		}
 		if (e == -EPROTO) {
 			set_status(s, "the PC does not use the secure protocol: update pdispd");
 			/* Over USB the first bytes after a reconnect can be left over from the previous session (seen after the app was restarted):

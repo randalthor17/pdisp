@@ -26,6 +26,11 @@ static int recv_msg(struct net_ctl *c, struct noise_hs *hs, int timeout_ms, char
 	int r = net_ctl_recv(c, &type, &payload, &plen, timeout_ms);
 	if (r == 0) return -ETIMEDOUT;
 	if (r < 0) return r == -EINVAL ? -EPROTO : r;
+	/* a PC that is already serving another device refuses before any handshake (the only plain frame it sends) */
+	if (type == PROTO_CTL_REJECT) {
+		struct proto_reject rj;
+		return proto_reject_decode(payload, plen, &rj) == 0 && rj.reason == 3 ? -EBUSY : -EPROTO;
+	}
 	if (type != PROTO_CTL_HANDSHAKE) return -EPROTO; /* a plain client, or garbage */
 	uint8_t pl[NOISE_MAX_PAYLOAD];
 	int n = noise_read(hs, payload, plen, pl, sizeof pl);

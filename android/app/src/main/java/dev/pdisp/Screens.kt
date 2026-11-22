@@ -224,6 +224,13 @@ fun ConnectingScreen(c: SessionController, onCancel: () -> Unit) {
             Spacer(Modifier.height(24.dp))
             Text(text, style = MaterialTheme.typography.titleMedium, textAlign = TextAlign.Center)
             c.usbHint?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 8.dp)) }
+            Box(Modifier.height(88.dp).padding(top = 12.dp), contentAlignment = Alignment.TopCenter) { // space is reserved: the Cancel button must not move when the hint appears
+                if (c.slow) Text(
+                if (target is Target.Usb) "The PC is not answering over the cable. On the PC, pdispd must be running with the USB option, and not be busy with another device."
+                else "The PC is slow to answer. Is pdispd running on it, and not busy with another device?",
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.tertiary, textAlign = TextAlign.Center, modifier = Modifier.padding(top = 12.dp),
+                )
+            }
             Spacer(Modifier.height(32.dp))
             OutlinedButton(onClick = onCancel) { Text("Cancel") }
         }

@@ -62,8 +62,8 @@ Windows on the monitor follow it when it goes away and comes back; no window rul
 `nix flake check` builds a NixOS VM with the module on (`nix/vm-test.nix`) and checks the evdi device, the udev rule, the firewall port and that the user
 service starts and listens. It cannot show a stream: there is no GPU or phone in the VM.
 
-A cable and Wi-Fi are served one device at a time, in turn. A phone that sits in USB accessory mode without the app running holds the daemon for the 10 s
-handshake timeout before the next device is looked at, so a Wi-Fi device can wait up to 10 s in that case.
+One device is served at a time. A second device that connects meanwhile is refused at once ("the PC is busy with another device"), and a USB
+accessory whose app is not running (it never answers) is dropped as soon as a network device is waiting, so it cannot hold a Wi-Fi device behind it.
 
 ## Other distributions (manual)
 

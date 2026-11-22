@@ -125,3 +125,13 @@ No round needed the File transfer choice. An earlier run, before the blocked-rea
 Streaming over USB, the power button pressed: the app sent CLOSE reason 1 ("the phone closed the session (its screen locked)") and the
 daemon removed the monitor 200 ms later, with no grace period. After unlocking, the app reconnected by itself about 11 s later (one
 handshake timed out while the phone was still locked) and streamed on a new monitor.
+
+## A second device, and a silent cable
+- The daemon serves one device at a time, but it keeps accepting on its port while it streams. A device that connects then gets a plain `REJECT` with reason 3
+  (busy) before any handshake and is hung up on at once (the phone shows "The PC is busy"). Before this, the connection sat in the listen queue and the app
+  waited 10 s in "securing the connection".
+- With `-u -W`, a USB accessory that sends nothing (the app is not running, or the user has not answered Android's prompt) is waited for up to 10 s, but the
+  wait ends as soon as a network device is waiting, and that device is served next. Measured: a loopback client was served 0.45 s after it connected, with
+  a silent accessory attached.
+- The app shows what usually causes a slow connection after 4 s in any connecting stage ("The PC is not answering over the cable..." or "The PC is slow
+  to answer..."). The space for that text is reserved, so the Cancel button does not move when it appears (it did, and taps aimed at it missed).

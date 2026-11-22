@@ -1,7 +1,12 @@
 # home-manager module: the niri input mapping that keeps the device's touch and pen on its own monitor (docs/touch.md).
+# With home-manager's niri module (wayland.windowManager.niri) it adds the mapping to `settings.input` itself; without it, it writes
+# ~/.config/niri/pdisp.kdl, which the niri configuration includes with the line `include "pdisp.kdl"`.
 { self }:
-{ config, lib, pkgs, ... }:
-let cfg = config.programs.pdisp; in
+{ config, lib, options, pkgs, ... }:
+let
+  cfg = config.programs.pdisp;
+  hasNiriModule = options ? wayland && options.wayland ? windowManager && options.wayland.windowManager ? niri;
+in
 {
   options.programs.pdisp = {
     package = lib.mkOption {
@@ -11,20 +16,34 @@ let cfg = config.programs.pdisp; in
       description = "The pdisp package (the niri file comes from it).";
     };
 
-    niri.enable = lib.mkEnableOption ''
-      ~/.config/niri/pdisp.kdl with the touch and tablet mappings for the pdisp monitor. niri does not read it by itself: add the line
-      `include "pdisp.kdl"` to your niri configuration (it is `programs.pdisp.niri.include`, a string you can splice into the text you generate)
-    '';
+    niri.enable = lib.mkEnableOption "the niri mapping of the pdisp monitor's touch screen and pen tablet";
+
+    niri.output = lib.mkOption {
+      type = lib.types.str;
+      default = "PNP(PDI) pdisp PDISP0001";
+      description = ''
+        The monitor's identity (make, model, serial) as niri names it. With the daemon's defaults (`-n pdisp`, serial PDISP0001) it is the
+        default; it does not depend on the connector name.
+      '';
+    };
 
     niri.include = lib.mkOption {
       type = lib.types.str;
       default = ''include "pdisp.kdl"'';
       readOnly = true;
-      description = "The line that pulls the mapping into a niri configuration.";
+      description = "Without home-manager's niri module: the line that pulls ~/.config/niri/pdisp.kdl into a niri configuration.";
     };
   };
 
-  config = lib.mkIf cfg.niri.enable {
-    xdg.configFile."niri/pdisp.kdl".source = "${cfg.package}/share/pdisp/pdisp.kdl";
-  };
+  config = lib.mkIf cfg.niri.enable (lib.mkMerge [
+    (lib.optionalAttrs hasNiriModule {
+      wayland.windowManager.niri.settings.input = {
+        touch.map-to-output = cfg.niri.output;
+        tablet.map-to-output = cfg.niri.output;
+      };
+    })
+    (lib.optionalAttrs (!hasNiriModule) {
+      xdg.configFile."niri/pdisp.kdl".source = "${cfg.package}/share/pdisp/pdisp.kdl";
+    })
+  ]);
 }

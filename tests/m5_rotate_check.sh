@@ -43,7 +43,8 @@ i=0; while [ $i -lt 40 ] && ! ss -ltn | grep -q ":47110 "; do kill -0 "$dpid" 2>
 
 adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard >/dev/null 2>&1 # a device that went to sleep shows nothing
 adb shell pm clear dev.pdisp >/dev/null; adb shell am start -n dev.pdisp/.MainActivity >/dev/null; sleep 3 # fresh app: no saved PC, no pairing
-tap_text Cancel; sleep 1 # a cable-attached device starts on a USB attempt: leave it
+# a cable-attached device starts on a USB attempt: leave it (wait for the app to draw something first)
+for i in $(seq 1 20); do tap_text Cancel && break; adb shell cat /sdcard/pdisp_ui.xml | grep -q 'text="Add a PC"' && break; sleep 1; done; sleep 1
 adb shell settings put system accelerometer_rotation 0; adb shell settings put system user_rotation 1; sleep 3 # landscape (only works with the app in front)
 tap_text "Add a PC" || fail "no Add a PC button on the device"; sleep 1.5
 adb shell input text "$hostip"; sleep 1; adb shell input keyevent KEYCODE_ENTER; sleep 0.5; adb shell input keyevent KEYCODE_ENTER # address, then the (empty) name field: Go connects

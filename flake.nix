@@ -1,7 +1,7 @@
 {
   description = "pdisp: use an Android device as a Linux second monitor";
 
-  inputs.nixpkgs.url = "flake:nixpkgs";
+  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
 
   outputs = { self, nixpkgs }:
     let

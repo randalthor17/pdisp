@@ -45,6 +45,10 @@ class SessionController(private val activity: Activity, private val store: Store
     var stats by mutableStateOf<Stats?>(null); private set
     var problem by mutableStateOf<Problem?>(null)
     var attempts by mutableStateOf(0); private set
+    /** True when a connecting stage has lasted more than a few seconds: the screen then says what usually causes it. */
+    var slow by mutableStateOf(false); private set
+    private var stageSinceMs = 0L
+    private var lastStage = -1
     /** The text the native side reports (diagnostics, and the fallback when no stage text fits). */
     var rawStatus by mutableStateOf(""); private set
     /** Set while the app waits for a USB cable or for the user's permission. */
@@ -183,6 +187,8 @@ class SessionController(private val activity: Activity, private val store: Store
             if (PdispNative.nativeFinished(handle)) { sessionEnded(text); return }
             val info = PdispNative.nativeInfo(handle)
             stage = info[0]
+            if (stage != lastStage) { lastStage = stage; stageSinceMs = System.currentTimeMillis() }
+            slow = stage != STAGE_STREAMING && stage != STAGE_PAIRING && System.currentTimeMillis() - stageSinceMs > 4000
             when (stage) {
                 STAGE_PAIRING -> { pairCode = "%06d".format(info[1]); phase = Phase.Pairing }
                 STAGE_STREAMING -> {
@@ -239,6 +245,8 @@ class SessionController(private val activity: Activity, private val store: Store
         wifiLock = null
         stats = null
         pairCode = null
+        slow = false
+        lastStage = -1
         if (phase == Phase.Streaming || phase == Phase.Pairing) phase = if (wantConnected) Phase.Connecting else Phase.Idle
     }
 
@@ -302,6 +310,8 @@ class SessionController(private val activity: Activity, private val store: Store
 fun explain(text: String): Problem {
     val t = text.lowercase()
     return when {
+        "busy with another device" in t -> Problem("The PC is busy", "It is already streaming to another device. Disconnect that one first, then connect again.")
+        "connection reset" in t -> Problem("The PC closed the connection", "pdispd may have restarted or be busy with another device. Try again in a moment.")
         "cannot connect to" in t || "connection timed out" in t && "handshake" !in t ->
             Problem("Cannot reach the PC", "Check that the PC is on the same network, pdispd is running and the firewall lets port 47110 in.")
         "connection refused" in t -> Problem("The PC is not listening", "Start the pdisp service on the PC (systemctl --user start pdispd).")
