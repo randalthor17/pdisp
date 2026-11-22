@@ -23,6 +23,7 @@ cleanup() { for p in $ppid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done;
 trap cleanup EXIT
 fail() { echo "FAIL: $*"; grep -v '^\[libevdi\|^libva' "$dlog" | tail -12; exit 1; }
 
+adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard >/dev/null 2>&1 # a device that went to sleep shows nothing and answers no prompt
 adb shell am force-stop dev.pdisp; adb shell input keyevent KEYCODE_HOME
 adb shell svc usb setFunctions mtp >/dev/null; sleep 4 # leave accessory mode: the daemon must switch the device again
 # Android asks "Open pdisp to handle pdisp second monitor?" on a plug-in (some phones every time): answer it without ticking "Always"

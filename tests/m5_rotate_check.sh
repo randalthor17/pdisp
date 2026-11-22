@@ -41,6 +41,7 @@ view_center() { adb shell uiautomator dump /sdcard/pdisp_ui.xml >/dev/null 2>&1
 dpid=$!
 i=0; while [ $i -lt 40 ] && ! ss -ltn | grep -q ":47110 "; do kill -0 "$dpid" 2>/dev/null || { wait "$dpid"; [ $? = 3 ] && skip "no free evdi device"; fail "daemon exited"; }; sleep 0.5; i=$((i + 1)); done
 
+adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard >/dev/null 2>&1 # a device that went to sleep shows nothing
 adb shell pm clear dev.pdisp >/dev/null; adb shell am start -n dev.pdisp/.MainActivity >/dev/null; sleep 3 # fresh app: no saved PC, no pairing
 tap_text Cancel; sleep 1 # a cable-attached device starts on a USB attempt: leave it
 adb shell settings put system accelerometer_rotation 0; adb shell settings put system user_rotation 1; sleep 3 # landscape (only works with the app in front)
