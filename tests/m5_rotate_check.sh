@@ -27,6 +27,11 @@ cleanup() {
 }
 trap cleanup EXIT
 fail() { echo "FAIL: $*"; grep -v '^\[libevdi\|^libva' "$dlog" | tail -10; adb exec-out screencap -p >"$art/device.png"; exit 1; }
+# tap the first element whose text is exactly $1 (from the UI dump); succeeds only if there was one
+tap_text() { adb shell uiautomator dump /sdcard/pdisp_ui.xml >/dev/null 2>&1
+	local c; c=$(adb shell cat /sdcard/pdisp_ui.xml | tr '>' '\n' | grep "text=\"$1\"" | grep -o 'bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' | head -1 |
+		tr -cs '0-9' ' ' | awk '{ printf "%d %d", ($1 + $3) / 2, ($2 + $4) / 2 }')
+	[ -n "$c" ] && adb shell input tap $c; }
 # centre of a view on the device, from the UI dump: view_center <class>
 view_center() { adb shell uiautomator dump /sdcard/pdisp_ui.xml >/dev/null 2>&1
 	adb shell cat /sdcard/pdisp_ui.xml | tr '>' '\n' | grep "$1" | grep -o 'bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' | head -1 |
@@ -36,10 +41,11 @@ view_center() { adb shell uiautomator dump /sdcard/pdisp_ui.xml >/dev/null 2>&1
 dpid=$!
 i=0; while [ $i -lt 40 ] && ! ss -ltn | grep -q ":47110 "; do kill -0 "$dpid" 2>/dev/null || { wait "$dpid"; [ $? = 3 ] && skip "no free evdi device"; fail "daemon exited"; }; sleep 0.5; i=$((i + 1)); done
 
-adb shell am force-stop dev.pdisp; adb shell am start -n dev.pdisp/.MainActivity >/dev/null; sleep 2
+adb shell pm clear dev.pdisp >/dev/null; adb shell am start -n dev.pdisp/.MainActivity >/dev/null; sleep 3 # fresh app: no saved PC, no pairing
+tap_text Cancel; sleep 1 # a cable-attached device starts on a USB attempt: leave it
 adb shell settings put system accelerometer_rotation 0; adb shell settings put system user_rotation 1; sleep 3 # landscape (only works with the app in front)
-adb shell input tap $(view_center EditText); sleep 1
-adb shell input keyevent KEYCODE_MOVE_END $(printf 'KEYCODE_DEL %.0s' $(seq 1 40)); adb shell input text "$hostip"; sleep 1; adb shell input keyevent KEYCODE_ENTER
+tap_text "Add a PC" || fail "no Add a PC button on the device"; sleep 1.5
+adb shell input text "$hostip"; sleep 1; adb shell input keyevent KEYCODE_ENTER; sleep 0.5; adb shell input keyevent KEYCODE_ENTER # address, then the (empty) name field: Go connects
 # a cable-attached device first tries USB for 10 s, and a loaded machine slows the rest: allow a minute
 i=0; while [ $i -lt 120 ] && ! grep -q "streaming to" "$dlog"; do sleep 0.5; i=$((i + 1)); done
 grep -q "streaming to" "$dlog" || fail "the device never connected"

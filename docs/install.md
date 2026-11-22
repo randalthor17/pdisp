@@ -83,8 +83,8 @@ handshake timeout before the next device is looked at, so a Wi-Fi device can wai
 Install the APK (`android/build.sh` builds `android/app/build/outputs/apk/debug/app-debug.apk`; `adb install -r` or copy it to the device).
 Developer options and USB debugging are **not** needed.
 
-- **Wi-Fi**: open the app, type the PC's address, press Go. The first time, a notification on the PC asks whether to allow the device; the code it shows
-  must match the code on the device's screen. "Allow always" remembers the device (`pdisp-keys list` and `pdisp-keys remove` manage them).
+- **Wi-Fi**: open the app, tap Add a PC and type its address. The first time, a notification on the PC asks whether to allow the device; the code it shows
+  must match the code on the device's screen. Later, tap the PC in the list. The screens are described in `docs/app.md`. "Allow always" remembers the device (`pdisp-keys list` and `pdisp-keys remove` manage them).
 - **USB**: plug the cable in. The PC switches the device into accessory mode and Android offers to open pdisp: accept. The USB mode did not have to
   be File transfer on the two devices tried (charging only worked, with USB debugging on or off); a phone that hides itself until the user allows data was not
   available. See `docs/usb.md` for the modes measured and what to do if nothing happens.
