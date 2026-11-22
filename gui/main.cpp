@@ -5,8 +5,10 @@
 #include <QDir>
 #include <QApplication>
 #include <QIcon>
+#include <QPalette>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QtQml>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QStandardPaths>
@@ -30,22 +32,41 @@ int main(int argc, char **argv)
     QCommandLineOption socket("socket", "The pdispd control socket.", "path");
     QCommandLineOption shot("screenshot", "Write the window to this PNG and quit.", "file");
     QCommandLineOption page("page", "With --screenshot: the page to show (0 status, 1 devices, 2 settings).", "n", "0");
+    QCommandLineOption testPalette("test-palette", "Testing: pretend this Qt theme: window,text,highlight (colours like #130d09,#f8e1d6,#f6b998).", "colors");
+    QCommandLineOption size("size", "Window size, for example 420x760.", "WxH");
     QCommandLineOption answer("test-answer", "Testing: answer every pairing request with this (always, once, deny) after a moment.", "answer");
     QCommandLineOption delay("delay", "With --screenshot: milliseconds to wait first.", "ms", "1500");
-    p.addOptions({background, socket, shot, page, delay, answer});
+    p.addOptions({background, socket, shot, page, delay, answer, size, testPalette});
     p.process(app);
 
     QString path = p.value(socket);
     if (path.isEmpty()) path = QStandardPaths::writableLocation(QStandardPaths::RuntimeLocation) + "/pdisp/control.sock";
 
-    QQuickStyle::setStyle("Fusion"); // follows the desktop's palette (qtengine, KDE colour schemes)
+    if (p.isSet(testPalette)) {
+        const QStringList c = p.value(testPalette).split(',');
+        if (c.size() >= 3) {
+            QPalette pal;
+            pal.setColor(QPalette::Window, c[0]);
+            pal.setColor(QPalette::Base, c[0]);
+            pal.setColor(QPalette::WindowText, c[1]);
+            pal.setColor(QPalette::Text, c[1]);
+            pal.setColor(QPalette::Highlight, c[2]);
+            QApplication::setPalette(pal);
+        }
+    }
+    QQuickStyle::setStyle("Basic"); // the app draws its own Material 3 components; Basic only supplies behaviour
     Backend backend(path);
     QQmlApplicationEngine engine;
+    qmlRegisterSingletonInstance("Pdisp", 1, 0, "Backend", &backend); // for the Theme singleton, which cannot see context properties
     engine.rootContext()->setContextProperty("backend", &backend);
     engine.rootContext()->setContextProperty("startHidden", p.isSet(background) && !p.isSet(shot));
     engine.rootContext()->setContextProperty("initialPage", p.value(page).toInt());
     engine.load(QUrl("qrc:/qml/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;
+    if (p.isSet(size)) {
+        const QStringList wh = p.value(size).split('x');
+        if (wh.size() == 2) if (auto *w = qobject_cast<QQuickWindow *>(engine.rootObjects().first())) w->resize(wh[0].toInt(), wh[1].toInt());
+    }
 
     if (p.isSet(answer)) {
         QObject::connect(&backend, &Backend::pairingRequested, &app, [&backend, a = p.value(answer)](const QVariantMap &r) {

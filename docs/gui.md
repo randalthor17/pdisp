@@ -19,10 +19,19 @@ Without a daemon connection the window says so and offers `systemctl --user star
 - `--socket PATH` for a daemon with another control socket. For tests: `--screenshot FILE [--page N] [--delay MS]` writes the window to a PNG and quits (works with
   `QT_QPA_PLATFORM=offscreen`), `--test-answer always|once|deny` answers pairing requests by itself.
 
+## Design
+Material 3 Expressive, drawn by the app itself (Qt Quick Controls only supplies behaviour, in its Basic style): a navigation rail on a wide window and a bottom bar on a narrow one,
+round tonal containers (20 and 28 dp), pill buttons that round off while pressed, a 52 x 32 M3 switch, segmented buttons, steppers, M3 dialogs over a scrim, and
+Material Symbols Rounded icons (the system's font, else the one the Nix package bundles).
+
+**Colours come from the Qt theme, not from any shell.** `Theme.qml` reads the Qt palette (`SystemPalette`): the window colour is the surface, the highlight colour is the
+accent, and the rest of the Material 3 tonal roles (containers, the secondary and tertiary accents, outlines, surface steps, the accent at a tone that reads on the surface)
+are derived from those two the way a scheme is built from a seed. Dark or light follows the window colour. Errors are red in any theme. The font is the theme's font.
+So it follows qtengine, a KDE colour scheme or plain Fusion, and changes live when the theme does. `--test-palette window,text,highlight` fakes a theme for screenshots.
+
 ## Building
 Optional in meson: `-Dgui=auto` (default) builds it when Qt 6 with Quick Controls, Widgets and SVG is found, `-Dgui=disabled` leaves it out. The Nix package
-`pdisp-full` has the daemon and the GUI (`pdisp` is the daemon alone); `services.pdisp.gui.enable` (default on) installs and starts it. The window uses the
-Fusion style, which follows the desktop's palette.
+`pdisp-full` has the daemon and the GUI (`pdisp` is the daemon alone); `services.pdisp.gui.enable` (default on) installs and starts it. 
 
 ## Checked
 - `tests/m11_gui_check.sh`: a real daemon, the GUI offscreen answering the pairing request through its own backend, a viewer as the device, screenshots of the
@@ -31,4 +40,4 @@ Fusion style, which follows the desktop's palette.
 - Not checked: the tray icon on a real session (offscreen has no tray; it needs a StatusNotifier host), the window on a real Wayland desktop, light and dark
   palettes beyond what the offscreen Fusion shows, small window sizes beyond 520x460.
 - In a shell that sets `QT_QPA_PLATFORMTHEME=qtengine` the development shell's Qt loads a platform-theme plugin built against another Qt and crashes at exit
-  (`KIconTheme`). The tests clear that variable; the packaged app uses the Qt it was built with.
+  (`KIconTheme`). The tests clear both variables; the packaged app uses the Qt it was built with.

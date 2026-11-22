@@ -1,75 +1,68 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
+import Pdisp 1.0
 
-Item {
+Page {
     id: page
+    title: "Devices"
     property string removing: ""
     property string removingName: ""
 
-    ColumnLayout {
-        anchors { fill: parent; margins: 20 }
-        spacing: 12
-        RowLayout {
+    headerRight: MIconButton { iconName: "refresh"; fallback: "↻"; tip: "Refresh"; enabled: Backend.connected; onClicked: Backend.refreshDevices() }
+
+    MText {
+        visible: !Backend.connected || Backend.devices.length > 0
+        Layout.fillWidth: true
+        color: Theme.fgSurfaceVariant
+        text: Backend.connected ? "These devices may use this PC as a monitor without asking." : "The list comes from the daemon, which is not running."
+    }
+
+    MCard {
+        visible: Backend.connected && Backend.devices.length === 0
+        tone: "high"
+        padding: Theme.s5
+        ColumnLayout {
             Layout.fillWidth: true
-            Label { Layout.fillWidth: true; text: "Devices that may use this PC as a monitor"; font.bold: true; font.pixelSize: 15 }
-            Button { text: "Refresh"; enabled: backend.connected; onClicked: backend.refreshDevices() }
+            spacing: Theme.s3
+            Rectangle { Layout.alignment: Qt.AlignHCenter; implicitWidth: 72; implicitHeight: 72; radius: 24; color: Theme.secondaryContainer
+                MIcon { anchors.centerIn: parent; name: "tablet_android"; size: 36; color: Theme.fgSecondaryContainer } }
+            MText { Layout.fillWidth: true; text: "No device yet"; kind: "title"; scale: "l"; horizontalAlignment: Text.AlignHCenter }
+            MText { Layout.fillWidth: true; color: Theme.fgSurfaceVariant; horizontalAlignment: Text.AlignHCenter
+                text: "The first time a phone or tablet connects, a window asks whether to allow it. Devices you allow always show up here." }
         }
-        Label {
-            visible: !backend.connected
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            opacity: 0.7
-            text: "The list comes from the daemon, which is not running."
-        }
-        Label {
-            visible: backend.connected && list.count === 0
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            opacity: 0.7
-            text: "No device has been approved yet. The first time a phone or tablet connects, a window asks whether to allow it."
-        }
-        ListView {
-            id: list
-            Layout.fillWidth: true
-            Layout.fillHeight: true
-            clip: true
-            spacing: 8
-            model: backend.devices
-            delegate: Rectangle {
-                width: ListView.view.width
-                height: 64
-                radius: 8
-                color: Qt.tint(palette.window, Qt.rgba(palette.text.r, palette.text.g, palette.text.b, 0.07))
-                border.color: Qt.rgba(palette.text.r, palette.text.g, palette.text.b, 0.15)
-                RowLayout {
-                    anchors { fill: parent; leftMargin: 16; rightMargin: 12 }
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 2
-                        Label { Layout.fillWidth: true; text: modelData.name; font.pixelSize: 16; font.weight: Font.DemiBold; elide: Text.ElideRight }
-                        Label { Layout.fillWidth: true; text: modelData.fingerprint; font.family: "monospace"; font.pixelSize: 12; opacity: 0.6 }
-                    }
-                    Button {
-                        text: "Remove"
-                        onClicked: { page.removing = modelData.fingerprint; page.removingName = modelData.name; confirm.open() }
-                    }
+    }
+
+    Repeater {
+        model: Backend.devices
+        delegate: MCard {
+            tone: "normal"
+            padding: Theme.s4
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Theme.s4
+                Rectangle { implicitWidth: 48; implicitHeight: 48; radius: 16; color: Theme.primaryContainer
+                    MIcon { anchors.centerIn: parent; name: "tablet_android"; size: 26; color: Theme.fgPrimaryContainer } }
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+                    MText { Layout.fillWidth: true; text: modelData.name; kind: "title"; scale: "m"; elide: Text.ElideRight; wrapMode: Text.NoWrap }
+                    MText { Layout.fillWidth: true; text: modelData.fingerprint; font.family: "monospace"; kind: "label"; scale: "m"; color: Theme.fgSurfaceVariant; elide: Text.ElideRight; wrapMode: Text.NoWrap }
                 }
+                MIconButton { iconName: "delete"; fallback: "✕"; kind: "error"; tip: "Remove"
+                    onClicked: { page.removing = modelData.fingerprint; page.removingName = modelData.name; confirm.open() } }
             }
         }
     }
 
-    Dialog {
+    MDialog {
         id: confirm
-        title: "Remove this device?"
-        modal: true
-        anchors.centerIn: Overlay.overlay
-        standardButtons: Dialog.Cancel | Dialog.Ok
-        onAccepted: backend.removeDevice(page.removing)
-        Label {
-            width: 360
-            wrapMode: Text.Wrap
-            text: "“" + page.removingName + "” will have to be approved again the next time it connects."
-        }
+        headline: "Remove this device?"
+        iconName: "delete"
+        MText { Layout.fillWidth: true; color: Theme.fgSurfaceVariant; horizontalAlignment: Text.AlignHCenter
+            text: "“" + page.removingName + "” will have to be approved again the next time it connects." }
+        buttons: [
+            MButton { text: "Cancel"; kind: "text"; onClicked: confirm.close() },
+            MButton { text: "Remove"; kind: "error"; onClicked: { Backend.removeDevice(page.removing); confirm.close() } }
+        ]
     }
 }

@@ -15,6 +15,7 @@ class Backend : public QObject {
     Q_PROPERTY(QVariantList devices READ devices NOTIFY devicesChanged)
     Q_PROPERTY(QVariantMap pairing READ pairing NOTIFY pairingChanged) // the open pairing request (id, name, fingerprint, code), empty if none
     Q_PROPERTY(QString socketPath READ socketPath CONSTANT)
+    Q_PROPERTY(QString iconFont READ iconFont CONSTANT)                 // the Material Symbols font family, empty if none could be found
 
 public:
     explicit Backend(const QString &socketPath, QObject *parent = nullptr);
@@ -24,6 +25,7 @@ public:
     QVariantList devices() const { return m_devices; }
     QVariantMap pairing() const { return m_pairing; }
     QString socketPath() const { return m_path; }
+    QString iconFont() const { return m_iconFont; }
 
     Q_INVOKABLE void disconnectDevice();
     Q_INVOKABLE void answerPairing(int id, const QString &answer); // "always", "once" or "deny"
@@ -51,6 +53,7 @@ private:
     void handle(const QJsonObject &obj);
 
     QString m_path;
+    QString m_iconFont;
     QLocalSocket m_sock;
     QTimer m_retry;
     QByteArray m_buf;

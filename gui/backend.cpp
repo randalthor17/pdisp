@@ -1,11 +1,24 @@
 #include "backend.h"
 
+#include <QFontDatabase>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QStandardPaths>
 
 Backend::Backend(const QString &socketPath, QObject *parent) : QObject(parent), m_path(socketPath)
 {
+    // Material Symbols for the icons: the system's font, else the one this build was given
+    const QStringList families = QFontDatabase::families();
+    for (const QString &f : {QString("Material Symbols Rounded"), QString("Material Symbols Outlined")})
+        if (m_iconFont.isEmpty() && families.contains(f)) m_iconFont = f;
+#ifdef PDISP_SYMBOLS_FONT
+    if (m_iconFont.isEmpty()) {
+        const int id = QFontDatabase::addApplicationFont(QStringLiteral(PDISP_SYMBOLS_FONT));
+        if (id >= 0 && !QFontDatabase::applicationFontFamilies(id).isEmpty()) m_iconFont = QFontDatabase::applicationFontFamilies(id).first();
+    }
+#endif
+
     connect(&m_sock, &QLocalSocket::connected, this, &Backend::onConnected);
     connect(&m_sock, &QLocalSocket::disconnected, this, &Backend::onDisconnected);
     connect(&m_sock, &QLocalSocket::readyRead, this, &Backend::onReadyRead);

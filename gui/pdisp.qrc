@@ -1,9 +1,22 @@
 <RCC>
     <qresource prefix="/">
         <file>pdisp.svg</file>
+        <file>qml/qmldir</file>
+        <file>qml/Theme.qml</file>
         <file>qml/Main.qml</file>
-        <file>qml/Card.qml</file>
-        <file>qml/Stat.qml</file>
+        <file>qml/Page.qml</file>
+        <file>qml/MIcon.qml</file>
+        <file>qml/MText.qml</file>
+        <file>qml/MButton.qml</file>
+        <file>qml/MIconButton.qml</file>
+        <file>qml/MSwitch.qml</file>
+        <file>qml/MCard.qml</file>
+        <file>qml/MStepper.qml</file>
+        <file>qml/MSegmented.qml</file>
+        <file>qml/MDialog.qml</file>
+        <file>qml/Chip.qml</file>
+        <file>qml/Tile.qml</file>
+        <file>qml/NavItem.qml</file>
         <file>qml/StatusPage.qml</file>
         <file>qml/DevicesPage.qml</file>
         <file>qml/SettingsPage.qml</file>

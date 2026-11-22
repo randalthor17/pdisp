@@ -17,7 +17,7 @@ cleanup() { for p in $gpid $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null;
 trap cleanup EXIT
 fail() { echo "FAIL: $*"; echo "--- daemon:"; grep -v '^\[libevdi\|^libva' "$art/daemon.log" 2>/dev/null | tail -10; echo "--- gui:"; cat "$art/gui1.log" 2>/dev/null | tail -5; exit 1; }
 mkdir -p "$art/pc"; chmod 700 "$art/pc"
-export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME= QT_FORCE_STDERR_LOGGING=1
+export QT_QPA_PLATFORM=offscreen QT_QPA_PLATFORMTHEME= QT_QPA_PLATFORMTHEME_QT6= QT_FORCE_STDERR_LOGGING=1
 
 "$daemon" -C "$sock" -K "$art/pc" -P ask -p "$PORT" -t PDISPGUI -n pdisp-gui -g 5 >"$art/daemon.log" 2>&1 &
 dpid=$!

@@ -1,6 +1,6 @@
 # The pdisp daemon and its tools, built from this repository with meson. With withGui the Qt 6 / QML application pdisp-gui is built too.
 { stdenv, lib, meson, ninja, pkg-config, wayland-scanner, libevdi, libdrm, libva, libusb1, wayland, wayland-protocols, zlib, ffmpeg-headless, SDL2
-, qt6, withGui ? false }:
+, qt6, material-symbols, withGui ? false }:
 
 stdenv.mkDerivation {
   pname = if withGui then "pdisp-full" else "pdisp";
@@ -25,7 +25,9 @@ stdenv.mkDerivation {
   buildInputs = [ libevdi libdrm libva libusb1 wayland wayland-protocols zlib ffmpeg-headless SDL2 ]
     ++ lib.optionals withGui [ qt6.qtbase qt6.qtdeclarative qt6.qtwayland qt6.qtsvg ];
 
-  mesonFlags = [ (lib.mesonEnable "gui" withGui) ];
+  mesonFlags = [ (lib.mesonEnable "gui" withGui) ]
+    # the icon font the GUI loads when the system has none
+    ++ lib.optional withGui "-Dsymbols_font=${material-symbols}/share/fonts/truetype/MaterialSymbolsRounded[FILL,GRAD,opsz,wght].ttf";
 
   # only the GUI is a Qt program: do not wrap the daemon and the tools
   dontWrapQtApps = true;

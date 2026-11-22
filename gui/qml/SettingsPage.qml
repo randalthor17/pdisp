@@ -1,112 +1,89 @@
 import QtQuick
-import QtQuick.Controls
 import QtQuick.Layouts
+import Pdisp 1.0
 
-ScrollView {
+Page {
     id: page
-    contentWidth: availableWidth
-    readonly property var cfg: backend.state.config ? backend.state.config : ({})
+    title: "Settings"
+    readonly property var cfg: Backend.state.config ? Backend.state.config : ({})
+    readonly property bool online: Backend.connected
 
-    // a field that follows the daemon's value, except while the user is typing in it
-    component Row2: RowLayout {
-        property string title
-        property string hint
+    // one row of a settings card: what it is, what it does, and its control on the right
+    component Setting: RowLayout {
+        property string headline
+        property string supporting
         default property alias control: slot.data
         Layout.fillWidth: true
-        spacing: 16
+        Layout.topMargin: 4
+        Layout.bottomMargin: 4
+        spacing: Theme.s4
         ColumnLayout {
             Layout.fillWidth: true
             spacing: 2
-            Label { text: title }
-            Label { text: hint; Layout.fillWidth: true; wrapMode: Text.Wrap; font.pixelSize: 12; opacity: 0.6 }
+            MText { text: headline; kind: "body"; scale: "l" }
+            MText { Layout.fillWidth: true; text: supporting; kind: "body"; scale: "s"; color: Theme.fgSurfaceVariant }
         }
-        Item { id: slot; implicitWidth: childrenRect.width; implicitHeight: childrenRect.height }
+        RowLayout { id: slot }
+    }
+    component Divider: Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.outlineVariant }
+
+    function rates() {
+        var base = [30, 60, 90, 120, 144], cur = cfg.refresh_cap_hz
+        if (cur !== undefined && base.indexOf(cur) < 0) { base.push(cur); base.sort(function(a, b) { return a - b }) }
+        return base.map(function(v) { return { "label": v + " Hz", "value": v } })
     }
 
-    ColumnLayout {
-        width: page.availableWidth
-        spacing: 14
-
-        Card {
-            title: "Picture"
-            enabled: backend.connected
-            Row2 {
-                title: "Highest refresh rate"
-                hint: "The PC uses the best rate the device offers that is not above this. 60 Hz is the smoothest on every link tried; higher needs a good cable or Wi-Fi."
-                ComboBox {
-                    id: hz
-                    model: [30, 45, 60, 75, 90, 100, 120, 144]
-                    displayText: currentText + " Hz"
-                    currentIndex: Math.max(0, model.indexOf(page.cfg.refresh_cap_hz))
-                    onActivated: backend.setConfig("refresh_cap_hz", model[currentIndex])
-                }
-            }
-            Row2 {
-                title: "Starting bitrate"
-                hint: "Where the picture quality starts; it adapts to the link from there."
-                SpinBox {
-                    id: br
-                    from: 2; to: 100; stepSize: 1
-                    editable: true
-                    textFromValue: function(v) { return v + " Mbit/s" }
-                    valueFromText: function(t) { return parseInt(t) }
-                    onValueModified: backend.setConfig("bitrate_kbps", value * 1000)
-                    Binding on value { value: (page.cfg.bitrate_kbps || 12000) / 1000; when: !br.activeFocus }
-                }
-            }
-            Row2 {
-                title: "Highest bitrate"
-                hint: "The ceiling the rate control may climb to."
-                SpinBox {
-                    id: bm
-                    from: 4; to: 200; stepSize: 2
-                    editable: true
-                    textFromValue: function(v) { return v + " Mbit/s" }
-                    valueFromText: function(t) { return parseInt(t) }
-                    onValueModified: backend.setConfig("max_bitrate_kbps", value * 1000)
-                    Binding on value { value: (page.cfg.max_bitrate_kbps || 40000) / 1000; when: !bm.activeFocus }
-                }
-            }
-            Row2 {
-                title: "Sharpen still pictures"
-                hint: "When nothing changes for a moment, send better versions of the same screen. Text gets sharper; 0 turns it off."
-                SpinBox {
-                    id: rf
-                    from: 0; to: 200; stepSize: 10
-                    editable: true
-                    textFromValue: function(v) { return v === 0 ? "off" : v + " pictures" }
-                    valueFromText: function(t) { return t === "off" ? 0 : parseInt(t) }
-                    onValueModified: backend.setConfig("refine_frames", value)
-                    Binding on value { value: page.cfg.refine_frames !== undefined ? page.cfg.refine_frames : 40; when: !rf.activeFocus }
-                }
-            }
+    MText { text: "Picture"; kind: "title"; scale: "m"; color: Theme.primary; Layout.topMargin: Theme.s2 }
+    MCard {
+        tone: "normal"
+        enabled: page.online
+        opacity: page.online ? 1 : 0.5
+        Setting {
+            headline: "Highest refresh rate"
+            supporting: "The PC uses the best rate the device offers that is not above this. 60 Hz is the smoothest on every link tried."
+            MSegmented { model: page.rates(); current: page.cfg.refresh_cap_hz; onPicked: function(v) { Backend.setConfig("refresh_cap_hz", v) } }
         }
-
-        Card {
-            title: "Connection"
-            enabled: backend.connected
-            Row2 {
-                title: "Keep the monitor after a lost link"
-                hint: "If a device drops out (cable, Wi-Fi), the monitor and its windows stay this long so it can come back. 0 removes the monitor at once."
-                SpinBox {
-                    id: gr
-                    from: 0; to: 600; stepSize: 5
-                    editable: true
-                    textFromValue: function(v) { return v === 0 ? "no" : v + " s" }
-                    valueFromText: function(t) { return t === "no" ? 0 : parseInt(t) }
-                    onValueModified: backend.setConfig("grace_secs", value)
-                    Binding on value { value: page.cfg.grace_secs !== undefined ? page.cfg.grace_secs : 30; when: !gr.activeFocus }
-                }
-            }
+        Divider {}
+        Setting {
+            headline: "Starting bitrate"
+            supporting: "Where the picture quality starts. It adapts to the link from there."
+            MStepper { from: 2; to: 100; step: 2; value: (page.cfg.bitrate_kbps || 12000) / 1000
+                format: function(v) { return v + " Mbit/s" }; onMoved: function(v) { Backend.setConfig("bitrate_kbps", v * 1000) } }
         }
-
-        Label {
-            Layout.fillWidth: true
-            wrapMode: Text.Wrap
-            font.pixelSize: 12
-            opacity: 0.65
-            text: "Changes apply from the next connection and are saved. The port, the USB option and how new devices are approved are set when the daemon starts "
-                  + "(on NixOS in services.pdisp). Control socket: " + backend.socketPath
+        Divider {}
+        Setting {
+            headline: "Highest bitrate"
+            supporting: "The ceiling the rate control may climb to."
+            MStepper { from: 4; to: 200; step: 4; value: (page.cfg.max_bitrate_kbps || 40000) / 1000
+                format: function(v) { return v + " Mbit/s" }; onMoved: function(v) { Backend.setConfig("max_bitrate_kbps", v * 1000) } }
         }
+        Divider {}
+        Setting {
+            headline: "Sharpen still pictures"
+            supporting: "When nothing changes for a moment, send better versions of the same screen. Text gets sharper."
+            MSwitch { checked: (page.cfg.refine_frames || 0) > 0; onToggled: Backend.setConfig("refine_frames", checked ? 40 : 0) }
+        }
+    }
+
+    MText { text: "Connection"; kind: "title"; scale: "m"; color: Theme.primary; Layout.topMargin: Theme.s3 }
+    MCard {
+        tone: "normal"
+        enabled: page.online
+        opacity: page.online ? 1 : 0.5
+        Setting {
+            headline: "Keep the monitor after a lost link"
+            supporting: "If a device drops out (cable, Wi-Fi), the monitor and its windows stay this long so it can come back. Off removes the monitor at once."
+            MStepper { from: 0; to: 600; step: 5; value: page.cfg.grace_secs !== undefined ? page.cfg.grace_secs : 30
+                format: function(v) { return v === 0 ? "Off" : v + " s" }; onMoved: function(v) { Backend.setConfig("grace_secs", v) } }
+        }
+    }
+
+    RowLayout {
+        Layout.fillWidth: true
+        Layout.topMargin: Theme.s2
+        spacing: Theme.s3
+        MIcon { name: "info"; size: 20; color: Theme.fgSurfaceVariant; Layout.alignment: Qt.AlignTop }
+        MText { Layout.fillWidth: true; kind: "body"; scale: "s"; color: Theme.fgSurfaceVariant
+            text: "Changes apply from the next connection and are saved. The port, the USB option and how new devices are approved are set when the daemon starts (on NixOS in services.pdisp). Control socket: " + Backend.socketPath }
     }
 }

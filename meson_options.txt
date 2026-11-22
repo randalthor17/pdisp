@@ -1,1 +1,3 @@
 option('gui', type: 'feature', value: 'auto', description: 'The Qt 6 / QML tray application pdisp-gui (needs Qt 6 with Quick Controls)')
+
+option('symbols_font', type: 'string', value: '', description: 'Path of a Material Symbols Rounded font file for pdisp-gui to load when the system has none')
