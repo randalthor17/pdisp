@@ -6,6 +6,10 @@ project('pdisp', 'c',
 
 add_project_arguments('-D_POSIX_C_SOURCE=200809L', language: 'c')
 
+# the GUI is optional and the only C++
+have_cpp = add_languages('cpp', required: get_option('gui'), native: false)
+qt6_dep = dependency('qt6', modules: ['Core', 'Gui', 'Widgets', 'Qml', 'Quick', 'QuickControls2', 'Network'], required: get_option('gui'))
+
 m_dep = meson.get_compiler('c').find_library('m')
 evdi_dep = dependency('evdi')
 
@@ -298,3 +302,7 @@ test('m11 control socket', m11_control,
   is_parallel: false,
   timeout: 200,
   suite: 'integration')
+
+if qt6_dep.found() and have_cpp
+  subdir('gui')
+endif

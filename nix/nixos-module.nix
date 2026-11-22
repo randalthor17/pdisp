@@ -13,9 +13,15 @@ in
 
     package = lib.mkOption {
       type = lib.types.package;
-      default = self.packages.${pkgs.stdenv.hostPlatform.system}.pdisp;
+      default = if cfg.gui.enable then self.packages.${pkgs.stdenv.hostPlatform.system}.pdisp-full else self.packages.${pkgs.stdenv.hostPlatform.system}.pdisp;
       defaultText = lib.literalExpression "pdisp.packages.\${system}.pdisp";
       description = "The pdisp package.";
+    };
+
+    gui.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = "Also install and start pdisp-gui, the tray application for status, paired devices, settings and approving new devices (it pulls in Qt 6).";
     };
 
     port = lib.mkOption {
@@ -65,6 +71,18 @@ in
     networking.firewall = lib.mkIf cfg.openFirewall {
       allowedTCPPorts = [ cfg.port ];
       allowedUDPPorts = [ cfg.port ];
+    };
+
+    systemd.user.services.pdisp-gui = lib.mkIf cfg.gui.enable {
+      description = "pdisp tray application";
+      wantedBy = [ "graphical-session.target" ];
+      partOf = [ "graphical-session.target" ];
+      after = [ "graphical-session.target" "pdispd.service" ];
+      serviceConfig = {
+        ExecStart = "${cfg.package}/bin/pdisp-gui --background";
+        Restart = "on-failure";
+        RestartSec = 3;
+      };
     };
 
     systemd.user.services.pdispd = {

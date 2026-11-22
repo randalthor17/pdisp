@@ -24,6 +24,7 @@ trap cleanup EXIT
 fail() { echo "FAIL: $*"; grep -v '^\[libevdi\|^libva' "$dlog" | tail -12; exit 1; }
 
 adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard >/dev/null 2>&1 # a device that went to sleep shows nothing and answers no prompt
+sleep 1; adb shell dumpsys window | grep -q "mCurrentFocus=.*\(NotificationShade\|Keyguard\)" && skip "the device is locked: unlock it and run the test again"
 adb shell am force-stop dev.pdisp; adb shell input keyevent KEYCODE_HOME
 adb shell svc usb setFunctions mtp >/dev/null; sleep 4 # leave accessory mode: the daemon must switch the device again
 # Android asks "Open pdisp to handle pdisp second monitor?" on a plug-in (some phones every time): answer it without ticking "Always"

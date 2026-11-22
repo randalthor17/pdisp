@@ -18,9 +18,10 @@
       }).androidsdk;
       libevdi = pkgs.callPackage ./nix/libevdi.nix { evdi = pkgs.linuxPackages.evdi; };
       pdisp = pkgs.callPackage ./nix/pdisp.nix { inherit libevdi; };
+      pdisp-full = pkgs.callPackage ./nix/pdisp.nix { inherit libevdi; withGui = true; };
     in
     {
-      packages.${system} = { inherit libevdi pdisp; default = pdisp; };
+      packages.${system} = { inherit libevdi pdisp pdisp-full; default = pdisp; };
 
       nixosModules.default = import ./nix/nixos-module.nix { inherit self; };
       homeManagerModules.default = import ./nix/hm-module.nix { inherit self; };
@@ -60,6 +61,7 @@
           iproute2
           ffmpeg-headless
           SDL2
+          qt6.wrapQtAppsHook
         ];
         buildInputs = with pkgs; [
           libevdi
@@ -71,7 +73,18 @@
           zlib
           ffmpeg-headless
           SDL2
+          qt6.qtbase
+          qt6.qtdeclarative
+          qt6.qtwayland
+          qt6.qtsvg
         ];
+
+        # the user's profile has Qt 5 QML modules: point Qt at its own 6 ones, and only those
+        shellHook = ''
+          export QML_IMPORT_PATH=${pkgs.qt6.qtdeclarative}/lib/qt-6/qml
+          export QML2_IMPORT_PATH=$QML_IMPORT_PATH
+          export QT_PLUGIN_PATH=${pkgs.qt6.qtbase}/lib/qt-6/plugins:${pkgs.qt6.qtwayland}/lib/qt-6/plugins:${pkgs.qt6.qtsvg}/lib/qt-6/plugins
+        '';
       };
       };
     };

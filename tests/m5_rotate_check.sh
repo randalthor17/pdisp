@@ -42,6 +42,7 @@ dpid=$!
 i=0; while [ $i -lt 40 ] && ! ss -ltn | grep -q ":47110 "; do kill -0 "$dpid" 2>/dev/null || { wait "$dpid"; [ $? = 3 ] && skip "no free evdi device"; fail "daemon exited"; }; sleep 0.5; i=$((i + 1)); done
 
 adb shell input keyevent KEYCODE_WAKEUP; adb shell wm dismiss-keyguard >/dev/null 2>&1 # a device that went to sleep shows nothing
+sleep 1; adb shell dumpsys window | grep -q "mCurrentFocus=.*\(NotificationShade\|Keyguard\)" && skip "the device is locked: unlock it and run the test again"
 adb shell pm clear dev.pdisp >/dev/null; adb shell am start -n dev.pdisp/.MainActivity >/dev/null; sleep 3 # fresh app: no saved PC, no pairing
 # a cable-attached device starts on a USB attempt: leave it (wait for the app to draw something first)
 for i in $(seq 1 20); do tap_text Cancel && break; adb shell cat /sdcard/pdisp_ui.xml | grep -q 'text="Add a PC"' && break; sleep 1; done; sleep 1

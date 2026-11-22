@@ -1,0 +1,12 @@
+<RCC>
+    <qresource prefix="/">
+        <file>pdisp.svg</file>
+        <file>qml/Main.qml</file>
+        <file>qml/Card.qml</file>
+        <file>qml/Stat.qml</file>
+        <file>qml/StatusPage.qml</file>
+        <file>qml/DevicesPage.qml</file>
+        <file>qml/SettingsPage.qml</file>
+        <file>qml/PairingDialog.qml</file>
+    </qresource>
+</RCC>

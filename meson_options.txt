@@ -1,0 +1,1 @@
+option('gui', type: 'feature', value: 'auto', description: 'The Qt 6 / QML tray application pdisp-gui (needs Qt 6 with Quick Controls)')
