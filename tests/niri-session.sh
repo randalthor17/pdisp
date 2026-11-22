@@ -13,7 +13,9 @@ repo=$(cd "$(dirname "$0")/.." && pwd)
 [ -n "${WAYLAND_DISPLAY:-}" ] && { echo "Run this from a plain terminal (a spare VT), not inside a desktop session: it starts its own niri."; exit 2; }
 # The tests need the evdi device for themselves (there is one): pause your own pdisp services while they run, and start them again afterwards.
 stopped=""
+if [ "$(ls /sys/devices/platform 2>/dev/null | grep -c "^evdi\.")" -lt 2 ]; then # with a second evdi device (services.pdisp.evdiDevices = 2) the tests take that one and nothing needs pausing
 for u in pdisp-gui pdispd; do systemctl --user is-active --quiet $u 2>/dev/null && { systemctl --user stop $u && stopped="$u $stopped"; }; done
+fi
 [ -n "$stopped" ] && echo "paused your services: $stopped(started again at the end)"
 restore() { rm -f "$cfg"; for u in $stopped; do systemctl --user start $u; done; }
 cfg=$(mktemp --suffix=.kdl)
@@ -33,7 +35,17 @@ mem() {
 		[ -r "$c" ] && echo "$(basename "$(dirname "$(dirname "$c")")") gtt $(( $(cat "$c") / 1048576 )) MiB, vram $(( $(cat "${c/gtt/vram}") / 1048576 )) MiB"
 	done
 }
+# The shared VRAM held by the niri that is already running (your desktop's): the throwaway niri frees its own on exit, but this one is the question.
+main_niri=$(pgrep -x niri | head -1)
+mainmem() { # MiB
+	[ -n "$main_niri" ] || { echo "?"; return; }
+	for f in /proc/"$main_niri"/fdinfo/*; do
+		grep -q "drm-driver: amdgpu" "$f" 2>/dev/null && awk '/drm-shared-vram/ { if ($2 > m) m = $2 } END { print int(m / 1024) }' "$f"
+	done | sort -n | tail -1
+}
+main_before=$(mainmem)
 echo "GPU memory before:"; mem
+echo "your desktop niri (pid ${main_niri:-none}) holds ${main_before:-?} MiB of shared VRAM"
 args=$(printf '%q ' "$@") # test names with spaces survive the sh -c below
 res=$(mktemp)
 log="$repo/build/niri-session-tests.log" # niri runs its command with stdout discarded, so meson's output goes to a file
@@ -45,6 +57,7 @@ niri -c "$cfg" -- sh -c "
 	niri msg action quit --skip-confirmation
 "
 echo; echo "niri has quit. GPU memory now:"; mem
+echo "your desktop niri now holds $(mainmem) MiB of shared VRAM (before the tests: ${main_before:-?} MiB): the difference is what the tests cost it"
 rc=$(cat "$res" 2>/dev/null || echo 1); rm -f "$res"
 [ -r "$res.mem" ] && { echo "peak, from inside niri:"; cat "$res.mem"; rm -f "$res.mem"; }
 echo "meson output: $log"; tail -n 25 "$log" 2>/dev/null

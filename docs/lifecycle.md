@@ -174,3 +174,6 @@ under it and watches the stream (`daemon/ratestep.c`, every 2 s while frames are
 Each step is one output reconfiguration (a hot-plug of the virtual monitor, see the memory note above), so it happens at most a few times per device, not per session.
 The first case: the Tab S9 FE at 90 Hz over USB (docs/quality.md): keyframes forced every few seconds, queue 100 to 650 ms; at 60 Hz it is clean.
 Tested by `tests/m12_rate_step_check.sh` (a viewer that loses 20% of the datagrams above 60 Hz: steps down, remembers, starts there, forgets).
+`tests/niri-session.sh` also prints the shared VRAM of your desktop niri before and after, to show what the tests cost it. With only one evdi device it pauses
+your `pdispd` and `pdisp-gui` services while it runs (the tests need the device), which itself removes and recreates an output if a device was streaming:
+with `services.pdisp.evdiDevices = 2` the tests take the second device and nothing is paused.
