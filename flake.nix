@@ -58,6 +58,8 @@
           wayland-scanner
           edid-decode
           jq
+          imagemagick # the gesture and window checks
+          loupe
           iproute2
           ffmpeg-headless
           SDL2

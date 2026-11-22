@@ -17,6 +17,11 @@ cat >"$cfg" <<'KDL'
 // a bare niri for the tests: no bar, no autostart, no animations
 animations { off; }
 hotkey-overlay { skip-at-startup; }
+// the virtual outputs of the tests (evdi connectors) at scale 1, as in a normal setup: a phone-sized output would otherwise get scale 2
+output "DVI-I-1" { scale 1; }
+output "DVI-I-2" { scale 1; }
+output "DVI-I-3" { scale 1; }
+output "DVI-I-4" { scale 1; }
 KDL
 mem() {
 	for c in /sys/class/drm/card*/device/mem_info_gtt_used; do
