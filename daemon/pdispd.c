@@ -25,6 +25,7 @@
 
 #include "control.h"
 #include "mdns.h"
+#include "ratestep.h"
 #include "edid.h"
 #include "encoder.h"
 #include "handshake.h"
@@ -100,6 +101,15 @@ struct daemon {
 
 static struct daemon D;
 
+/* Finding a refresh rate the device can sustain (ratestep.h): the cap is the user's; this is the session's own limit below it. */
+static unsigned g_rate_limit_mhz;       /* 0 = none; else the highest rate this device was found able to sustain */
+static unsigned g_idr_unres;            /* keyframes forced by unresolved frames so far */
+static struct ratestep g_rs;
+static struct proto_hello g_hello;      /* the device's HELLO, to pick another mode from */
+static uint8_t g_dev_pub[PC_DH_LEN];    /* its key (secure sessions only) */
+static bool g_have_dev_pub, g_stepped;  /* g_stepped: this session lowered the rate */
+static char g_rates_path[1100];         /* "learned_rates" beside the settings file */
+
 enum { PAIR_ASK, PAIR_ACCEPT, PAIR_DENY };
 static struct touchdev *touchdev;  /* the phone's touchscreen on this PC, while a session is running */
 static struct pendev *pendev;      /* its stylus, if it has one */
@@ -155,6 +165,7 @@ static void encode_and_submit(const uint8_t *pixels, int stride, uint64_t captur
 	encoder_set_bitrate(D.enc, vsend_bitrate_kbps(D.vs));
 	if (vsend_must_idr(D.vs, now)) { /* the newest frames may all depend on a frame the phone never got */
 		D.force_idr = true;
+		g_idr_unres++;
 		LOG("%u frames unresolved, rtt %.1f ms: sending an IDR", vsend_unresolved(D.vs), vsend_rtt_us(D.vs) / 1000.0);
 	}
 	struct encoder_packet p;
@@ -231,8 +242,10 @@ static int choose_mode(const struct proto_hello *h, struct edid_params *ep, stru
 	unsigned w = C.force_w ? C.force_w : h->native_width, hh = C.force_h ? C.force_h : h->native_height;
 	unsigned refresh_mhz = C.force_mhz;
 	if (!refresh_mhz) {
+		unsigned limit = C.max_hz_mhz; /* the user's cap is a ceiling; a rate this device was found unable to sustain lowers it for the session */
+		if (g_rate_limit_mhz && g_rate_limit_mhz < limit) limit = g_rate_limit_mhz;
 		for (int i = 0; i < h->n_refresh; i++)
-			if (h->refresh_mhz[i] <= C.max_hz_mhz && h->refresh_mhz[i] > refresh_mhz) refresh_mhz = h->refresh_mhz[i];
+			if (h->refresh_mhz[i] <= limit && h->refresh_mhz[i] > refresh_mhz) refresh_mhz = h->refresh_mhz[i];
 		if (!refresh_mhz) refresh_mhz = h->n_refresh ? h->refresh_mhz[0] : 60000;
 	}
 	unsigned dpi = h->density_dpi ? h->density_dpi : 160;
@@ -698,6 +711,48 @@ static bool g_grace_active;                    /* the monitor is being kept for 
 static uint64_t g_session_start_us, g_pub_frames, g_pub_us;
 static char g_conf_path[1100];                 /* the settings file a client can change; read at start */
 
+/* ---- the rates learned per device: "<first 16 bytes of its key in hex> <rate Hz> <the cap in Hz when it was learned>" per line ---- */
+static void rates_key(const uint8_t pub[PC_DH_LEN], char out[33])
+{
+	for (int i = 0; i < 16; i++) snprintf(out + 2 * i, 3, "%02x", pub[i]);
+}
+
+/* The rate known to be sustainable for this device, if it was learned under a cap at least as high as today's (a higher cap is a new question). */
+static unsigned rates_load(const uint8_t pub[PC_DH_LEN])
+{
+	if (!g_rates_path[0]) return 0;
+	FILE *f = fopen(g_rates_path, "r");
+	if (!f) return 0;
+	char key[33], line[200];
+	unsigned hz = 0, cap, found = 0;
+	rates_key(pub, key);
+	while (fgets(line, sizeof line, f)) {
+		char k[40];
+		if (sscanf(line, "%39s %u %u", k, &hz, &cap) == 3 && !strcmp(k, key)) { found = (C.max_hz_mhz / 1000 <= cap && hz >= 24) ? hz : 0; break; }
+	}
+	fclose(f);
+	return found;
+}
+
+static void rates_save(const uint8_t pub[PC_DH_LEN], unsigned hz, unsigned cap)
+{
+	if (!g_rates_path[0]) return;
+	char key[33], tmp[1120], line[200];
+	rates_key(pub, key);
+	snprintf(tmp, sizeof tmp, "%s.tmp", g_rates_path);
+	FILE *o = fopen(tmp, "w");
+	if (!o) return;
+	FILE *f = fopen(g_rates_path, "r");
+	while (f && fgets(line, sizeof line, f)) if (strncmp(line, key, 32)) fputs(line, o);
+	fprintf(o, "%s %u %u\n", key, hz, cap);
+	if (f) fclose(f);
+	fclose(o);
+	if (rename(tmp, g_rates_path)) unlink(tmp);
+}
+
+static void rates_clear(void) { if (g_rates_path[0]) unlink(g_rates_path); }
+
+
 static void ctl_publish(void)
 {
 	g_cs.usb = C.usb;
@@ -825,7 +880,7 @@ static int op_set_config(void *user, const char *key, const char *value, char *e
 	char *end;
 	unsigned long v = strtoul(value, &end, 10);
 	if (*end || !*value) { snprintf(err, errcap, "%s must be a whole number", key); return -EINVAL; }
-	if (!strcmp(key, "refresh_cap_hz")) { if (v < 24 || v > 480) goto range; C.max_hz_mhz = (unsigned)v * 1000; }
+	if (!strcmp(key, "refresh_cap_hz")) { if (v < 24 || v > 480) goto range; C.max_hz_mhz = (unsigned)v * 1000; rates_clear(); /* a new cap: find the stable rates again */ }
 	else if (!strcmp(key, "bitrate_kbps")) { if (v < 1000 || v > 200000) goto range; C.bitrate = (unsigned)v; }
 	else if (!strcmp(key, "max_bitrate_kbps")) { if (v < 2000 || v > 200000) goto range; C.max_bitrate = (unsigned)v; }
 	else if (!strcmp(key, "grace_secs")) { if (v > 3600) goto range; C.grace_secs = (unsigned)v; }
@@ -947,6 +1002,29 @@ static int acquire_peer(struct conn *c, uint64_t deadline_us)
 }
 
 /* One phone, from its HELLO to the end of the stream. The virtual output and encoder outlive this call (see above). */
+/* Rebuilds the output, encoder and sender for a new mode and tells the device (RECONFIGURE). 0, 1 (the link is unusable) or 2 (fatal). */
+static int reconfigure(struct net_ctl *ctl, const struct proto_hello *nh, const struct edid_params *nep, const struct edid_timing *nt,
+		       const uint8_t nedid[EDID_SIZE])
+{
+	D.streaming = false;
+	D.refresh_due_us = 0;
+	D.refine_due_us = 0;
+	if (bring_up(nep, nt, nedid) != 0 || ++D.epoch == 0) { LOG("reconfiguration failed"); return 1; }
+	touch_start(nh, D.width, D.height, nep); /* the coordinate range may have changed with the size */
+	if (make_sender() != 0) return 2;
+	if (!C.insecure) sec_udp_set_epoch(&secudp, D.epoch); /* sequence numbers restart: new datagram keys */
+	struct proto_stream_params rp;
+	make_params(&rp);
+	uint8_t rb[1400];
+	int rn = proto_stream_params_encode(&rp, rb, sizeof rb);
+	if (rn < 0 || net_ctl_send(ctl, PROTO_CTL_RECONFIGURE, rb, (size_t)rn) != 0) return 1;
+	D.awaiting_ack = true;
+	D.ack_deadline_us = net_now_us() + 10000000;
+	D.reconfigs++;
+	ratestep_reset(&g_rs);
+	return 0;
+}
+
 static enum end_reason serve(struct conn *c, double run_secs)
 {
 	struct net_ctl *ctl = &c->ctl;
@@ -967,6 +1045,14 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	for (int i = 0; i < hello.n_codecs; i++) has_hevc |= hello.codecs[i] == PROTO_CODEC_HEVC;
 	if (!has_hevc) { reject(ctl, 4, "the phone cannot decode HEVC"); return END_REJECTED; }
 
+	g_hello = hello;
+	g_have_dev_pub = !C.insecure;
+	if (g_have_dev_pub) memcpy(g_dev_pub, c->dev.pub, PC_DH_LEN);
+	g_rate_limit_mhz = g_have_dev_pub ? rates_load(g_dev_pub) * 1000 : 0; /* what this device was found able to sustain, under today's cap */
+	if (g_rate_limit_mhz) LOG("this device sustains %u Hz (found earlier): starting there", g_rate_limit_mhz / 1000);
+	g_stepped = false;
+	g_idr_unres = 0;
+	ratestep_reset(&g_rs);
 	struct edid_params ep;
 	struct edid_timing timing;
 	uint8_t edid[EDID_SIZE];
@@ -1147,21 +1233,9 @@ static enum end_reason serve(struct conn *c, double run_secs)
 						LOG("display change without a mode change: nothing to do");
 					} else {
 						LOG("the phone's display changed to %ux%u: reconfiguring", nep.width, nep.height);
-						D.streaming = false;
-						D.refresh_due_us = 0;
-						D.refine_due_us = 0;
-						if (bring_up(&nep, &nt, nedid) != 0 || ++D.epoch == 0) { LOG("reconfiguration failed"); end = END_LINK; done = 1; break; }
-						touch_start(&nh, D.width, D.height, &nep); /* the coordinate range changed with the size */
-						if (make_sender() != 0) { end = END_FATAL; done = 1; break; }
-						if (!C.insecure) sec_udp_set_epoch(&secudp, D.epoch); /* sequence numbers restart: new datagram keys */
-						struct proto_stream_params rp;
-						make_params(&rp);
-						uint8_t rb[1400];
-						int rn = proto_stream_params_encode(&rp, rb, sizeof rb);
-						if (rn < 0 || net_ctl_send(ctl, PROTO_CTL_RECONFIGURE, rb, (size_t)rn) != 0) { end = END_LINK; done = 1; break; }
-						D.awaiting_ack = true;
-						D.ack_deadline_us = net_now_us() + 10000000;
-						D.reconfigs++;
+						g_hello = nh;
+						int rr = reconfigure(ctl, &nh, &nep, &nt, nedid);
+						if (rr) { end = rr == 2 ? END_FATAL : END_LINK; done = 1; break; }
 						evfd = vdisplay_event_fd(D.vd);
 					}
 				}
@@ -1215,6 +1289,36 @@ static enum end_reason serve(struct conn *c, double run_secs)
 			    (unsigned long long)st->nacks, (unsigned long long)st->frames_lost, vsend_queue_delay_us(D.vs) / 1000.0,
 			    vsend_unresolved(D.vs), st->fb_queue_max_us / 1000.0, st->fb_decode_max_x10 / 10.0, st->fb_recv_kbps_min / 1000.0);
 			vsend_reset_report(D.vs);
+
+			/* is this rate sustainable? A quiet screen proves nothing; trouble over most of 12 s steps down to the next rate the device offers */
+			static uint64_t prev_frames, prev_lost;
+			static unsigned prev_idr;
+			struct ratestep_sample rs = { .active = D.frames_encoded > prev_frames && D.streaming, .idr_unresolved = g_idr_unres - prev_idr,
+						      .frames_lost = (unsigned)(st->frames_lost - prev_lost), .phone_slow = st->fb_decode_max_x10 >= 500 };
+			prev_frames = D.frames_encoded; prev_lost = st->frames_lost; prev_idr = g_idr_unres;
+			enum ratestep_action act = D.awaiting_ack ? RATESTEP_NONE : ratestep_tick(&g_rs, &rs);
+			if (act == RATESTEP_DOWN) {
+				unsigned lower = ratestep_next_lower(g_hello.refresh_mhz, g_hello.n_refresh, D.refresh_mhz, 30000);
+				struct edid_params nep;
+				struct edid_timing nt;
+				uint8_t nedid[EDID_SIZE];
+				const char *nwhy = "";
+				if (!lower) LOG("the stream is not healthy at %u Hz and the device offers nothing lower", D.refresh_mhz / 1000);
+				else {
+					LOG("the stream is not healthy at %u Hz (keyframes forced %u, lost %u, decode up to %.0f ms): trying %u Hz",
+					    D.refresh_mhz / 1000, rs.idr_unresolved, rs.frames_lost, st->fb_decode_max_x10 / 10.0, lower / 1000);
+					g_rate_limit_mhz = lower;
+					g_stepped = true;
+					if (choose_mode(&g_hello, &nep, &nt, nedid, &nwhy) == 0) {
+						int rr = reconfigure(ctl, &g_hello, &nep, &nt, nedid);
+						if (rr) { end = rr == 2 ? END_FATAL : END_LINK; break; }
+						evfd = vdisplay_event_fd(D.vd);
+					}
+				}
+			} else if (act == RATESTEP_STABLE && g_stepped && g_have_dev_pub) {
+				LOG("%u Hz is stable for this device: remembering it", D.refresh_mhz / 1000);
+				rates_save(g_dev_pub, D.refresh_mhz / 1000, C.max_hz_mhz / 1000);
+			}
 		}
 	}
 
@@ -1257,6 +1361,7 @@ static int run_session(double run_secs)
 		LOG("%s identity in %s, key %s", created ? "created a new" : "using the", cdir, fp);
 		snprintf(g_ks_path, sizeof g_ks_path, "%s/authorized_keys", cdir);
 		snprintf(g_conf_path, sizeof g_conf_path, "%s/pdispd.conf", cdir);
+		snprintf(g_rates_path, sizeof g_rates_path, "%s/learned_rates", cdir);
 		conf_load();
 	}
 	if (!C.usb || C.also_net) {

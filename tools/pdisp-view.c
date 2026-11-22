@@ -57,6 +57,8 @@ struct viewer {
 	double decode_ms_sum;
 	uint64_t drop_rng;       /* -L: drop this share of incoming datagrams (a crude loss injector) */
 	double drop_rate;
+	double hot_drop;          /* -B: extra loss while the stream is above hot_hz_mhz (a phone that cannot keep up with a high rate) */
+	unsigned hot_hz_mhz;
 
 	/* decoding runs on its own thread, like a phone's async MediaCodec: the network loop must never wait for it */
 	pthread_t thread;
@@ -466,6 +468,7 @@ static void usage(const char *argv0)
 		"  -G            read the timestamp the pattern client draws (-T there) and report glass-to-glass latency\n"
 		"  -g SECS      with -G: ignore the first SECS seconds of stamps\n"
 		"  -L pct        drop this percentage of incoming datagrams at random\n"
+		"  -B hz:pct     drop this percentage of incoming datagrams while the stream is faster than hz (a phone that cannot keep up)\n"
 		"  -X secs:WxH   after this long, report a display change to this size (a rotation), exercising RECONFIGURE\n"
 		"  -j SCRIPT     play these touches to the PC (after a second): tap:X,Y swipe:X1,Y1:X2,Y2 pinch:CX,CY:R1:R2 hold:MS, X and Y\n"
 		"                as fractions of the screen\n"
@@ -496,7 +499,7 @@ int main(int argc, char **argv)
 	bool insecure = false;
 	double change_after = 0;
 	unsigned change_w = 0, change_h = 0;
-	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGg:wL:K:X:i:j:J:q:C:IQvh")) != -1) {
+	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGg:wL:B:K:X:i:j:J:q:C:IQvh")) != -1) {
 		switch (opt) {
 		case 'W': nw = (unsigned)atoi(optarg); break;
 		case 'H': nh = (unsigned)atoi(optarg); break;
@@ -510,6 +513,7 @@ int main(int argc, char **argv)
 		case 'g': V.glass_skip_us = (uint64_t)(atof(optarg) * 1e6); break;
 		case 'w': V.window = true; break;
 		case 'L': drop_pct = atof(optarg); break;
+		case 'B': V.hot_hz_mhz = (unsigned)(atof(optarg) * 1000); { const char *c = strchr(optarg, ':'); V.hot_drop = c ? atof(c + 1) / 100.0 : 0; } break;
 		case 'K': V.skew_us = atoll(optarg); break;
 		case 'i': identity_dir = optarg; break;
 		case 'j': touch_script = optarg; break;
@@ -606,6 +610,7 @@ int main(int argc, char **argv)
 	struct proto_setup su;
 	if (type != PROTO_CTL_SETUP || proto_setup_decode(payload, plen, &su) != 0) { fprintf(stderr, "bad SETUP\n"); return 1; }
 	if (new_pc && keystore_add(pcs_path, pc.pub, pc.name) == 0) LOG("remembered this PC");
+	V.drop_rate = drop_pct / 100.0 + (V.hot_hz_mhz && su.params.refresh_mhz > V.hot_hz_mhz ? V.hot_drop : 0);
 	LOG("SETUP: %ux%u@%.3f, session %08x, %u kbit/s, %u bytes of parameter sets", su.params.width, su.params.height,
 	    su.params.refresh_mhz / 1000.0, su.session_id, su.params.bitrate_kbps, su.params.param_sets_len);
 
@@ -723,6 +728,7 @@ int main(int argc, char **argv)
 					struct proto_stream_params np;
 					if (proto_stream_params_decode(payload, plen, &np) != 0) { LOG("bad RECONFIGURE"); done = true; break; }
 					LOG("RECONFIGURE: epoch %u, %ux%u: restarting the decoder", np.epoch, np.width, np.height);
+					V.drop_rate = drop_pct / 100.0 + (V.hot_hz_mhz && np.refresh_mhz > V.hot_hz_mhz ? V.hot_drop : 0);
 					stop_decoder();
 					if (start_decoder(np.param_sets, np.param_sets_len) != 0) { LOG("cannot reopen the decoder"); done = true; break; }
 					vrecv_destroy(vr);

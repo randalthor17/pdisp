@@ -125,7 +125,7 @@ test_stream = executable('test_stream', 'tests/test_stream.c', dependencies: pro
 test('video stream over a simulated link', test_stream, timeout: 300)
 
 # the daemon and the desktop test client
-pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', 'daemon/touch.c', 'daemon/control.c', 'daemon/json.c', 'daemon/mdns.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')], install: true)
+pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', 'daemon/touch.c', 'daemon/control.c', 'daemon/json.c', 'daemon/mdns.c', 'daemon/ratestep.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')], install: true)
 libav_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libswscale')]
 pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads'), dependency('sdl2'), meson.get_compiler('c').find_library('m')] + libav_deps)
 
@@ -293,6 +293,8 @@ configure_file(input: 'contrib/systemd/pdispd.service.in', output: 'pdispd.servi
 json_lib = static_library('pdisp-json', 'daemon/json.c', include_directories: inc)
 json_dep = declare_dependency(link_with: json_lib, include_directories: inc)
 test_json = executable('test_json', 'tests/test_json.c', dependencies: json_dep)
+test_ratestep = executable('test_ratestep', 'tests/test_ratestep.c', 'daemon/ratestep.c')
+test('rate governor', test_ratestep)
 test_mdns = executable('test_mdns', 'tests/test_mdns.c', 'daemon/mdns.c', dependencies: dependency('threads'))
 test('mdns packets', test_mdns)
 test('json helper', test_json)
@@ -303,6 +305,14 @@ test('m11 control socket', m11_control,
   protocol: 'exitcode',
   is_parallel: false,
   timeout: 200,
+  suite: 'integration')
+
+m12_rate = find_program('tests/m12_rate_step_check.sh')
+test('m12 stable refresh rate', m12_rate,
+  args: [pdispd, pdisp_view, pdisp_pattern, pdisp_ctl, meson.current_build_dir() / 'm12-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 240,
   suite: 'integration')
 
 if qt6_dep.found() and have_cpp

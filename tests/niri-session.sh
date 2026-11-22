@@ -29,12 +29,13 @@ mem() {
 	done
 }
 echo "GPU memory before:"; mem
+args=$(printf '%q ' "$@") # test names with spaces survive the sh -c below
 res=$(mktemp)
 log="$repo/build/niri-session-tests.log" # niri runs its command with stdout discarded, so meson's output goes to a file
 # safe here: this niri is a throwaway, so the checks that change its config or open windows may run
 export PDISP_TEST_NIRI_CONFIG=1 PDISP_TEST_WINDOWS=1 PDISP_TEST_NIRI_REAL_CONFIG="$cfg" # the tests put this niri's own config back, not your desktop's
 niri -c "$cfg" -- sh -c "
-	cd '$repo' && nix develop -c meson test -C build --print-errorlogs ${*:-} >'$log' 2>&1 ; echo \$? >'$res'
+	cd '$repo' && nix develop -c meson test -C build --print-errorlogs $args >'$log' 2>&1 ; echo \$? >'$res'
 	echo; echo 'GPU memory after the tests (still held by this niri):' | tee -a '$res.mem'; $(declare -f mem); mem | tee -a '$res.mem'
 	niri msg action quit --skip-confirmation
 "

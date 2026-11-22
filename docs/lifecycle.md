@@ -158,3 +158,19 @@ connects a few times a day loses a few hundred MiB per day at most; scripts that
 `tests/niri-session.sh` (run it from a spare virtual terminal, not from the desktop): starts a throwaway niri, runs `meson test` inside it, prints the GPU memory
 before and after, and quits that niri, which frees what the output cycles took. A nested niri (a window) cannot be used: it has no DRM backend and never sees evdi outputs.
 Not run yet (it needs a free VT).
+
+## Stable rate (renegotiating the refresh rate)
+`refresh_cap_hz` (the GUI's "Highest refresh rate", `pdispd -R`) is a **ceiling**, not a promise. The daemon starts at the best rate the device offers
+under it and watches the stream (`daemon/ratestep.c`, every 2 s while frames are being sent; a static screen proves nothing):
+
+- a tick is *bad* if the daemon had to force a keyframe because frames stayed unresolved, if the device reported lost frames, or if its decode took 50 ms or more;
+- 4 bad ticks among the last 6 (12 s) mean the device cannot sustain this rate: the daemon renegotiates (RECONFIGURE, the same mechanism as a rotation) to the next
+  lower rate the device offers, never below 30 Hz, and starts counting again;
+- 15 ticks (30 s) of healthy streaming at a lowered rate are remembered per device (its key) in `learned_rates` beside the settings, with the cap at the time;
+  the next connection starts at that rate. A remembered rate is ignored if the cap is raised above what it was learned under, and every remembered rate is
+  forgotten when the cap is set (GUI, `pdisp-ctl set refresh_cap_hz`): the user asked a new question.
+- It never goes back up by itself within a session; to try a higher rate again, set the cap again.
+
+Each step is one output reconfiguration (a hot-plug of the virtual monitor, see the memory note above), so it happens at most a few times per device, not per session.
+The first case: the Tab S9 FE at 90 Hz over USB (docs/quality.md): keyframes forced every few seconds, queue 100 to 650 ms; at 60 Hz it is clean.
+Tested by `tests/m12_rate_step_check.sh` (a viewer that loses 20% of the datagrams above 60 Hz: steps down, remembers, starts there, forgets).
