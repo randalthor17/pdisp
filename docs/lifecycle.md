@@ -135,3 +135,16 @@ handshake timed out while the phone was still locked) and streamed on a new moni
   a silent accessory attached.
 - The app shows what usually causes a slow connection after 4 s in any connecting stage ("The PC is not answering over the cable..." or "The PC is slow
   to answer..."). The space for that text is reserved, so the Cancel button does not move when it appears (it did, and taps aimed at it missed).
+
+## GPU memory and output churn (niri)
+Every time the virtual output is removed and created again, niri (as of 2026-11) can keep the GPU buffers it made for it:
+[niri issue #1457](https://github.com/niri-wm/niri/issues/1457), open, no fix, reported with real monitors too (power-off, TV/desktop switching).
+Seen here: a session with many output cycles left ~2,400 dmabuf handles on niri's DRM fd, nearly all sized for the 1440-row tablet output
+(2304x1536 after alignment), about 24 GiB of "shared" VRAM, GTT full, while no virtual output existed. Killing Xwayland freed nothing.
+
+What the daemon already does to avoid churn: the output exists only while a device is connected (and for the grace period after a lost
+link), a returning device gets the same output back, and only a different size reconfigures it. Rotation or a size change is one
+disconnect and connect of the same evdi device. Nothing is created while the daemon waits.
+
+If GTT fills up (`cat /sys/class/drm/card1/device/mem_info_gtt_used`), log out and in: that frees it. Avoid scripts that cycle the output.
+The evdi module itself can stay loaded; unloading it needs root and does not free niri's buffers.
