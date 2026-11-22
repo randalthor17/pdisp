@@ -24,6 +24,7 @@
 #include <time.h>
 
 #include "control.h"
+#include "mdns.h"
 #include "edid.h"
 #include "encoder.h"
 #include "handshake.h"
@@ -57,6 +58,7 @@ static struct {
 	const char *control_path; /* -C: the control socket (default $XDG_RUNTIME_DIR/pdisp/control.sock; "none" turns it off) */
 	bool insecure;           /* development only: no handshake, no encryption (the M4 behaviour) */
 	bool no_touch;           /* do not create a touchscreen for the phone */
+	bool no_mdns;            /* do not announce this PC on the local network */
 	const char *touch_hook;  /* a command run when the touchscreen exists, to bind it to the virtual output (docs/touch.md) */
 	unsigned grace_secs;     /* after a lost link, keep the virtual output this long for the phone to come back (0 = tear it down at once) */
 	bool once;               /* serve one session and exit instead of waiting for the next device */
@@ -351,6 +353,7 @@ static void usage(const char *argv0)
 		"              exit status 0 allows the device for good, 2 this time only, anything else denies (contrib/pdisp-pair-prompt)\n"
 		"              or deny\n"
 		"  -T          do not create a touchscreen for the phone's touches\n"
+		"  -M          do not announce this PC on the local network (mDNS, so the app can list it)\n"
 		"  -H CMD      run this shell command once the touchscreen exists, with PDISP_OUTPUT (connector, if known), PDISP_OUTPUT_ID\n"
 		"              (\"make model serial\" as the compositor names it), PDISP_TOUCH_DEVICE, PDISP_WIDTH, PDISP_HEIGHT set: use it\n"
 		"              to bind the touchscreen to the virtual output (see docs/touch.md)\n"
@@ -378,7 +381,7 @@ int main(int argc, char **argv)
 		C.refine_start_qp = (e = getenv("PDISP_REFINE_QP0")) ? (unsigned)atoi(e) : 22;
 		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 50;
 	}
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uWV:K:P:A:H:F:C:TIho")) != -1) {
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uWV:K:P:A:H:F:C:TMIho")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
 		case 'F': C.refine_frames = (unsigned)atoi(optarg); g_cli_set |= CONF_F; break; /* static refinement pictures; 0 = off */
@@ -410,6 +413,7 @@ int main(int argc, char **argv)
 			break;
 		case 'I': C.insecure = true; break;
 		case 'T': C.no_touch = true; break;
+		case 'M': C.no_mdns = true; break;
 		case 'H': C.touch_hook = optarg; break;
 		case 'o': C.once = true; break;
 		case 'g': C.grace_secs = (unsigned)atoi(optarg); g_cli_set |= CONF_G; break;
@@ -683,6 +687,7 @@ struct conn {
 };
 
 static struct identity g_id;
+static struct mdns *g_mdns;
 static char g_ks_path[1100];
 
 /* ================= the control socket (docs/control.md) =================
@@ -1258,6 +1263,24 @@ static int run_session(double run_secs)
 		g_lfd = net_tcp_listen(C.port);
 		if (g_lfd < 0) { fprintf(stderr, "cannot listen on %u: %s\n", C.port, strerror(-g_lfd)); return 1; }
 		LOG("listening on port %u", C.port);
+		if (!C.no_mdns) {
+			char host[64] = "", label[64] = "pdisp", inst[64], fp[IDENTITY_FINGERPRINT_LEN], fptxt[40];
+			gethostname(host, sizeof host - 1);
+			size_t j = 5;
+			for (const char *h = host; *h && j < sizeof label - 1; h++) { /* a DNS label: letters, digits and hyphens */
+				if (j == 5) label[j++] = '-';
+				label[j++] = (*h >= 'A' && *h <= 'Z') ? *h + 32 : ((*h >= 'a' && *h <= 'z') || (*h >= '0' && *h <= '9')) ? *h : '-';
+			}
+			label[j] = 0;
+			snprintf(inst, sizeof inst, "pdisp on %s", host[0] ? host : "this PC");
+			const char *txt[3] = { "v=1", NULL, NULL };
+			if (!C.insecure) { identity_fingerprint(g_id.pub, fp); snprintf(fptxt, sizeof fptxt, "fp=%s", fp); txt[1] = fptxt; }
+			struct mdns_svc ms;
+			mdns_svc_init(&ms, inst, label, (uint16_t)C.port, txt);
+			int me = mdns_start(&ms, &g_mdns);
+			if (me == 0) LOG("announcing \"%s\" on the local network (mDNS)", inst);
+			else LOG("not announcing on the local network: %s", strerror(-me));
+		}
 	} else {
 		LOG("waiting for a tablet on USB");
 	}
@@ -1310,6 +1333,7 @@ static int run_session(double run_secs)
 			ctl_publish();
 		}
 	}
+	mdns_stop(g_mdns); g_mdns = NULL;
 	teardown_output();
 	control_stop();
 	if (g_lfd >= 0) close(g_lfd);

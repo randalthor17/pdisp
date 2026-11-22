@@ -70,7 +70,7 @@ in
 
     networking.firewall = lib.mkIf cfg.openFirewall {
       allowedTCPPorts = [ cfg.port ];
-      allowedUDPPorts = [ cfg.port ];
+      allowedUDPPorts = [ cfg.port 5353 ]; # 5353: mDNS, so the app can find this PC (queries from the LAN come in on it)
     };
 
     systemd.user.services.pdisp-gui = lib.mkIf cfg.gui.enable {

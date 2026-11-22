@@ -84,6 +84,7 @@ private fun ago(ms: Long): String {
 fun HomeScreen(
     c: SessionController, pcs: List<Pc>, onConnect: (Pc) -> Unit, onAdd: (String, String) -> Unit,
     onRename: (Pc, String) -> Unit, onForget: (Pc) -> Unit, onSettings: () -> Unit,
+    found: List<FoundPc> = emptyList(), onFound: (FoundPc) -> Unit = {},
 ) {
     var adding by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<Pc?>(null) }
@@ -120,15 +121,27 @@ fun HomeScreen(
         Spacer(Modifier.height(20.dp))
 
         Text("Wi-Fi", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
-        if (pcs.isEmpty()) {
+        val fresh = found.filter { f -> pcs.none { it.host.equals(f.address, ignoreCase = true) } }
+        if (pcs.isEmpty() && fresh.isEmpty()) {
             Card(modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     Text("No PC yet", style = MaterialTheme.typography.titleSmall)
                     Text("1. Install and start pdisp on the PC (docs/install.md).", style = MaterialTheme.typography.bodyMedium)
-                    Text("2. Find the PC's address (for example 192.168.0.20).", style = MaterialTheme.typography.bodyMedium)
-                    Text("3. Tap Add a PC below and type it. The first time, the PC asks you to approve this device.", style = MaterialTheme.typography.bodyMedium)
+                    Text("2. Wait a moment: it shows up here by itself. If it does not, find its address (for example 192.168.0.20).", style = MaterialTheme.typography.bodyMedium)
+                    Text("3. Tap it (or Add a PC and type the address). The first time, the PC asks you to approve this device.", style = MaterialTheme.typography.bodyMedium)
                 }
             }
+        }
+        // PCs that announced themselves (mDNS) and are not in the list yet: one tap adds and connects
+        if (fresh.isNotEmpty()) {
+            Text("Found on your network", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(top = 4.dp, bottom = 6.dp))
+            for (f in fresh) Card(modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).clickable { onFound(f) }) {
+                Column(Modifier.padding(16.dp)) {
+                    Text(f.name, style = MaterialTheme.typography.titleMedium)
+                    Text(f.address, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(8.dp))
         }
         for (pc in pcs) PcCard(pc, onClick = { onConnect(pc) }, onRename = { renaming = pc }, onForget = { onForget(pc) })
         Spacer(Modifier.height(8.dp))

@@ -24,6 +24,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -44,6 +45,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var store: Store
     private lateinit var session: SessionController
     private val touch = TouchForwarder()
+    private lateinit var discovery: Discovery
 
     private val permissionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -57,6 +59,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         store = Store(this)
         session = SessionController(this, store)
+        discovery = Discovery(this)
         val filter = IntentFilter(SessionController.ACTION_USB_PERMISSION)
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(permissionReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
         else @Suppress("UnspecifiedRegisterReceiverFlag") registerReceiver(permissionReceiver, filter)
@@ -75,6 +78,10 @@ class MainActivity : ComponentActivity() {
         var menu by remember { mutableStateOf(false) }
         val phase = session.phase
         val view = LocalView.current
+
+        // look for PCs on the network only while the list is showing
+        val listing = phase == Phase.Idle && screen == Screen.Home
+        DisposableEffect(listing) { if (listing) discovery.start(); onDispose { discovery.stop() } }
 
         // the screen stays on while connected, and the system bars go away while the picture is showing
         LaunchedEffect(phase, settings.keepScreenOn) {
@@ -125,6 +132,7 @@ class MainActivity : ComponentActivity() {
                         onRename = { pc, n -> store.rename(pc.id, n); pcs = store.pcs() },
                         onForget = { pc -> store.remove(pc.id); pcs = store.pcs() },
                         onSettings = { screen = Screen.Settings },
+                        found = discovery.found, onFound = { f -> val pc = store.upsert(f.address, f.name); pcs = store.pcs(); session.connect(pc) },
                     )
                     Screen.Settings -> SettingsScreen(
                         session, settings,

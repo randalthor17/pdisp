@@ -157,12 +157,14 @@ class SessionController(private val activity: Activity, private val store: Store
         }
     }
 
-    private fun startHostSession(host: String) {
+    private fun startHostSession(address: String) {
         val s = surface ?: return
+        val host = address.substringBefore(':') // "host" or "host:port" (a PC found on the network may use another port)
+        val port = address.substringAfter(':', "").toIntOrNull() ?: 47110
         val d = displayInfo()
         phase = Phase.Connecting
         handle = PdispNative.nativeStart(
-            host, 47110, s, d.width, d.height, activity.resources.displayMetrics.densityDpi, d.rates, Build.MODEL,
+            host, port, s, d.width, d.height, activity.resources.displayMetrics.densityDpi, d.rates, Build.MODEL,
             activity.filesDir.absolutePath, deviceCaps(),
         )
         sessionStarted()
