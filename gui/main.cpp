@@ -5,6 +5,7 @@
 #include <QDir>
 #include <QApplication>
 #include <QIcon>
+#include <unistd.h>
 #include <QImage>
 #include <QStyleHints>
 #include <QPainter>
@@ -102,5 +103,9 @@ int main(int argc, char **argv)
             app.exit(img.save(file) ? 0 : 3);
         });
     }
-    return app.exec();
+    const int rc = app.exec();
+    // Qt tears its icon cache down in the QGuiApplication destructor and now and then aborts there ("corrupted double-linked list", in
+    // QThemeIconEngine). Nothing here needs a clean shutdown (no unsaved state), so leave without it.
+    fflush(nullptr);
+    _exit(rc);
 }
