@@ -711,21 +711,25 @@ static bool g_grace_active;                    /* the monitor is being kept for 
 static uint64_t g_session_start_us, g_pub_frames, g_pub_us;
 static char g_conf_path[1100];                 /* the settings file a client can change; read at start */
 
-/* ---- the rates learned per device: "<first 16 bytes of its key in hex> <rate Hz> <the cap in Hz when it was learned>" per line ---- */
-static void rates_key(const uint8_t pub[PC_DH_LEN], char out[33])
+/* ---- the rates learned per device and transport: "<first 16 bytes of its key in hex><u or n> <rate Hz> <the cap in Hz when it was learned>" per line.
+ * The device decides what its decoder can do and the transport what the link can: a rate that works over USB says nothing about Wi-Fi. ---- */
+#define RATES_KEY_LEN 33
+static void rates_key(const uint8_t pub[PC_DH_LEN], bool usb, char out[RATES_KEY_LEN + 1])
 {
 	for (int i = 0; i < 16; i++) snprintf(out + 2 * i, 3, "%02x", pub[i]);
+	out[32] = usb ? 'u' : 'n';
+	out[33] = 0;
 }
 
 /* The rate known to be sustainable for this device, if it was learned under a cap at least as high as today's (a higher cap is a new question). */
-static unsigned rates_load(const uint8_t pub[PC_DH_LEN])
+static unsigned rates_load(const uint8_t pub[PC_DH_LEN], bool usb)
 {
 	if (!g_rates_path[0]) return 0;
 	FILE *f = fopen(g_rates_path, "r");
 	if (!f) return 0;
-	char key[33], line[200];
+	char key[RATES_KEY_LEN + 1], line[200];
 	unsigned hz = 0, cap, found = 0;
-	rates_key(pub, key);
+	rates_key(pub, usb, key);
 	while (fgets(line, sizeof line, f)) {
 		char k[40];
 		if (sscanf(line, "%39s %u %u", k, &hz, &cap) == 3 && !strcmp(k, key)) { found = (C.max_hz_mhz / 1000 <= cap && hz >= 24) ? hz : 0; break; }
@@ -734,16 +738,16 @@ static unsigned rates_load(const uint8_t pub[PC_DH_LEN])
 	return found;
 }
 
-static void rates_save(const uint8_t pub[PC_DH_LEN], unsigned hz, unsigned cap)
+static void rates_save(const uint8_t pub[PC_DH_LEN], bool usb, unsigned hz, unsigned cap)
 {
 	if (!g_rates_path[0]) return;
-	char key[33], tmp[1120], line[200];
-	rates_key(pub, key);
+	char key[RATES_KEY_LEN + 1], tmp[1120], line[200];
+	rates_key(pub, usb, key);
 	snprintf(tmp, sizeof tmp, "%s.tmp", g_rates_path);
 	FILE *o = fopen(tmp, "w");
 	if (!o) return;
 	FILE *f = fopen(g_rates_path, "r");
-	while (f && fgets(line, sizeof line, f)) if (strncmp(line, key, 32)) fputs(line, o);
+	while (f && fgets(line, sizeof line, f)) if (strncmp(line, key, RATES_KEY_LEN)) fputs(line, o);
 	fprintf(o, "%s %u %u\n", key, hz, cap);
 	if (f) fclose(f);
 	fclose(o);
@@ -1048,8 +1052,8 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	g_hello = hello;
 	g_have_dev_pub = !C.insecure;
 	if (g_have_dev_pub) memcpy(g_dev_pub, c->dev.pub, PC_DH_LEN);
-	g_rate_limit_mhz = g_have_dev_pub ? rates_load(g_dev_pub) * 1000 : 0; /* what this device was found able to sustain, under today's cap */
-	if (g_rate_limit_mhz) LOG("this device sustains %u Hz (found earlier): starting there", g_rate_limit_mhz / 1000);
+	g_rate_limit_mhz = g_have_dev_pub ? rates_load(g_dev_pub, g_usb_conn) * 1000 : 0; /* what this device was found able to sustain, under today's cap */
+	if (g_rate_limit_mhz) LOG("this device sustains %u Hz over %s (found earlier): starting there", g_rate_limit_mhz / 1000, g_usb_conn ? "USB" : "the network");
 	g_stepped = false;
 	g_idr_unres = 0;
 	ratestep_reset(&g_rs);
@@ -1320,7 +1324,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 				}
 			} else if (act == RATESTEP_STABLE && g_stepped && g_have_dev_pub) {
 				LOG("%u Hz is stable for this device: remembering it", D.refresh_mhz / 1000);
-				rates_save(g_dev_pub, D.refresh_mhz / 1000, C.max_hz_mhz / 1000);
+				rates_save(g_dev_pub, g_usb_conn, D.refresh_mhz / 1000, C.max_hz_mhz / 1000);
 			}
 		}
 	}

@@ -7,8 +7,10 @@
 #include <stdint.h>
 
 #define RATESTEP_WINDOW 6        /* ticks (2 s each) looked at */
-#define RATESTEP_BAD_NEEDED 4    /* bad ticks among them that make the rate unsustainable */
-#define RATESTEP_STABLE_TICKS 15 /* ticks of activity without trouble (30 s) before the rate counts as found */
+#define RATESTEP_MIN_SEEN 4      /* ticks of activity needed before the window can decide */
+#define RATESTEP_SEVERE_IDR 3    /* keyframes forced by unresolved frames in one tick that make it severe */
+#define RATESTEP_SEVERE_RUN 2    /* severe ticks in a row that step down at once (about 4 s) */
+#define RATESTEP_STABLE_TICKS 10 /* ticks of activity without trouble (20 s) before the rate counts as found */
 
 struct ratestep_sample {
 	bool active;              /* frames were being sent in this tick (a static screen proves nothing) */
@@ -23,13 +25,14 @@ enum ratestep_action { RATESTEP_NONE, RATESTEP_DOWN, RATESTEP_STABLE };
 
 struct ratestep {
 	uint8_t bad[RATESTEP_WINDOW]; /* 1 = bad, 0 = good, 2 = no data */
-	unsigned n, good_run;
+	unsigned good_run, severe_run;
 	bool stable_reported;
 };
 
 /* Forget the history: a session or a reconfiguration just started. */
 void ratestep_reset(struct ratestep *r);
-/* One tick. RATESTEP_DOWN: step to a lower rate now (the history is cleared). RATESTEP_STABLE: reported once, after enough healthy activity at this rate. */
+/* One tick. RATESTEP_DOWN: step to a lower rate now (the history is cleared): two severe ticks in a row (a storm of keyframes), or at least three
+ * quarters of the ticks seen so far (four or more) bad. RATESTEP_STABLE: reported once, after enough healthy activity at this rate. */
 enum ratestep_action ratestep_tick(struct ratestep *r, const struct ratestep_sample *s);
 
 /* The next lower rate (millihertz) the device offers, at least `floor_mhz`; 0 if there is none. */

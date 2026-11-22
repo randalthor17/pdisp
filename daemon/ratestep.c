@@ -12,13 +12,14 @@ enum ratestep_action ratestep_tick(struct ratestep *r, const struct ratestep_sam
 {
 	if (!s->active) return RATESTEP_NONE; /* idle: neither evidence for nor against */
 	bool bad = s->idr_unresolved > 0 || s->frames_lost > 0 || s->phone_slow || s->low_rate || s->heavy_repair;
+	bool severe = s->idr_unresolved >= RATESTEP_SEVERE_IDR;
 	memmove(r->bad, r->bad + 1, RATESTEP_WINDOW - 1);
 	r->bad[RATESTEP_WINDOW - 1] = bad ? 1 : 0;
-	if (r->n < 1000) r->n++;
 	r->good_run = bad ? 0 : r->good_run + 1;
+	r->severe_run = severe ? r->severe_run + 1 : 0;
 	unsigned seen = 0, nbad = 0;
 	for (int i = 0; i < RATESTEP_WINDOW; i++) { if (r->bad[i] != 2) seen++; if (r->bad[i] == 1) nbad++; }
-	if (seen == RATESTEP_WINDOW && nbad >= RATESTEP_BAD_NEEDED) { ratestep_reset(r); return RATESTEP_DOWN; }
+	if (r->severe_run >= RATESTEP_SEVERE_RUN || (seen >= RATESTEP_MIN_SEEN && nbad * 4 >= seen * 3)) { ratestep_reset(r); return RATESTEP_DOWN; }
 	if (!r->stable_reported && r->good_run >= RATESTEP_STABLE_TICKS) { r->stable_reported = true; return RATESTEP_STABLE; }
 	return RATESTEP_NONE;
 }

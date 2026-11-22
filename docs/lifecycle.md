@@ -164,9 +164,9 @@ Not run yet (it needs a free VT).
 under it and watches the stream (`daemon/ratestep.c`, every 2 s while frames are being sent; a static screen proves nothing):
 
 - a tick is *bad* if the daemon had to force a keyframe because frames stayed unresolved, if the device reported lost frames, or if its decode took 50 ms or more;
-- 4 bad ticks among the last 6 (12 s) mean the device cannot sustain this rate: the daemon renegotiates (RECONFIGURE, the same mechanism as a rotation) to the next
+- a storm (3 or more forced keyframes in a tick, twice in a row) decides within about 4 s; otherwise three quarters of the ticks seen so far bad (at least four, so about 8 s) mean the device cannot sustain this rate: the daemon renegotiates (RECONFIGURE, the same mechanism as a rotation) to the next
   lower rate the device offers, never below 30 Hz, and starts counting again;
-- 15 ticks (30 s) of healthy streaming at a lowered rate are remembered per device (its key) in `learned_rates` beside the settings, with the cap at the time;
+- 10 ticks (20 s) of healthy streaming at a lowered rate are remembered per device and per transport (its key plus USB or network: the device decides what its decoder can do, the link what it can carry) in `learned_rates` beside the settings, with the cap at the time;
   the next connection starts at that rate. A remembered rate is ignored if the cap is raised above what it was learned under, and every remembered rate is
   forgotten when the cap is set (GUI, `pdisp-ctl set refresh_cap_hz`): the user asked a new question.
 - It never goes back up by itself within a session; to try a higher rate again, set the cap again.

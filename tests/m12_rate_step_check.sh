@@ -57,7 +57,7 @@ sleep 2 # the daemon ends the session when the viewer leaves
 echo "-- 3. the next connection starts at 60 Hz"
 run_viewer 8
 grep -q "SETUP: 2304x1440@60" "$art/viewer.log" || fail "the second connection did not start at 60 Hz"
-grep -q "sustains 60 Hz (found earlier)" "$art/daemon.log" || fail "the daemon did not use the learned rate"
+grep -q "sustains 60 Hz over the network (found earlier)" "$art/daemon.log" || fail "the daemon did not use the learned rate"
 echo "   ok"
 
 echo "-- 4. a new cap forgets it"
