@@ -116,7 +116,7 @@ static void usage(const char *argv0)
 		argv0);
 }
 
-int main(int argc, char **argv)
+int encode_main(int argc, char **argv)
 {
 	struct edid_params p;
 	const char *outfile = NULL;

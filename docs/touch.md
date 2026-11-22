@@ -50,7 +50,7 @@ These hooks are not tested here.
 - `tests/m8_touch_check.sh`: a scripted phone (tap, swipe, two-finger pinch) through the real daemon, landing in a Wayland window on
   the virtual output at the exact pixels, with and without 50% loss of the phone's INPUT datagrams. **It changes the running niri's
   config for a few seconds, so it only runs with `PDISP_TEST_NIRI_CONFIG=1`.**
-- `tools/pdisp-touch-demo`, `tools/pdisp-evdump` (root): for experiments without a phone and without touching the compositor.
+- `pdisp-dev touch-demo`, `pdisp-dev evdump` (root; they are subcommands of `pdisp-dev`, and `build/pdisp-evdump` is a link to it): for experiments without a phone and without touching the compositor.
 - On a phone: `adb shell input tap/swipe` into the app, and `pkexec build/pdisp-evdump` on the PC (used for the Pixel 8a result above).
 
 ## Known limits

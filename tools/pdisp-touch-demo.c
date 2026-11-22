@@ -38,7 +38,7 @@ static void send(struct touchdev *t, uint8_t kind, uint8_t id, double x, double 
 	touch_event(t, &e);
 }
 
-int main(int argc, char **argv)
+int touch_demo_main(int argc, char **argv)
 {
 	if (argc < 3) { fprintf(stderr, "usage: %s W H [-d DPI] [-w SECS] [-s SCRIPT]\n", argv[0]); return 2; }
 	unsigned w = (unsigned)atoi(argv[1]), h = (unsigned)atoi(argv[2]), dpi = 160;

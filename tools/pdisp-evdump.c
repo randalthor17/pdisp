@@ -26,7 +26,7 @@ static int find_node(const char *name)
 	return -1;
 }
 
-int main(int argc, char **argv)
+int evdump_main(int argc, char **argv)
 {
 	const char *name = "pdisp touchscreen";
 	double secs = 20;

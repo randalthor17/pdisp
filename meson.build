@@ -50,16 +50,28 @@ encoder_lib = static_library('pdisp-encoder', 'daemon/encoder.c', 'daemon/hevc_h
 encoder_dep = declare_dependency(
   link_with: encoder_lib, include_directories: inc, dependencies: [libva_dep, libva_drm_dep])
 
-pdisp_edid = executable('pdisp-edid', 'tools/pdisp-edid.c', dependencies: edid_cli_dep)
+mc_inc = include_directories('third_party/monocypher')
+monocypher = static_library('monocypher', 'third_party/monocypher/monocypher.c', c_args: ['-w'])
+proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', 'proto/usbmux.c', 'proto/crypto.c', 'proto/noise.c', 'proto/identity.c', 'proto/secure.c', 'proto/handshake.c', 'proto/inputseq.c', 'proto/palm.c', include_directories: [inc, mc_inc], link_with: monocypher)
+proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
+
+# The development and diagnostic tools are one program with subcommands (pdisp-dev edid|vdisplay|capture|encode|evdump|touch-demo). The tests use links
+# named after the tool: the program looks at the name it was started under.
+pdisp_dev = executable('pdisp-dev', 'tools/pdisp-dev.c', 'tools/pdisp-edid.c', 'tools/pdisp-vdisplay.c', 'tools/pdisp-capture.c', 'tools/png.c',
+  'tools/pdisp-encode.c', 'tools/pdisp-evdump.c', 'tools/pdisp-touch-demo.c', 'daemon/touch.c',
+  dependencies: [edid_cli_dep, vdisplay_dep, encoder_dep, proto_dep, zlib_dep])
+dev_links = {}
+foreach t : ['edid', 'vdisplay', 'capture', 'encode', 'evdump', 'touch-demo']
+  dev_links += { t: custom_target('pdisp-' + t, output: 'pdisp-' + t, command: [find_program('ln'), '-sf', 'pdisp-dev', '@OUTPUT@'], depends: pdisp_dev, build_by_default: true) }
+endforeach
+pdisp_edid = dev_links['edid'].full_path()
+pdisp_vdisplay = dev_links['vdisplay'].full_path()
+pdisp_capture = dev_links['capture'].full_path()
+pdisp_encode = dev_links['encode'].full_path()
 pdisp_pattern = executable('pdisp-pattern', 'tools/pdisp-pattern.c', xdg_shell_h, xdg_shell_c,
   include_directories: inc, dependencies: wayland_client_dep)
-pdisp_capture = executable('pdisp-capture', 'tools/pdisp-capture.c', 'tools/png.c',
-  dependencies: [edid_cli_dep, vdisplay_dep, zlib_dep])
 
-pdisp_encode = executable('pdisp-encode', 'tools/pdisp-encode.c',
-  dependencies: [edid_cli_dep, vdisplay_dep, encoder_dep])
 
-pdisp_vdisplay = executable('pdisp-vdisplay', 'tools/pdisp-vdisplay.c', dependencies: [edid_cli_dep, vdisplay_dep])
 
 test_edid = executable('test_edid', 'tests/test_edid.c', dependencies: [edid_dep, m_dep])
 test('edid unit', test_edid)
@@ -111,10 +123,6 @@ test('loss recovery', find_program('tests/loss_recovery_check.sh'),
   timeout: 120,
   suite: 'integration')
 
-mc_inc = include_directories('third_party/monocypher')
-monocypher = static_library('monocypher', 'third_party/monocypher/monocypher.c', c_args: ['-w'])
-proto_lib = static_library('pdisp-proto', 'proto/proto.c', 'proto/fec.c', 'proto/video.c', 'proto/vsend.c', 'proto/vrecv.c', 'proto/net.c', 'proto/timesync.c', 'proto/usbmux.c', 'proto/crypto.c', 'proto/noise.c', 'proto/identity.c', 'proto/secure.c', 'proto/handshake.c', 'proto/inputseq.c', 'proto/palm.c', include_directories: [inc, mc_inc], link_with: monocypher)
-proto_dep = declare_dependency(link_with: proto_lib, include_directories: inc)
 test_proto = executable('test_proto', 'tests/test_proto.c', dependencies: proto_dep)
 test('proto wire format', test_proto)
 test_fec = executable('test_fec', 'tests/test_fec.c', dependencies: proto_dep)
@@ -215,7 +223,6 @@ test('input event stream', test_inputseq)
 test_touch = executable('test_touch', 'tests/test_touch.c', 'daemon/touch.c', dependencies: proto_dep)
 test('uinput touchscreen', test_touch)
 
-pdisp_touch_demo = executable('pdisp-touch-demo', 'tools/pdisp-touch-demo.c', 'daemon/touch.c', dependencies: proto_dep)
 
 m8_touch = find_program('tests/m8_touch_check.sh')
 test('m8 touch reaches the virtual output', m8_touch,
@@ -225,7 +232,6 @@ test('m8 touch reaches the virtual output', m8_touch,
   timeout: 240,
   suite: 'integration')
 
-pdisp_evdump = executable('pdisp-evdump', 'tools/pdisp-evdump.c')
 
 test_inputdev = executable('test_inputdev', 'tests/test_inputdev.c', 'daemon/touch.c', dependencies: proto_dep)
 test('touchscreen and pen devices', test_inputdev)

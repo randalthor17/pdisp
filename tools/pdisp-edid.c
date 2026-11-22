@@ -9,7 +9,7 @@ static void usage(const char *argv0)
 	fprintf(stderr, "usage: %s [options] -o FILE\n" EDID_CLI_USAGE "  -o FILE     output file\n", argv0);
 }
 
-int main(int argc, char **argv)
+int edid_main(int argc, char **argv)
 {
 	struct edid_params p;
 	const char *outfile = NULL;

@@ -50,7 +50,7 @@ static void usage(const char *argv0)
 		argv0);
 }
 
-int main(int argc, char **argv)
+int vdisplay_main(int argc, char **argv)
 {
 	struct edid_params p;
 	double uptime = -1, gap = 3;
