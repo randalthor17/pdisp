@@ -171,7 +171,7 @@ class MainActivity : ComponentActivity() {
             if (info.isEncoder || !info.supportedTypes.contains("video/hevc")) continue
             val caps = info.getCapabilitiesForType("video/hevc")
             Log.i("pdisp", "decoder ${info.name} hw=${info.isHardwareAccelerated} lowLatency=${caps.isFeatureSupported(MediaCodecInfo.CodecCapabilities.FEATURE_LowLatency)} " +
-                "maxInstances=${caps.maxSupportedInstances} 2304x1440@60=${caps.videoCapabilities.areSizeAndRateSupported(2304, 1440, 60.0)}")
+                "maxInstances=${caps.maxSupportedInstances} 2304x1440@60=${caps.videoCapabilities?.areSizeAndRateSupported(2304, 1440, 60.0)}")
             if (Build.VERSION.SDK_INT >= 33 && info.isHardwareAccelerated) {
                 try {
                     val c = MediaCodec.createByCodecName(info.name)
