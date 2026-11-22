@@ -107,5 +107,6 @@ int main(int argc, char **argv)
     // Qt tears its icon cache down in the QGuiApplication destructor and now and then aborts there ("corrupted double-linked list", in
     // QThemeIconEngine). Nothing here needs a clean shutdown (no unsaved state), so leave without it.
     fflush(nullptr);
+    if (qEnvironmentVariableIsSet("PDISP_GUI_CLEAN_EXIT")) return rc; // to debug the shutdown (an AddressSanitizer build)
     _exit(rc);
 }

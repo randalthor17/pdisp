@@ -93,6 +93,7 @@ int main(void)
 	CHECK(in_order == 3000);
 
 	/* the link dies: both sides see their control connection close */
+	usbmux_stop(p.a); /* (joins its writer thread first, so closing the pipe below does not race with it) */
 	close(p.ab[1]); /* the only writer into B's reader */
 	uint8_t one;
 	struct pollfd pf = { .fd = p.bctl, .events = POLLIN };
@@ -100,7 +101,6 @@ int main(void)
 	CHECK(usbmux_link_down(p.b));
 	usbmux_stop(p.b);
 	close(p.ba[1]);
-	usbmux_stop(p.a);
 
 	free(src); free(got); free(src2); free(got2);
 	if (failures) { fprintf(stderr, "%d failure(s)\n", failures); return 1; }

@@ -177,3 +177,12 @@ Tested by `tests/m12_rate_step_check.sh` (a viewer that loses 20% of the datagra
 `tests/niri-session.sh` also prints the shared VRAM of your desktop niri before and after, to show what the tests cost it. With only one evdi device it pauses
 your `pdispd` and `pdisp-gui` (the tray, `pdisp gui`) services while it runs (the tests need the device), which itself removes and recreates an output if a device was streaming:
 with `services.pdisp.evdiDevices = 2` the tests take the second device and nothing is paused.
+
+## Sanitizers
+
+The tests run with sanitizers on. `tests/sanitize.sh` builds two trees and runs every test that needs no display in each: `build-asan`
+(AddressSanitizer + UndefinedBehaviorSanitizer) and `build-tsan` (ThreadSanitizer, which cannot be combined with the others). `tests/niri-session.sh`
+runs the display tests, the whole suite, in both of them one after the other (a few times slower, so with a longer timeout), and counts the
+sanitizer reports in each log. `PDISP_BUILD_DIR=build tests/niri-session.sh` runs the plain build instead. The memory sanitizer needs clang, and
+leak checking is off (the daemon's child processes simply exit). The sanitized runs also let the GUI shut down the normal way (`PDISP_GUI_CLEAN_EXIT`),
+where the normal run skips Qt's exit-time cleanup because it aborted there now and then (the cause is not found yet).
