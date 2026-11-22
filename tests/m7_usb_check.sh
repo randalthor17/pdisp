@@ -15,6 +15,8 @@ adb() { if type -P adb >/dev/null 2>&1; then "$(type -P adb)" "$@"; else nix dev
 command -v niri >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || skip "niri or jq missing"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
 adb devices -l | grep "\bdevice\b" | grep -q "usb:" || skip "no authorised adb device on a USB cable (one over Wi-Fi does not count)"
+# one tablet can show up twice (USB and wireless debugging): talk to the USB one, so that "adb shell" is not refused as ambiguous
+[ -n "${ANDROID_SERIAL:-}" ] || { ANDROID_SERIAL=$(adb devices -l | awk '$2 == "device" && /usb:/ { print $1; exit }'); [ -n "$ANDROID_SERIAL" ] && export ANDROID_SERIAL; }
 adb shell pm list packages 2>/dev/null | grep -q "dev.pdisp" || skip "the pdisp app is not installed on the tablet"
 
 dlog="$art/daemon.log"

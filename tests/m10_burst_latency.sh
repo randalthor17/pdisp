@@ -10,7 +10,7 @@ art=${4:-$(mktemp -d)}; mkdir -p "$art"
 skip() { echo "SKIP: $*"; exit 77; }
 command -v niri >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || skip "niri or jq missing"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
-SERIAL=PDISPM10BST; PORT=${PDISP_TEST_PORT:-47114}; SECS=${SECS:-20}; GAPS=${GAP:-0.4}
+SERIAL=PDISPM10BST; PORT=${PDISP_TEST_PORT:-24114}; SECS=${SECS:-20}; GAPS=${GAP:-0.4}
 dlog="$art/daemon.log"; vlog="$art/viewer.log"; plog="$art/pattern.log"
 dpid=; vpid=; ppid=
 cleanup() { for p in $ppid $vpid $dpid; do kill "$p" 2>/dev/null; done; wait 2>/dev/null; }

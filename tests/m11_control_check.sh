@@ -10,7 +10,7 @@ art=${4:-$(mktemp -d)}; mkdir -p "$art"; rm -rf "$art"/*
 skip() { echo "SKIP: $*"; exit 77; }
 command -v niri >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || skip "niri or jq missing"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
-PORT=${PDISP_TEST_PORT:-47125}
+PORT=${PDISP_TEST_PORT:-24125}
 sock=$(mktemp -u /tmp/pdisp-ctl-XXXXXX.sock) # a short path: Unix socket paths are limited to 107 characters
 dpid=; vpid=; cpid=
 cleanup() { for p in $cpid $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; wait 2>/dev/null; rm -f "$sock"; }

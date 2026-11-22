@@ -10,7 +10,7 @@ art=${4:-$(mktemp -d)}; mkdir -p "$art"; rm -rf "$art"/*
 skip() { echo "SKIP: $*"; exit 77; }
 command -v niri >/dev/null 2>&1 && command -v identify >/dev/null 2>&1 || skip "niri or ImageMagick missing"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
-PORT=${PDISP_TEST_PORT:-47123}
+PORT=${PDISP_TEST_PORT:-24123}
 sock=$(mktemp -u /tmp/pdisp-gui-XXXXXX.sock)
 dpid=; vpid=; gpid=
 cleanup() { for p in $gpid $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; wait 2>/dev/null; rm -f "$sock"; }

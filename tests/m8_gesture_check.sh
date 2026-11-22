@@ -17,7 +17,7 @@ for c in niri jq loupe magick; do command -v $c >/dev/null 2>&1 || skip "$c is n
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
 [ -w /dev/uinput ] || skip "no write access to /dev/uinput"
 
-PORT=${PDISP_TEST_PORT:-47118}; SERIAL=PDISPGEST; ID="PNP(PDI) pdisp $SERIAL"
+PORT=${PDISP_TEST_PORT:-24118}; SERIAL=PDISPGEST; ID="PNP(PDI) pdisp $SERIAL"
 real_file=${PDISP_TEST_NIRI_REAL_CONFIG:-$HOME/.config/niri/config.kdl}; real_dir=$(dirname "$real_file") # what to put back afterwards (the throwaway niri of tests/niri-session.sh has its own)
 orig_out=$(niri msg --json focused-output | jq -r '.name'); orig_win=$(niri msg --json focused-window | jq -r '.id // empty')
 dpid=; vpid=; lpid=

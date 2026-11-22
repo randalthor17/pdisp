@@ -15,7 +15,7 @@ skip() { echo "SKIP: $*"; exit 77; }
 command -v niri >/dev/null 2>&1 || skip "niri not installed"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
 
-PORT=${PDISP_TEST_PORT:-47116}
+PORT=${PDISP_TEST_PORT:-24116}
 dpid=
 cleanup() { [ -n "$dpid" ] && kill "$dpid" 2>/dev/null; wait 2>/dev/null; }
 trap cleanup EXIT

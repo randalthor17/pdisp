@@ -13,7 +13,7 @@ mkdir -p "$art"
 skip() { echo "SKIP: $*"; exit 77; }
 command -v niri >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || skip "niri or jq missing"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
-SERIAL=PDISPM10TXT; PORT=${PDISP_TEST_PORT:-47113}; SECS=${SECS:-12}
+SERIAL=PDISPM10TXT; PORT=${PDISP_TEST_PORT:-24113}; SECS=${SECS:-12}
 dlog="$art/daemon.log"; vlog="$art/viewer.log"; plog="$art/pattern.log"
 dpid=; vpid=; ppid=
 cleanup() { for p in $ppid $vpid $dpid; do kill "$p" 2>/dev/null; done; wait 2>/dev/null; }

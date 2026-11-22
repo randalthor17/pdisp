@@ -11,7 +11,7 @@ skip() { echo "SKIP: $*"; exit 77; }
 [ "${PDISP_TEST_WINDOWS:-}" = 1 ] || skip "opens a window on your desktop (and the compositor moves it); set PDISP_TEST_WINDOWS=1"
 command -v niri >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || skip "niri or jq missing"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
-PORT=${PDISP_TEST_PORT:-47121}; SERIAL=PDISPWIN; GRACE=6
+PORT=${PDISP_TEST_PORT:-24121}; SERIAL=PDISPWIN; GRACE=6
 dpid=; vpid=; wpid=
 prev_win=$(niri msg --json windows | jq -r '[.[] | select(.is_focused)][0].id // empty')
 cleanup() {

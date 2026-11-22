@@ -13,7 +13,7 @@ art=${5:-$(mktemp -d)}; mkdir -p "$art"; rm -rf "${art:?}"/*
 skip() { echo "SKIP: $*"; exit 77; }
 command -v niri >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || skip "niri or jq missing"
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
-PORT=${PDISP_TEST_PORT:-47122}; SERIAL=PDISPM12CHK; SOCK="$art/ctl.sock"
+PORT=${PDISP_TEST_PORT:-24122}; SERIAL=PDISPM12CHK; SOCK="$art/ctl.sock"
 dpid=; vpid=; ppid=
 cleanup() { for p in $ppid $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; wait 2>/dev/null; }
 trap cleanup EXIT

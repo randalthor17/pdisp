@@ -16,7 +16,7 @@ niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
 [ -n "${WAYLAND_DISPLAY:-}" ] || skip "no WAYLAND_DISPLAY"
 
 SERIAL=PDISPM4ROT
-PORT=${PDISP_TEST_PORT:-47111}
+PORT=${PDISP_TEST_PORT:-24111}
 dlog="$art/daemon.log"; vlog="$art/viewer.log"
 dpid=; vpid=; p1=; p2=
 cleanup() {

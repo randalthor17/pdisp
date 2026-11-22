@@ -21,7 +21,7 @@ niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
 [ -n "${PDISP_TEST_NIRI_CONFIG:-}" ] || skip "this check changes the running niri's config for a moment: set PDISP_TEST_NIRI_CONFIG=1 to allow it"
 niri msg action load-config-file --help >/dev/null 2>&1 || skip "this niri cannot load a config file at run time"
 
-PORT=${PDISP_TEST_PORT:-47117}
+PORT=${PDISP_TEST_PORT:-24117}
 SERIAL=PDISPTOUCH
 ID="PNP(PDI) pdisp $SERIAL"
 W=2304; H=1440

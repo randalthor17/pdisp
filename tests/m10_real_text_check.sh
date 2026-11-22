@@ -12,7 +12,7 @@ skip() { echo "SKIP: $*"; exit 77; }
 [ "${PDISP_TEST_WINDOWS:-}" = 1 ] || skip "opens a window on the desktop: set PDISP_TEST_WINDOWS=1"
 for c in niri jq kitty ffmpeg; do command -v "$c" >/dev/null 2>&1 || skip "$c missing"; done
 niri msg --json outputs >/dev/null 2>&1 || skip "no running niri session"
-SERIAL=PDISPM10REAL; PORT=${PDISP_TEST_PORT:-47115}; SECS=${SECS:-14}; TEXT_FILE=${TEXT_FILE:-$root/daemon/pdispd.c}
+SERIAL=PDISPM10REAL; PORT=${PDISP_TEST_PORT:-24115}; SECS=${SECS:-14}; TEXT_FILE=${TEXT_FILE:-$root/daemon/pdispd.c}
 dlog="$art/daemon.log"; vlog="$art/viewer.log"
 dpid=; vpid=; kpid=
 cleanup() { for p in $kpid $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done; wait 2>/dev/null; }
