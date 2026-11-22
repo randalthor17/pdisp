@@ -18,7 +18,7 @@ cleanup() { for p in $vpid $dpid; do [ -n "$p" ] && kill "$p" 2>/dev/null; done;
 trap cleanup EXIT
 fail() { echo "FAIL: $*"; echo "--- daemon:"; grep -v '^\[libevdi\]\|^libva' "$art/daemon.log" | tail -15; echo "--- viewer:"; tail -6 "$art/viewer.log" 2>/dev/null; exit 1; }
 
-"$daemon" -K "$art/pc" -P accept -p "$PORT" -t "$SERIAL" -n pdisp -g 0 >"$art/daemon.log" 2>&1 &
+PDISP_DDC_DEBUG=1 "$daemon" -K "$art/pc" -P accept -p "$PORT" -t "$SERIAL" -n pdisp -g 0 >"$art/daemon.log" 2>&1 &
 dpid=$!
 sleep 0.7
 if ! kill -0 "$dpid" 2>/dev/null; then wait "$dpid"; [ $? = 3 ] && skip "no free evdi device"; fail "daemon exited early"; fi
@@ -39,7 +39,13 @@ while [ $i -lt 50 ]; do grep -q "virtual output" "$art/daemon.log" && bus=$(bus_
 [ -n "$bus" ] || fail "no virtual output / no I2C bus for it"
 [ -r "/dev/i2c-$bus" ] && [ -w "/dev/i2c-$bus" ] || skip "no access to /dev/i2c-$bus (the i2c group)"
 sleep 1
-out=$(vcp "$bus"); echo "$out" | grep -q "current value =   *100, max value =   *100" || fail "unexpected brightness reading: $out"
+out=$(vcp "$bus")
+if ! echo "$out" | grep -q "current value =   *100, max value =   *100"; then
+	echo "--- ddcutil said: $out"; echo "--- verbose:"; ddcutil --bus "$bus" getvcp 10 --verbose 2>&1 | head -40
+	echo "--- with the checks skipped:"; ddcutil --bus "$bus" getvcp 10 --skip-ddc-checks 2>&1 | head -10
+	echo "--- daemon DDC traffic:"; grep "^\[ddc\]" "$art/daemon.log" | head -20
+	fail "unexpected brightness reading: $out"
+fi
 echo "   ok: $out"
 
 echo "-- 2. setting it reaches the phone, and reads back"

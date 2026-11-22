@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <evdi_lib.h>
 #include <poll.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -118,6 +119,9 @@ static void on_ddcci(struct evdi_ddcci_data d, void *user)
 	struct vdisplay *vd = user;
 	uint8_t out[DDCCI_MAX_FRAME] = { 0 };
 	uint32_t n = d.buffer_length < sizeof out ? d.buffer_length : (uint32_t)sizeof out;
+	static int dbg = -1;
+	if (dbg < 0) dbg = getenv("PDISP_DDC_DEBUG") != NULL;
+	if (dbg) { fprintf(stderr, "[ddc] %s addr 0x%x len %u:", (d.flags & 1) ? "read" : "write", d.address, d.buffer_length); for (uint32_t i = 0; i < n && !(d.flags & 1); i++) fprintf(stderr, " %02x", d.buffer[i]); fputc(10, stderr); }
 	if (d.flags & 1) { /* I2C_M_RD */
 		ddcci_read(&vd->ddc, out, n);
 	} else if (ddcci_write(&vd->ddc, d.buffer, n) && vd->events.brightness) {
