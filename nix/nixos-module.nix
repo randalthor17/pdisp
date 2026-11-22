@@ -4,7 +4,7 @@
 let
   cfg = config.services.pdisp;
   args = [ "-p" (toString cfg.port) "-P" "ask" "-A" "${cfg.package}/bin/pdisp-pair-prompt" ]
-    ++ lib.optional cfg.usb "-u"
+    ++ lib.optionals cfg.usb [ "-u" "-W" ] # a cable and the network at the same time
     ++ cfg.extraArgs;
 in
 {
@@ -36,7 +36,7 @@ in
     usb = lib.mkOption {
       type = lib.types.bool;
       default = true;
-      description = "Also look for a USB cable: the daemon asks the device to switch to accessory mode and streams over it.";
+      description = "Also look for a USB cable: the daemon asks the device to switch to accessory mode and streams over it. The network stays on (pdispd -u -W).";
     };
 
     evdiDevices = lib.mkOption {

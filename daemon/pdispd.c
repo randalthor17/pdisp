@@ -58,7 +58,8 @@ static struct {
 	const char *touch_hook;  /* a command run when the touchscreen exists, to bind it to the virtual output (docs/touch.md) */
 	unsigned grace_secs;     /* after a lost link, keep the virtual output this long for the phone to come back (0 = tear it down at once) */
 	bool once;               /* serve one session and exit instead of waiting for the next device */
-	bool usb;          /* talk to a tablet over a USB cable (accessory mode) instead of listening on the network */
+	bool usb;          /* look for a USB cable (accessory mode); without -W this replaces listening on the network */
+	bool also_net;     /* -W: with -u, listen on the network as well */
 	unsigned usb_vid;  /* only consider this USB vendor (0 = any) */
 	unsigned refine_frames, refine_min_qp, refine_start_qp, refine_rate_percent, refine_gap_ms, refine_settle_ms; /* static refinement (see D.refine_left); 0 frames = off */
 } C = { .port = 47110, .max_hz_mhz = 60000, .bitrate = 12000, .max_bitrate = 40000, .name = "pdisp",
@@ -287,6 +288,7 @@ static int make_sender(void)
 	return D.vs ? 0 : -ENOMEM;
 }
 
+static bool g_usb_conn; /* the connection being served arrived over the USB cable (C.usb only says that cables are looked for) */
 /* a datagram to the phone: sendto() on the network, plain send() on the connected USB socket */
 static ssize_t udp_send(int fd, const void *buf, size_t n, const struct sockaddr_in *peer)
 {
@@ -299,7 +301,7 @@ static ssize_t udp_send(int fd, const void *buf, size_t n, const struct sockaddr
 		buf = sealed;
 		n = (size_t)sn;
 	}
-	if (C.usb) return send(fd, buf, n, MSG_DONTWAIT);
+	if (g_usb_conn) return send(fd, buf, n, MSG_DONTWAIT);
 	return sendto(fd, buf, n, 0, (const struct sockaddr *)peer, sizeof *peer);
 }
 
@@ -318,6 +320,7 @@ static void usage(const char *argv0)
 		"  -r NODE     VAAPI render node (default: first that can encode HEVC)\n"
 		"  -d CARD     evdi card (default: first free)\n"
 		"  -S SECS     stop streaming after this long (default: until the phone leaves)\n"
+		"  -W          with -u: also listen on the network (a cable and Wi-Fi at the same time)\n"
 		"  -u          serve a tablet over USB (AOA accessory mode) instead of the network; keeps waiting for the next\n"
 		"              plug-in after each session unless -S is given\n"
 		"  -V VID      with -u, only consider this USB vendor id in hex (e.g. 04e8)\n"
@@ -354,7 +357,7 @@ int main(int argc, char **argv)
 		C.refine_start_qp = (e = getenv("PDISP_REFINE_QP0")) ? (unsigned)atoi(e) : 22;
 		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 50;
 	}
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uV:K:P:A:H:F:TIho")) != -1) {
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uWV:K:P:A:H:F:TIho")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
 		case 'F': C.refine_frames = (unsigned)atoi(optarg); break; /* static refinement pictures; 0 = off */
@@ -374,6 +377,7 @@ int main(int argc, char **argv)
 		case 'd': C.card = atoi(optarg); break;
 		case 'S': run_secs = atof(optarg); break;
 		case 'u': C.usb = true; break;
+		case 'W': C.also_net = true; break;
 		case 'K': C.config_dir = optarg; break;
 		case 'A': C.pair_cmd = optarg; break;
 		case 'P':
@@ -700,13 +704,26 @@ static int acquire_peer(struct conn *c, uint64_t deadline_us)
 {
 	for (;;) {
 		conn_init(c);
-		if (C.usb) {
-			for (;;) { /* in half-second slices, so the display keeps being serviced and the deadline is honoured */
-				if (stop) return -ECANCELED;
-				if (deadline_us && net_now_us() >= deadline_us) return -ETIMEDOUT;
+		g_usb_conn = false;
+		for (;;) { /* in short slices, so the display keeps being serviced and the deadline is honoured; a cable and the network are both watched when both are on */
+			if (stop) return -ECANCELED;
+			if (deadline_us && net_now_us() >= deadline_us) return -ETIMEDOUT;
+			if (g_lfd >= 0) {
+				struct pollfd lp[2] = { { .fd = g_lfd, .events = POLLIN }, { .fd = D.vd ? vdisplay_event_fd(D.vd) : -1, .events = POLLIN } };
+				poll(lp, 2, C.usb ? 100 : 200);
 				service_display();
+				if (lp[0].revents & POLLIN) {
+					c->cfd = accept(g_lfd, NULL, NULL);
+					if (c->cfd < 0) { if (errno == EINTR || errno == EAGAIN) continue; perror("accept"); return -errno; }
+					net_tune_tcp(c->cfd);
+					break;
+				}
+			} else {
+				service_display();
+			}
+			if (C.usb) {
 				int rd, wr;
-				int e = usblink_open(500, C.usb_vid, (const volatile int *)&stop, &c->link, &rd, &wr);
+				int e = usblink_open(g_lfd >= 0 ? 300 : 500, C.usb_vid, (const volatile int *)&stop, &c->link, &rd, &wr);
 				if (e == -ETIMEDOUT) continue;
 				if (e == -ECANCELED) return e;
 				if (e) { LOG("cannot open the USB device: %s (is the udev rule installed? see contrib/udev)", strerror(-e)); return e; }
@@ -716,21 +733,8 @@ static int acquire_peer(struct conn *c, uint64_t deadline_us)
 				if (e) { LOG("cannot start the USB multiplexer: %s", strerror(-e)); usblink_close(c->link); c->link = NULL; return e; }
 				fcntl(usb_dgram, F_SETFL, fcntl(usb_dgram, F_GETFL) | O_NONBLOCK);
 				c->ufd = usb_dgram;
+				g_usb_conn = true;
 				break;
-			}
-		} else {
-			for (;;) {
-				if (stop) return -ECANCELED;
-				if (deadline_us && net_now_us() >= deadline_us) return -ETIMEDOUT;
-				struct pollfd lp[2] = { { .fd = g_lfd, .events = POLLIN }, { .fd = D.vd ? vdisplay_event_fd(D.vd) : -1, .events = POLLIN } };
-				poll(lp, 2, 200);
-				service_display();
-				if (lp[0].revents & POLLIN) {
-					c->cfd = accept(g_lfd, NULL, NULL);
-					if (c->cfd < 0) { if (errno == EINTR || errno == EAGAIN) continue; perror("accept"); return -errno; }
-					net_tune_tcp(c->cfd);
-					break;
-				}
 			}
 		}
 		net_ctl_init(&c->ctl, c->cfd);
@@ -750,7 +754,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	const uint8_t *payload;
 	size_t plen;
 	struct proto_hello hello;
-	if (net_ctl_recv(ctl, &type, &payload, &plen, C.usb ? 120000 : 10000) != 1 || type != PROTO_CTL_HELLO ||
+	if (net_ctl_recv(ctl, &type, &payload, &plen, g_usb_conn ? 120000 : 10000) != 1 || type != PROTO_CTL_HELLO ||
 	    proto_hello_decode(payload, plen, &hello) != 0) {
 		LOG("no valid HELLO from the phone");
 		return END_REJECTED;
@@ -792,7 +796,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	/* ---- SETUP */
 	D.session_id = (uint32_t)(net_now_us() * 2654435761u) ^ (uint32_t)getpid();
 	int ufd = c->ufd;
-	if (!C.usb) {
+	if (!g_usb_conn) {
 		ufd = net_udp_bind(C.port);
 		if (ufd < 0) { LOG("cannot bind UDP port %u: %s", C.port, strerror(-ufd)); return END_REJECTED; }
 		c->ufd = ufd;
@@ -810,7 +814,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 
 	/* ---- wait for READY (TCP) and the phone's first UDP packet */
 	struct sockaddr_in *peer = &c->peer;
-	bool have_peer = C.usb, ready = false; /* over USB the datagram socket is already connected */
+	bool have_peer = g_usb_conn, ready = false; /* over USB the datagram socket is already connected */
 	uint64_t deadline = net_now_us() + 15000000;
 	while (!stop && !(ready && have_peer) && net_now_us() < deadline) {
 		struct pollfd p[2] = { { .fd = c->cfd, .events = POLLIN }, { .fd = ufd, .events = POLLIN } };
@@ -878,7 +882,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 				if (o < 0) { D.auth_drops++; continue; }
 				n = o;
 			}
-			if (!C.usb && (from.sin_addr.s_addr != peer->sin_addr.s_addr || from.sin_port != peer->sin_port)) continue;
+			if (!g_usb_conn && (from.sin_addr.s_addr != peer->sin_addr.s_addr || from.sin_port != peer->sin_port)) continue;
 			last_rx = now;
 			struct proto_pkt_hdr ph;
 			if (n >= PROTO_PKT_HDR_SIZE + 8 && proto_pkt_hdr_read(pkt, (size_t)n, &ph) == 0 && ph.type == PROTO_PKT_TIME_REQ &&
@@ -966,7 +970,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 			if (proto_token_encode(now, tb, sizeof tb) == 8) net_ctl_send(ctl, PROTO_CTL_PING, tb, 8);
 		}
 		if (now - last_pong > 8000000 && D.pongs) { LOG("no PONG for 8 s: the control channel is dead"); end = END_LINK; break; }
-		if (C.usb && usblink_gone(c->link)) { LOG("the USB cable was unplugged"); end = END_LINK; break; }
+		if (g_usb_conn && usblink_gone(c->link)) { LOG("the USB cable was unplugged"); end = END_LINK; break; }
 		if (now - last_rx > 3000000 && !D.awaiting_ack) { LOG("no packets from the phone for 3 s"); end = END_LINK; break; }
 
 		if (D.refresh_due_us && now >= D.refresh_due_us && D.streaming && vdisplay_current_frame(D.vd, &cur) &&
@@ -1048,7 +1052,7 @@ static int run_session(double run_secs)
 		LOG("%s identity in %s, key %s", created ? "created a new" : "using the", cdir, fp);
 		snprintf(g_ks_path, sizeof g_ks_path, "%s/authorized_keys", cdir);
 	}
-	if (!C.usb) {
+	if (!C.usb || C.also_net) {
 		g_lfd = net_tcp_listen(C.port);
 		if (g_lfd < 0) { fprintf(stderr, "cannot listen on %u: %s\n", C.port, strerror(-g_lfd)); return 1; }
 		LOG("listening on port %u", C.port);

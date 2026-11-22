@@ -22,7 +22,7 @@ pdisp.nixosModules.default
 services.pdisp = {
   enable = true;
   openFirewall = true;      # only for connecting over Wi-Fi; a USB cable needs no port
-  # usb = true;             # default: also look for a cable
+  # usb = true;             # default: also look for a cable (pdispd -u -W: the network stays on too)
   # evdiDevices = 1;        # virtual displays that can be connected at once
   # extraArgs = [ "-R" "90" ];   # pdispd options, see `pdispd -h`
 };
@@ -35,7 +35,7 @@ One rebuild does all of this:
 | virtual display driver | `boot.extraModulePackages = [ evdi ]`, `boot.kernelModules = [ "evdi" ]`, and `options evdi initial_device_count=N` so a device exists at boot (adding one later needs root) |
 | the user may open the phone over USB | the package's udev rule (`70-pdisp.rules`, `uaccess`: the user at the active seat gets access, no group needed) |
 | Wi-Fi | with `openFirewall`, TCP and UDP 47110 are opened (all interfaces; every device must be paired and the traffic is encrypted) |
-| the daemon | a systemd **user** service `pdispd`, started with the graphical session, with `-P ask -A pdisp-pair-prompt` |
+| the daemon | a systemd **user** service `pdispd`, started with the graphical session, with `-u -W -P ask -A pdisp-pair-prompt` |
 | pairing prompt | `libnotify` (`notify-send`) is installed; your notification daemon must show actions (mako, dunst, GNOME, KDE and DankMaterialShell do) |
 
 **niri: touch and pen only on the pdisp monitor.** With home-manager:
@@ -58,6 +58,12 @@ input {
 
 `PNP(PDI) pdisp PDISP0001` is the monitor's identity (make, model, serial) with the daemon's defaults. It does not depend on the connector name.
 Windows on the monitor follow it when it goes away and comes back; no window rule is needed.
+
+`nix flake check` builds a NixOS VM with the module on (`nix/vm-test.nix`) and checks the evdi device, the udev rule, the firewall port and that the user
+service starts and listens. It cannot show a stream: there is no GPU or phone in the VM.
+
+A cable and Wi-Fi are served one device at a time, in turn. A phone that sits in USB accessory mode without the app running holds the daemon for the 10 s
+handshake timeout before the next device is looked at, so a Wi-Fi device can wait up to 10 s in that case.
 
 ## Other distributions (manual)
 

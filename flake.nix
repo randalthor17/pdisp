@@ -26,7 +26,9 @@
       homeManagerModules.default = import ./nix/hm-module.nix { inherit self; };
 
       # evaluates a minimal system with the module switched on (no build): `nix flake check`
-      checks.${system}.nixos-module = (nixpkgs.lib.nixosSystem {
+      checks.${system} = {
+        vm = import ./nix/vm-test.nix { inherit pkgs self; };
+        nixos-module = (nixpkgs.lib.nixosSystem {
         inherit system;
         modules = [
           self.nixosModules.default
@@ -34,6 +36,7 @@
             boot.loader.grub.enable = false; fileSystems."/" = { device = "none"; fsType = "tmpfs"; }; system.stateVersion = "25.11"; }
         ];
       }).config.system.build.toplevel;
+      };
 
       devShells.${system} = {
       android = apkgs.mkShell {

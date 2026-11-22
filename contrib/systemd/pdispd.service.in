@@ -8,8 +8,8 @@ PartOf=graphical-session.target
 
 [Service]
 Type=simple
-# -u also listens for a USB cable. -P ask -A: unknown devices are approved with a desktop notification.
-ExecStart=@BINDIR@/pdispd -u -P ask -A @BINDIR@/pdisp-pair-prompt
+# -u -W: a USB cable and the network (TCP and UDP 47110) at the same time. -P ask -A: unknown devices are approved with a desktop notification.
+ExecStart=@BINDIR@/pdispd -u -W -P ask -A @BINDIR@/pdisp-pair-prompt
 Restart=on-failure
 RestartSec=3
 

@@ -6,21 +6,35 @@
 # `uaccess` gives the user at the active seat access, so no group membership is needed.
 
 # the device after it switched to accessory mode (Google's ids, with or without adb)
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d0[0-5]", TAG+="uaccess"
-
 # the device before it switched: the common Android vendors (the switch request is sent to the device in its normal mode)
-SUBSYSTEM=="usb", ATTR{idVendor}=="04e8", TAG+="uaccess"  # Samsung
-SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", TAG+="uaccess"  # Google
-SUBSYSTEM=="usb", ATTR{idVendor}=="2717", TAG+="uaccess"  # Xiaomi
-SUBSYSTEM=="usb", ATTR{idVendor}=="22b8", TAG+="uaccess"  # Motorola
-SUBSYSTEM=="usb", ATTR{idVendor}=="12d1", TAG+="uaccess"  # Huawei
-SUBSYSTEM=="usb", ATTR{idVendor}=="2a70", TAG+="uaccess"  # OnePlus
-SUBSYSTEM=="usb", ATTR{idVendor}=="22d9", TAG+="uaccess"  # Oppo
-SUBSYSTEM=="usb", ATTR{idVendor}=="2d95", TAG+="uaccess"  # Vivo
-SUBSYSTEM=="usb", ATTR{idVendor}=="0fce", TAG+="uaccess"  # Sony
-SUBSYSTEM=="usb", ATTR{idVendor}=="1004", TAG+="uaccess"  # LG
-SUBSYSTEM=="usb", ATTR{idVendor}=="0bb4", TAG+="uaccess"  # HTC
-SUBSYSTEM=="usb", ATTR{idVendor}=="19d2", TAG+="uaccess"  # ZTE
-SUBSYSTEM=="usb", ATTR{idVendor}=="2ae5", TAG+="uaccess"  # Fairphone
-SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", TAG+="uaccess"  # MediaTek
-SUBSYSTEM=="usb", ATTR{idVendor}=="05c6", TAG+="uaccess"  # Qualcomm
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", ATTR{idProduct}=="2d0[0-5]", TAG+="uaccess"
+# Samsung
+SUBSYSTEM=="usb", ATTR{idVendor}=="04e8", TAG+="uaccess"
+# Google
+SUBSYSTEM=="usb", ATTR{idVendor}=="18d1", TAG+="uaccess"
+# Xiaomi
+SUBSYSTEM=="usb", ATTR{idVendor}=="2717", TAG+="uaccess"
+# Motorola
+SUBSYSTEM=="usb", ATTR{idVendor}=="22b8", TAG+="uaccess"
+# Huawei
+SUBSYSTEM=="usb", ATTR{idVendor}=="12d1", TAG+="uaccess"
+# OnePlus
+SUBSYSTEM=="usb", ATTR{idVendor}=="2a70", TAG+="uaccess"
+# Oppo
+SUBSYSTEM=="usb", ATTR{idVendor}=="22d9", TAG+="uaccess"
+# Vivo
+SUBSYSTEM=="usb", ATTR{idVendor}=="2d95", TAG+="uaccess"
+# Sony
+SUBSYSTEM=="usb", ATTR{idVendor}=="0fce", TAG+="uaccess"
+# LG
+SUBSYSTEM=="usb", ATTR{idVendor}=="1004", TAG+="uaccess"
+# HTC
+SUBSYSTEM=="usb", ATTR{idVendor}=="0bb4", TAG+="uaccess"
+# ZTE
+SUBSYSTEM=="usb", ATTR{idVendor}=="19d2", TAG+="uaccess"
+# Fairphone
+SUBSYSTEM=="usb", ATTR{idVendor}=="2ae5", TAG+="uaccess"
+# MediaTek
+SUBSYSTEM=="usb", ATTR{idVendor}=="0e8d", TAG+="uaccess"
+# Qualcomm
+SUBSYSTEM=="usb", ATTR{idVendor}=="05c6", TAG+="uaccess"
