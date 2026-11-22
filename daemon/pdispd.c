@@ -79,6 +79,8 @@ struct daemon {
 	bool force_idr;
 	uint64_t refresh_due_us;   /* re-encode the current screen at this time if nothing new arrived (0 = none) */
 	uint64_t refine_due_us;    /* when the next refinement of a static screen is due (0 = none) */
+	uint64_t dump_due_us;      /* debug (PDISP_DUMP_FRAME): when to write the captured screen to a file, a second after it last changed */
+	const char *dump_path;
 	unsigned refine_left;      /* refinement pictures still to send after the last change of the screen */
 	uint64_t frames_encoded, frames_skipped, idr_frames, submit_failures, send_errors, sent_packets, reconfigs, pongs;
 	double encode_ms_sum, encode_ms_max;
@@ -110,6 +112,22 @@ static void cb_need_idr(void *user)
 }
 
 /* Encodes one screen image and hands it to the sender. */
+/* Debug aid for quality checks: the screen exactly as it was captured (what the encoder was given), as a PPM. */
+static void dump_frame(const uint8_t *pixels, int stride, unsigned w, unsigned h, const char *path)
+{
+	FILE *fp = fopen(path, "wb");
+	if (!fp) return;
+	fprintf(fp, "P6\n%u %u\n255\n", w, h);
+	uint8_t *row = malloc((size_t)w * 3);
+	for (unsigned y = 0; row && y < h; y++) {
+		const uint8_t *s = pixels + (size_t)y * (size_t)stride;
+		for (unsigned x = 0; x < w; x++) { row[x * 3] = s[x * 4 + 2]; row[x * 3 + 1] = s[x * 4 + 1]; row[x * 3 + 2] = s[x * 4]; } /* XRGB8888, little endian: B G R X */
+		fwrite(row, 1, (size_t)w * 3, fp);
+	}
+	free(row);
+	fclose(fp);
+}
+
 enum pic_kind { PIC_NEW, PIC_REPAIR, PIC_REFINE }; /* a new capture; the same screen again to repair a loss or a skip; a refinement of a static screen */
 
 static void encode_and_submit(const uint8_t *pixels, int stride, uint64_t capture_us, enum pic_kind kind)
@@ -148,6 +166,7 @@ static void encode_and_submit(const uint8_t *pixels, int stride, uint64_t captur
 		encoder_invalidate_frame(D.enc, p.frame_index);
 	}
 	D.refresh_due_us = 0;
+	if (kind != PIC_REFINE && D.dump_path) D.dump_due_us = now + 1000000;
 	if (kind == PIC_NEW) { /* the screen changed: if it stops changing, improve the picture a few times */
 		D.refine_left = C.refine_frames;
 		D.refine_due_us = C.refine_frames ? now + C.refine_settle_ms * 1000ull : 0; /* only once the screen has really settled */
@@ -723,6 +742,8 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	D.refresh_due_us = 0;
 	D.refine_due_us = 0;
 	D.refine_left = 0;
+	D.dump_due_us = 0;
+	D.dump_path = getenv("PDISP_DUMP_FRAME");
 
 	/* ---- SETUP */
 	D.session_id = (uint32_t)(net_now_us() * 2654435761u) ^ (uint32_t)getpid();
@@ -908,6 +929,11 @@ static enum end_reason serve(struct conn *c, double run_secs)
 		    (unsigned)cur.width == D.width && (unsigned)cur.height == D.height) {
 			D.refresh_due_us = 0;
 			encode_and_submit(cur.data, cur.stride, now, PIC_REPAIR); /* same screen again, predicted from a frame the phone has */
+		}
+		if (D.dump_due_us && now >= D.dump_due_us && D.streaming && vdisplay_current_frame(D.vd, &cur) &&
+		    (unsigned)cur.width == D.width && (unsigned)cur.height == D.height) {
+			D.dump_due_us = 0;
+			dump_frame(cur.data, cur.stride, D.width, D.height, D.dump_path);
 		}
 		if (D.refine_due_us && now >= D.refine_due_us && (vsend_queue_delay_us(D.vs) > 20000 || vsend_bitrate_kbps(D.vs) < 12000))
 			D.refine_due_us = now + C.refine_gap_ms * 1000ull; /* the link is busy or slow: refinement frames would only queue up, get lost and keep the rate down. Wait. */

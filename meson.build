@@ -268,3 +268,11 @@ test('m10 latency of a change right after refinement', m10_burst,
   is_parallel: false,
   timeout: 120,
   suite: 'integration')
+
+m10_real = find_program('tests/m10_real_text_check.sh')
+test('m10 real text (opt-in: PDISP_TEST_WINDOWS=1)', m10_real,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm10-real-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
+  suite: 'integration')

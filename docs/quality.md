@@ -144,3 +144,19 @@ series only. The 6.6 Mbit/s collapse itself did not happen again in the runs aft
    the display and the decoder disagree on that tablet. Checked on the Pixel 8a (both rates kept, 120 chosen with `-R 120`). Not checked on the tablet: it
    is not on adb, so the new app was not installed there.
 3. Not done: choosing the rate by itself from the link quality (starting at 60 and trying higher), and a per-transport default.
+
+## Real text (loopback)
+`tests/m10_real_text_check.sh` (opt-in, `PDISP_TEST_WINDOWS=1`: it opens a kitty window and moves it fullscreen to the virtual output) shows `daemon/pdispd.c`
+in a terminal (font size 11, cursor blink off) at 2304x1440 and compares the viewer's decoded snapshot with the screen as the daemon captured it. The
+daemon writes that reference when `PDISP_DUMP_FRAME=<file.ppm>` is set (a debug aid: the exact frame the encoder was given; the compositor's own screenshot
+was not used because it also overwrites the clipboard).
+
+| | PSNR of decoded vs captured |
+|---|---|
+| refinement on (default), 3 runs | 40.4, 40.4, 40.4 dB |
+| refinement off (`-F 0`), 2 runs | 40.4, 37.3 dB |
+
+Real code is far sparser than the synthetic glyph-noise page (30.4 dB there), so it already decodes well without refinement when the rate has settled;
+refinement makes the result stable (the 37.3 dB run was a screen that settled while the rate was still ramping up). Looked at by eye in a crop of the
+decoded snapshot: crisp, no visible ringing around glyphs. A 2304x1440 picture of text on a dark background is the only content tried; light backgrounds,
+syntax-coloured themes and small fonts were not.
