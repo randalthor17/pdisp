@@ -37,6 +37,7 @@ One rebuild does all of this:
 | Wi-Fi | with `openFirewall`, TCP and UDP 47110 are opened (all interfaces; every device must be paired and the traffic is encrypted) |
 | the daemon | a systemd **user** service `pdispd`, started with the graphical session, with `-u -W -P ask -A pdisp-pair-prompt` |
 | pairing prompt | `libnotify` (`notify-send`) is installed; your notification daemon must show actions (mako, dunst, GNOME, KDE and DankMaterialShell do) |
+| tray application | `services.pdisp.gui.enable` (default on) installs `pdisp-gui` and starts it with the session (`pdisp-gui --background`): status, paired devices, settings and a dialog to approve new devices (`docs/gui.md`) |
 
 **niri: touch and pen only on the pdisp monitor.** With home-manager:
 

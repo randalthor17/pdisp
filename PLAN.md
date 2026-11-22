@@ -101,7 +101,7 @@ Each milestone has a pass check. Do not start the next one until the check passe
 - Refresh rate mode selection, adaptive bitrate, static refinement, optional 10-bit and wide-gamut with matching EDID and stream color tags.
 - Pass: visual check on text-heavy content. Latency under load stays within the recorded baseline plus a margin chosen at M4.
 
-**M11: Packaging and 0.1 release** (in progress 2026-11-22: package, NixOS module, home-manager niri mapping, user service, pairing notification, `docs/install.md` and a NixOS VM check are done; a rebuild of the real system and the 0.1 tag are open)
+**M11: Packaging and 0.1 release** (in progress 2026-11-22: package, NixOS module, home-manager niri mapping, user service, pairing notification, control socket, Qt/QML GUI (`docs/gui.md`), `docs/install.md` and a NixOS VM check are done; a rebuild of the real system, the GUI tray on a real session and the 0.1 tag are open)
 - NixOS flake and module: evdi (`boot.extraModulePackages`, module options, device creation), udev rules, systemd user service. Install docs.
 - The niri side is part of the install, not something to edit by hand: the touchscreen and tablet bindings (`input { touch { map-to-output "PNP(PDI) pdisp PDISP0001" } tablet { ... } }`, see docs/touch.md) go in through the home-manager module (the user's niri config is a read-only home-manager file with `dms/*.kdl` includes), and the install docs describe them for non-Nix setups. Touch must never reach other displays.
 - Pass: a clean NixOS configuration reaches a working session from one rebuild. Tag 0.1 and hand over the bundle.

@@ -35,5 +35,7 @@ pkgs.testers.runNixOSTest {
         user("start pdispd")
         machine.wait_until_succeeds("ss -ltn | grep -q 47110")
         user("is-active pdispd")
+        gui = user("cat pdisp-gui")
+        assert "pdisp-gui --background" in gui, gui
   '';
 }
