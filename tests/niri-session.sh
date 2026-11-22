@@ -24,6 +24,9 @@ cat >"$cfg" <<'KDL'
 // a bare niri for the tests: no bar, no autostart, no animations
 animations { off; }
 hotkey-overlay { skip-at-startup; }
+// the checks that need the touchscreen mapped to the virtual output insert it into this block (tests/m8_*_check.sh)
+input {
+}
 // the virtual outputs of the tests (evdi connectors) at scale 1, as in a normal setup: a phone-sized output would otherwise get scale 2
 output "DVI-I-1" { scale 1; }
 output "DVI-I-2" { scale 1; }
