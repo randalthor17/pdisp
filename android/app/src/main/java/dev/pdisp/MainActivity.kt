@@ -118,7 +118,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback {
             setOnEditorActionListener { v, actionId, _ ->
                 if (actionId == EditorInfo.IME_ACTION_GO) {
                     (getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager).hideSoftInputFromWindow(v.windowToken, 0)
-                    if (handle == 0L) startSession()
+                    if (handle == 0L || target is Target.Usb) { // an address typed on purpose wins over a USB session that nobody answers
+                        if (handle != 0L) stopSession(0)
+                        startSession()
+                    }
                     true
                 } else false
             }
