@@ -53,6 +53,7 @@ static struct {
 	struct xdg_toplevel *toplevel;
 	struct output *target;
 	int width, height;
+	double burst; /* -B: seconds between changes of the otherwise static page (stamp only) */
 	bool configured, animate, stamp, text; /* text: the static text page of pattern.h instead of the ramps */
 	uint32_t *base; /* the pattern, computed once */
 	struct buffer buf[NBUF];
@@ -231,13 +232,15 @@ static void draw_and_commit(void)
 
 	b->busy = true;
 	wl_surface_attach(app.surface, b->wl, 0, 0);
-	if (!app.animate || app.frame_no == 0) {
+	if ((!app.animate && !(app.burst > 0 && app.stamp)) || app.frame_no == 0) {
 		wl_surface_damage_buffer(app.surface, 0, 0, app.width, app.height);
 	} else {
+		if (!app.animate) { wl_surface_damage_buffer(app.surface, 0, 0, STAMP_WIDTH, STAMP_BLOCK); goto damaged; }
 		if (app.bar_x >= 0) wl_surface_damage_buffer(app.surface, app.bar_x, 0, BAR_WIDTH, app.height);
 		wl_surface_damage_buffer(app.surface, new_x, 0, BAR_WIDTH, app.height);
 		if (app.stamp) wl_surface_damage_buffer(app.surface, 0, 0, STAMP_WIDTH, STAMP_BLOCK); /* the stamp changes every frame */
 	}
+damaged:
 	app.bar_x = new_x;
 	app.frame_no++;
 	if (app.animate) wl_callback_add_listener(wl_surface_frame(app.surface), &frame_listener, NULL);
@@ -275,6 +278,7 @@ static void usage(const char *argv0)
 		"  -t SECS    exit after this many seconds (default: until SIGINT/SIGTERM)\n"
 		"  -a         animate: sweep a bar across the pattern on every frame\n"
 		"  -X         draw the static text-like page (for the text quality check of pdisp-view -Q) instead of the ramps\n"
+		"  -B SECS    change only the timestamp every SECS seconds (with -T); the page stays static in between\n"
 		"  -T         draw a timestamp into the top rows of every frame (see tools/stamp.h)\n"
 		"  -E         print the touch events the compositor delivers to the window (surface coordinates)\n",
 		argv0);
@@ -285,12 +289,13 @@ int main(int argc, char **argv)
 	const char *want = NULL;
 	double secs = -1;
 	int opt;
-	while ((opt = getopt(argc, argv, "o:t:aTEXh")) != -1) {
+	while ((opt = getopt(argc, argv, "o:t:aTEXB:h")) != -1) {
 		switch (opt) {
 		case 'o': want = optarg; break;
 		case 't': secs = atof(optarg); break;
 		case 'a': app.animate = true; break;
 		case 'X': app.text = true; break;
+		case 'B': app.burst = atof(optarg); break;
 		case 'T': app.stamp = true; break;
 		case 'E': app.log_touch = true; break;
 		default: usage(argv[0]); return 2;
@@ -347,6 +352,7 @@ int main(int argc, char **argv)
 	struct timespec t0;
 	clock_gettime(CLOCK_MONOTONIC, &t0);
 	int fd = wl_display_get_fd(app.display);
+	struct timespec tl = t0;
 	while (!stop) {
 		while (wl_display_prepare_read(app.display) != 0) wl_display_dispatch_pending(app.display);
 		wl_display_flush(app.display);
@@ -357,6 +363,7 @@ int main(int argc, char **argv)
 
 		struct timespec t;
 		clock_gettime(CLOCK_MONOTONIC, &t);
+		if (app.burst > 0 && (t.tv_sec - tl.tv_sec) + (t.tv_nsec - tl.tv_nsec) / 1e9 >= app.burst) { draw_and_commit(); tl = t; }
 		if (secs >= 0 && (t.tv_sec - t0.tv_sec) + (t.tv_nsec - t0.tv_nsec) / 1e9 >= secs) break;
 	}
 	printf("committed %ld buffers\n", app.committed);

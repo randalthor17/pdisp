@@ -12,7 +12,7 @@ lower bound on what real text gets. It is not a substitute for looking at a real
 ## Static refinement
 Before: after the screen stopped changing the daemon sent nothing more, so the last picture stayed as the encoder left it, which at the starting rate
 for dense content is poor (**13.5 dB**, visible smearing along strokes). Now, once the screen has not changed for 150 ms, the daemon encodes the same
-screen again up to 40 times (33 ms apart), each a P-frame that improves on the last: minimum QP 4 instead of 10, a budget of 200% of the normal peak
+screen again up to 40 times (33 ms apart), each a P-frame that improves on the last: minimum QP 4 instead of 10, a budget of 100% of the normal peak
 rate, starting QP 22 (`encoder_set_refine`, `daemon/pdispd.c`). A new capture stops it at once and the next change starts a new round.
 
 | Setting (text page, loopback) | PSNR after refinement |
@@ -23,10 +23,10 @@ rate, starting QP 22 (`encoder_set_refine`, `daemon/pdispd.c`). A new capture st
 | 60 frames at 16 ms, normal budget | 29 dB |
 | 20 frames, 400% budget | 28 dB |
 | 20 frames, 800% budget | breaks the stream (queue, keyframe loop) |
-| **default: 40 frames, 200% budget** | **30.4 dB, 12 runs out of 12** |
+| **default: 40 frames, 100% budget** | **30.4 dB, 12 runs out of 12** |
 
 Options: `pdispd -F N` sets the number of refinement pictures (0 = off). The rest are environment variables while the defaults prove themselves:
-`PDISP_REFINE_FRAMES`, `PDISP_REFINE_MINQP` (4), `PDISP_REFINE_QP0` (22), `PDISP_REFINE_RATE_PCT` (200), `PDISP_REFINE_GAP_MS` (33),
+`PDISP_REFINE_FRAMES`, `PDISP_REFINE_MINQP` (4), `PDISP_REFINE_QP0` (22), `PDISP_REFINE_RATE_PCT` (100), `PDISP_REFINE_GAP_MS` (33),
 `PDISP_REFINE_SETTLE_MS` (150).
 
 ## Two stream bugs found on the way
@@ -39,7 +39,22 @@ the wire) and caused a spiral of keyframes (idr 1 to 18, a send queue of 850 ms,
    its first).
 
 ## Not done yet
-- Refinement was measured on the synthetic page and over loopback only. Not measured on the phone or the tablet, and not on real text.
-- The latency cost of refinement: a capture that arrives while a refinement frame is still being sent is skipped until the queue drains (up to about
-  one refinement frame's transmission time). The existing latency tests do not trigger refinement (the screen never settles there).
+- Real text and the phone or tablet are still open (above); the loopback cost of refinement is measured, see below.
 - 10-bit and wide-gamut, the refresh-rate policy, and the phone reporting its decode time to the PC are still open.
+
+## Latency of a change right after refinement (loopback)
+`tests/m10_burst_latency.sh`: the text page stays static and only a pixel timestamp changes every 0.4 s (`pdisp-pattern -X -T -B 0.4`), so every
+change lands inside a refinement burst (40 frames x 33 ms = 1.3 s). `pdisp-view -G` counts only the first picture carrying each stamp.
+
+| | p50 | p90 |
+|---|---|---|
+| `-F 0` (no refinement), 4 runs | 8.0 ms | 9 to 38 ms |
+| refinement, 200% budget, 4 runs | 7.1 to 7.5 ms | 10 to 40 ms |
+| refinement, 100% budget (the default), 6 runs | 9.0 to 9.8 ms | 10 to 15 ms |
+
+Refinement costs a change nothing measurable in steady state: a new capture is encoded at once and refinement stops. Findings:
+- The first two or three stamps of every run take 400 to 800 ms with or without refinement. That is the opening keyframe of this page (about
+  1 MB). It is why the test checks p90 (default limit 50 ms), not p99.
+- With the 200% budget, 1 run in 4 had a loss episode in the middle (1900 repair packets, 27 NACKs) that delayed three changes by 140 to 520 ms; the
+  `-F 0` runs and all six runs at 100% had none. The final quality is the same at 100% (30.35 dB against 30.37 dB), so 100% is the default. If a
+  real Wi-Fi link shows the same, the budget or the frame size needs a cap tied to the measured link rate.

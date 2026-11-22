@@ -88,6 +88,7 @@ struct viewer {
 
 	/* glass-to-glass: the stamp the application drew into the frame, read back from the decoded picture */
 	bool read_stamps;
+	uint64_t last_stamp;
 	uint64_t *glass_us;
 	size_t n_glass, cap_glass;
 
@@ -238,14 +239,17 @@ static void decode_job(const struct job *jb)
 		if (V.read_stamps && V.frame->format == AV_PIX_FMT_YUV420P) {
 			uint64_t stamp;
 			if (stamp_read(V.frame->data[0], V.frame->linesize[0], V.frame->width, &stamp)) {
+				bool again = stamp == V.last_stamp; /* a refinement of the same screen carries the same stamp: only its first appearance is a latency */
+				V.last_stamp = stamp;
 				uint64_t sn2 = server_now() & ((1ull << STAMP_VALUE_BITS) - 1);
 				uint64_t d = (sn2 - stamp) & ((1ull << STAMP_VALUE_BITS) - 1); /* the stamp holds the low 48 bits of the clock */
-				if (d < 5000000) { /* anything older than 5 s is a misread, not a measurement */
+				if (d < 5000000 && !again) { /* anything older than 5 s is a misread, not a measurement */
 					if (V.n_glass == V.cap_glass) {
 						V.cap_glass = V.cap_glass ? V.cap_glass * 2 : 1024;
 						V.glass_us = realloc(V.glass_us, V.cap_glass * sizeof *V.glass_us);
 					}
 					V.glass_us[V.n_glass++] = d;
+					if (d > 100000) LOG("SLOWSTAMP %.1f ms at decoded frame %llu", d / 1000.0, (unsigned long long)V.decoded);
 				}
 			}
 		}
@@ -817,8 +821,9 @@ int main(int argc, char **argv)
 	       (unsigned long long)V.reconfigs, (unsigned long long)V.pongs, (unsigned long long)V.auth_drops, (unsigned long long)V.touch_pushed, (unsigned long long)V.touch_acked_to, V.last ? V.last->width : 0, V.last ? V.last->height : 0);
 	if (V.read_stamps) {
 		qsort(V.glass_us, V.n_glass, sizeof *V.glass_us, cmp_u64);
-		printf("GLASS stamps=%zu of %llu frames, ms p50=%.1f p99=%.1f max=%.1f\n", V.n_glass, (unsigned long long)V.decoded,
+		printf("GLASS stamps=%zu of %llu frames, ms p50=%.1f p90=%.1f p99=%.1f max=%.1f\n", V.n_glass, (unsigned long long)V.decoded,
 		       V.n_glass ? V.glass_us[V.n_glass / 2] / 1000.0 : 0.0,
+		       V.n_glass ? V.glass_us[(size_t)((V.n_glass - 1) * 0.90)] / 1000.0 : 0.0,
 		       V.n_glass ? V.glass_us[(size_t)((V.n_glass - 1) * 0.99)] / 1000.0 : 0.0, V.n_glass ? V.glass_us[V.n_glass - 1] / 1000.0 : 0.0);
 	}
 	if (snap && V.bgra && png_write_bgra(snap, V.bgra, V.width, V.height, V.width * 4) == 0) LOG("wrote %s", snap);

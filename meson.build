@@ -260,3 +260,11 @@ test('m10 text quality of a static screen', m10_text,
   is_parallel: false,
   timeout: 120,
   suite: 'integration')
+
+m10_burst = find_program('tests/m10_burst_latency.sh')
+test('m10 latency of a change right after refinement', m10_burst,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm10-burst-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
+  suite: 'integration')

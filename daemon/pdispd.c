@@ -329,7 +329,7 @@ int main(int argc, char **argv)
 		C.refine_gap_ms = (e = getenv("PDISP_REFINE_GAP_MS")) ? (unsigned)atoi(e) : 33;
 		C.refine_settle_ms = (e = getenv("PDISP_REFINE_SETTLE_MS")) ? (unsigned)atoi(e) : 150;
 		C.refine_start_qp = (e = getenv("PDISP_REFINE_QP0")) ? (unsigned)atoi(e) : 22;
-		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 200;
+		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 100;
 	}
 	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uV:K:P:H:F:TIho")) != -1) {
 		switch (opt) {
