@@ -1,6 +1,4 @@
-# A keyframe is as large as the picture is detailed; a P-frame follows the motion. On a busy screen the keyframe is close to the largest P-frame; on a plain
-# one (a bare compositor) the P-frames are tiny and a keyframe of a few tens of KB is normal. So: within 1.25x the largest P-frame, or under 100 KB.
-awk -v i="$i_max" -v p="$p_max" 'BEGIN { exit !(i <= p * 1.25 || i <= 100000) }' || fail "largest keyframe $i_max bytes is more than 1.25x the largest P-frame $p_max and over 100 KB"#!/bin/sh
+#!/bin/sh
 # M3 pass check against a running niri session and a VAAPI HEVC encoder:
 #   the encoded file decodes without errors, ffprobe reports the expected stream (HEVC Main, size, 4:2:0,
 #   BT.709 limited range tags, no B-frames, I then P only), mpv plays it, per-frame encode time is within budget,
