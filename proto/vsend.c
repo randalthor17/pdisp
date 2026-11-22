@@ -49,6 +49,7 @@ struct vsend {
 	/* rate adaptation */
 	uint32_t target_kbps;
 	unsigned fec_percent;
+	bool phone_slow; /* the last feedback said the phone is slow to decode */
 	double loss_ewma; /* permille, fast: drives the FEC overhead */
 	double loss_slow; /* permille, about 200 ms of memory: a 10 ms interval holds ~14 packets, so one loss reads as 71 permille */
 	uint64_t last_adjust_us;
@@ -264,6 +265,7 @@ bool vsend_must_idr(const struct vsend *vs, uint64_t now_us)
 }
 
 uint32_t vsend_bitrate_kbps(const struct vsend *vs) { return vs->target_kbps; }
+bool vsend_phone_slow(const struct vsend *vs) { return vs->phone_slow; }
 unsigned vsend_fec_percent(const struct vsend *vs) { return vs->fec_percent; }
 const struct vsend_stats *vsend_stats(const struct vsend *vs) { return &vs->st; }
 
@@ -299,11 +301,15 @@ static void adapt(struct vsend *vs, const struct proto_feedback *fb, uint64_t no
 	if (fec > vs->cfg.fec_percent_max) fec = vs->cfg.fec_percent_max;
 	vs->fec_percent = fec;
 
-	vs->congested = fb->queue_delay_us > 25000 ? vs->congested + 1 : 0;
+	/* A phone that takes 50 ms or more to decode is the slow part, not the network: its receive thread is late, which reads as delay, and
+	 * what it drops reads as loss. Cutting the rate for that only makes the picture worse; hold it. */
+	bool phone_slow = fb->decode_ms_x10 >= 500;
+	vs->phone_slow = phone_slow;
+	vs->congested = !phone_slow && fb->queue_delay_us > 25000 ? vs->congested + 1 : 0;
 	if (now_us < vs->last_adjust_us + 100000) return; /* adjust at most every 100 ms */
 	uint32_t t = vs->target_kbps;
 	bool recent_loss = vs->last_lost_us && now_us < vs->last_lost_us + 500000;
-	if (vs->congested >= 3 || vs->loss_slow > 200) {
+	if (vs->congested >= 3 || (vs->loss_slow > 200 && !phone_slow)) {
 		/* A standing queue (25 ms or more for three reports) or severe loss (above 20%): cut in proportion to how deep the queue is, and
 		 * when it is severe go below what actually got through. */
 		unsigned q_ms = fb->queue_delay_us / 1000;
@@ -315,7 +321,7 @@ static void adapt(struct vsend *vs, const struct proto_feedback *fb, uint64_t no
 			if (cap < t) t = cap;
 		}
 		vs->last_adjust_us = vs->last_decrease_us = now_us;
-	} else if (vs->congested == 0 && fb->queue_delay_us < 15000 && vs->loss_slow < 100 && !recent_loss &&
+	} else if (!phone_slow && vs->congested == 0 && fb->queue_delay_us < 15000 && vs->loss_slow < 100 && !recent_loss &&
 		   (!vs->last_decrease_us || now_us > vs->last_decrease_us + 1000000)) {
 		t += t / 50 + 50; /* slow increase: about 2% per 100 ms, and only after a quiet second */
 		vs->last_adjust_us = now_us;

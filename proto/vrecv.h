@@ -66,6 +66,9 @@ int vrecv_make_packet(struct vrecv *vr, uint8_t type, const uint8_t *payload, si
 /* The platform decoder reported an error outside the decode callback: ask for an IDR. */
 void vrecv_decoder_error(struct vrecv *vr);
 
+/* The phone's decoder latency in 0.1 ms (input queued until the picture is out), reported to the PC in every feedback packet. */
+void vrecv_set_decode_x10(struct vrecv *vr, unsigned ms_x10);
+
 const struct vrecv_stats *vrecv_stats(const struct vrecv *vr);
 
 #endif

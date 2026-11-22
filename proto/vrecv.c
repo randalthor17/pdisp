@@ -48,6 +48,7 @@ struct vrecv {
 	bool started;
 	bool awaiting_idr;       /* nothing can be decoded until an IDR arrives */
 	bool decoder_error;      /* report need_idr until one is decoded */
+	uint16_t decode_ms_x10;  /* the phone's decode latency, sent in the feedback */
 	unsigned pending;
 	uint64_t seq_out;
 
@@ -364,11 +365,14 @@ void vrecv_decoder_error(struct vrecv *vr)
 	vr->st.decoder_errors++;
 }
 
+void vrecv_set_decode_x10(struct vrecv *vr, unsigned ms_x10) { vr->decode_ms_x10 = ms_x10 > 65535 ? 65535 : (uint16_t)ms_x10; }
+
 int vrecv_feedback_packet(struct vrecv *vr, uint64_t now_us, uint8_t *out, size_t cap)
 {
 	if (!vr->started) return 0;
 	struct proto_feedback fb;
 	memset(&fb, 0, sizeof fb);
+	fb.decode_ms_x10 = vr->decode_ms_x10;
 	fb.flags = vr->decoder_error ? PROTO_FB_NEED_IDR : 0;
 	fb.newest_frame_id = vr->newest;
 	fb.held_base = vr->base;

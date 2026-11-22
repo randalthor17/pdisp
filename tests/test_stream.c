@@ -565,6 +565,40 @@ static void test_ack_accounting(void)
 	printf("loss %u permille (acks shown), %u permille (hidden)\n", shown, hidden);
 }
 
+/* feedback that shows a standing queue (80 ms): with a healthy phone the sender cuts the rate, with a phone that is slow to decode it holds it */
+static uint32_t rate_after_queue(unsigned decode_ms_x10)
+{
+	struct vsend_config vc = { .session_id = 0x1234abcd, .bitrate_kbps = 20000, .max_bitrate_kbps = 40000, .min_bitrate_kbps = 1500 };
+	struct vsend_callbacks vcb = { 0 };
+	struct vsend *vs = vsend_create(&vc, &vcb);
+	uint64_t now = 1000000;
+	for (int i = 0; i < 20; i++, now += 120000) {
+		struct proto_feedback fb;
+		memset(&fb, 0, sizeof fb);
+		fb.queue_delay_us = 80000;
+		fb.recv_kbps = 18000;
+		fb.decode_ms_x10 = (uint16_t)decode_ms_x10;
+		uint8_t pkt[256];
+		struct proto_pkt_hdr h = { .session_id = 0x1234abcd, .type = PROTO_PKT_FEEDBACK, .seq = (uint32_t)i };
+		int a = proto_pkt_hdr_write(&h, pkt, sizeof pkt);
+		int b = proto_feedback_encode(&fb, pkt + a, sizeof pkt - (size_t)a);
+		CHECK(a > 0 && b > 0);
+		CHECK(vsend_on_packet(vs, pkt, (size_t)(a + b), now) == 0);
+	}
+	uint32_t r = vsend_bitrate_kbps(vs);
+	vsend_destroy(vs);
+	return r;
+}
+
+static void test_phone_slow(void)
+{
+	printf("  a slow phone is not mistaken for a slow network: ");
+	uint32_t healthy = rate_after_queue(100), slow = rate_after_queue(800);
+	CHECK(healthy < 12000); /* a standing queue cuts the rate */
+	CHECK(slow == 20000); /* a phone that needs 80 ms per picture leaves it alone */
+	printf("rate after 2.4 s of an 80 ms queue: %u kbit/s (decode 10 ms), %u kbit/s (decode 80 ms)\n", healthy, slow);
+}
+
 int main(void)
 {
 	puts("sender and receiver over a simulated link:");
@@ -577,6 +611,7 @@ int main(void)
 	test_lossy_feedback();
 	test_decoder_error();
 	test_ack_accounting();
+	test_phone_slow();
 	if (failures) {
 		fprintf(stderr, "%d check(s) failed\n", failures);
 		return 1;

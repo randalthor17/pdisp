@@ -75,6 +75,7 @@ struct session {
 	/* the same for complete frames reaching the decoder: separates network jitter from decode delay */
 	/* decode latency: time from queueing a frame to its picture being ready, keyed by presentation timestamp */
 	uint64_t in_time_us[64], in_pts[64];
+	atomic_uint dec_recent_us; /* the slowest decode since the last feedback packet */
 	uint32_t dec_us[1024];
 	unsigned n_dec;
 	/* clock sync with the PC and the end-to-end latency it makes measurable: PC capture time to the picture being ready and to the
@@ -276,6 +277,8 @@ static void drain_output(struct session *s)
 			if (s->in_pts[k] == (uint64_t)info.presentationTimeUs && s->in_time_us[k]) {
 				uint32_t took = (uint32_t)(net_now_us() - s->in_time_us[k]);
 				if (s->n_dec < 1024) s->dec_us[s->n_dec++] = took;
+				unsigned prev = atomic_load(&s->dec_recent_us);
+				while (took > prev && !atomic_compare_exchange_weak(&s->dec_recent_us, &prev, took)) {}
 				s->outputs++;
 				if (took > 60000 && s->slow_logged < 60) { /* which is slow: the decoder, or whoever collects its pictures? */
 					s->slow_logged++;
@@ -454,6 +457,7 @@ static void *run(void *arg)
 	net_ctl_send(&ctl, PROTO_CTL_READY, NULL, 0);
 
 	uint64_t t0 = net_now_us(), next_fb = t0 + 10000, next_hello = t0 + 100000, next_ping = t0 + 1000000, last_stat = t0;
+	unsigned dec_report_us = 0;
 	uint64_t last_rx = t0, last_rendered = 0, last_pong = t0, last_cadence = t0, next_time = 0, last_given_up = 0;
 	timesync_init(&s->ts);
 	bool streaming = false;
@@ -577,6 +581,11 @@ static void *run(void *arg)
 		}
 		if (now >= next_fb) {
 			next_fb = now + 10000;
+			{ /* the slowest decode of the last ~100 ms: the newest slow one counts fully, older ones fade out */
+				unsigned recent = atomic_exchange(&s->dec_recent_us, 0);
+				dec_report_us = recent > dec_report_us * 9 / 10 ? recent : dec_report_us * 9 / 10;
+				vrecv_set_decode_x10(vr, dec_report_us / 100);
+			}
 			int fn = vrecv_feedback_packet(vr, now, pkt, sizeof pkt);
 			if (fn > 0) DSEND(pkt, (size_t)fn);
 		}

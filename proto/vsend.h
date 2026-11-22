@@ -86,6 +86,8 @@ uint64_t vsend_rtt_us(const struct vsend *vs);
 
 /* Rate adaptation output: the encoder's target bitrate and the FEC overhead to use for the next frames. */
 uint32_t vsend_bitrate_kbps(const struct vsend *vs);
+/* true while the phone reports a slow decode (50 ms or more): the sender then holds the rate instead of cutting it */
+bool vsend_phone_slow(const struct vsend *vs);
 unsigned vsend_fec_percent(const struct vsend *vs);
 
 const struct vsend_stats *vsend_stats(const struct vsend *vs);

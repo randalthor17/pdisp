@@ -108,3 +108,16 @@ and 30 frames lost over 40 s. In the last 10 s the target fell from 40 to 6.6 Mb
 the phone is at its limit and the rate control reacts to that as if it were the network. The phone reporting its decode time (not done) is what would let
 the PC tell the two apart. A 60 Hz stream is the default for that reason. Also seen: after the daemon had been restarted the app did not start by itself
 for the accessory (no "open pdisp?" answer), the daemon saw it and timed out every 10 s until the app was opened by hand.
+
+## The phone reports its decode time
+The app measures, per picture, the time from queuing the input buffer to the picture coming out of `MediaCodec` (it includes the decoder's own pipeline
+depth) and sends the slowest of the last ~100 ms in every feedback packet (`decode_ms_x10`, `vrecv_set_decode_x10`). The daemon prints it in its stats
+line ("phone: ... decode N ms", the maximum of the interval).
+
+Pixel 8a over USB, slowest decode per 2 s: 16 to 28 ms at 60 Hz, 16 to 32 ms at 120 Hz (a 120 Hz stream has two to four frames in the decoder).
+Rule (`vsend.c`, `adapt`): at 50 ms or more the phone counts as slow. A slow phone's late receive thread reads as queueing delay and what it drops reads as
+loss, so the sender then ignores both for the rate cut and does not raise the rate either: it holds. Without this a phone that is behind made the rate fall
+(40 to 6.6 Mbit/s at 120 Hz) although the network was fine. `tests/test_stream.c` (`test_phone_slow`): the same 80 ms queue cuts the rate to
+1500 kbit/s with a decode of 10 ms and leaves it at 20000 kbit/s with 80 ms.
+Not done: the PC does not lower the frame rate or the picture size when the phone is slow, and the 50 ms threshold comes from these two measurement
+series only. The 6.6 Mbit/s collapse itself did not happen again in the runs after this change, so it is not shown that the rule prevents it.
