@@ -101,3 +101,10 @@ reported, so the PC cannot tell whether the phone or the network is the limit.
   the rate recovers to 40 Mbit/s within 30 s every time (13 to 16 frames lost at startup, none later). Why the start rate falls to 2 Mbit/s over a
   cable is not understood.
 - The phone's decode time still is not reported.
+
+## Pixel 8a at 120 Hz over USB, with the phone set to 120 Hz (40 s of full motion, `-R 120`)
+The panel ran its 120 Hz mode (`vsyncRate=120`, the stream's `setFrameRate` request is honoured), the PC streamed at 124 fps with about 5 keyframes
+and 30 frames lost over 40 s. In the last 10 s the target fell from 40 to 6.6 Mbit/s after a burst of loss while the phone's queue was at 46 ms: at 120 Hz
+the phone is at its limit and the rate control reacts to that as if it were the network. The phone reporting its decode time (not done) is what would let
+the PC tell the two apart. A 60 Hz stream is the default for that reason. Also seen: after the daemon had been restarted the app did not start by itself
+for the accessory (no "open pdisp?" answer), the daemon saw it and timed out every 10 s until the app was opened by hand.
