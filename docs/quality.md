@@ -161,3 +161,18 @@ Real code is far sparser than the synthetic glyph-noise page (30.4 dB there), so
 refinement makes the result stable (the 37.3 dB run was a screen that settled while the rate was still ramping up). Looked at by eye in a crop of the
 decoded snapshot: crisp, no visible ringing around glyphs. A 2304x1440 picture of text on a dark background is the only content tried; light backgrounds,
 syntax-coloured themes and small fonts were not.
+
+## Wi-Fi checks repeated on the tablet with the final build (Tab S9 FE, 2304x1440 portrait 1440x2304, Wi-Fi, 40 Mbit/s target)
+Same app build as the Pixel (decode-time report, rate filter, stop fix). The adb cable was attached for control only; the stream ran over Wi-Fi.
+
+| test | result |
+|---|---|
+| text page, a change every 1.5 s, refinement default (50 s) | clean: 1 keyframe, 0 lost, 0 repair packets, 40 Mbit/s throughout; phone decode 19 to 21 ms |
+| full motion, 60 Hz (40 s) | 60 fps (480 frames per 8 s), 1 keyframe, 0 lost, 230 repair packets and 14 NACKs in 51 s; decode 20 to 22 ms |
+| full motion, `-R 120` (40 s) | 90 Hz (the tablet's panel tops out at 90, so the three rates it offers are 90 and below); about 90 fps, 3 keyframes, 0 lost, 2472 repair packets, 225 NACKs; once the target fell to 7 Mbit/s and recovered to 40 within 8 s; decode 16 to 44 ms |
+
+- Refinement at 50% / 50 ms is clean on this link again (3 of 3 runs in total across the two sessions), and the decode report shows the tablet at about 20 ms
+  at 60 Hz, well below the 50 ms limit.
+- 90 Hz over Wi-Fi still costs about ten times the repairs of 60 Hz and an occasional rate dip, but with fewer keyframes than the first measurement (3 against 7).
+- The rate filter did not remove anything on this tablet (its panel stops at 90 and the decoder holds 100), so it is untested where it matters: a phone whose
+  display runs faster than its decoder. The Pixel and this tablet both pass everything their panels offer.
