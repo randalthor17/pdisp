@@ -41,3 +41,7 @@ Optional in meson: `-Dgui=auto` (default) builds it when Qt 6 with Quick Control
   palettes beyond what the offscreen Fusion shows, small window sizes beyond 520x460.
 - In a shell that sets `QT_QPA_PLATFORMTHEME=qtengine` the development shell's Qt loads a platform-theme plugin built against another Qt and crashes at exit
   (`KIconTheme`). The tests clear both variables; the packaged app uses the Qt it was built with.
+
+## Tray icon
+The tray shows a monochrome glyph (`gui/pdisp-tray.svg`: a monitor with a phone in front), not the coloured app icon. `main.cpp` tints it with the Qt
+theme's text colour, writes it as a 64x64 PNG under `~/.cache/pdisp/pdisp-gui/` and gives that to the tray; it is redone when the light or dark scheme changes.

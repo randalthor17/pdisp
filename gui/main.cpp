@@ -5,6 +5,10 @@
 #include <QDir>
 #include <QApplication>
 #include <QIcon>
+#include <QImage>
+#include <QStyleHints>
+#include <QPainter>
+#include <QUrl>
 #include <QPalette>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
@@ -15,6 +19,21 @@
 #include <QTimer>
 
 #include "backend.h"
+
+// The tray glyph is one colour: tint it with the theme's text colour (a tray shows it on the shell's own bar, so text colour is the safest guess)
+// and hand the tray a PNG file (the tray protocol wants pixels, not a vector).
+static QUrl tintedTrayIcon()
+{
+    QImage img = QIcon(":/pdisp-tray.svg").pixmap(64, 64).toImage().convertToFormat(QImage::Format_ARGB32_Premultiplied);
+    QPainter pt(&img);
+    pt.setCompositionMode(QPainter::CompositionMode_SourceIn);
+    pt.fillRect(img.rect(), QApplication::palette().color(QPalette::WindowText));
+    pt.end();
+    const QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+    QDir().mkpath(dir);
+    const QString file = dir + "/tray-" + QString::number(QApplication::palette().color(QPalette::WindowText).rgb(), 16) + ".png";
+    return img.save(file) ? QUrl::fromLocalFile(file) : QUrl("qrc:/pdisp-tray.svg");
+}
 
 int main(int argc, char **argv)
 {
@@ -60,6 +79,8 @@ int main(int argc, char **argv)
     qmlRegisterSingletonInstance("Pdisp", 1, 0, "Backend", &backend); // for the Theme singleton, which cannot see context properties
     engine.rootContext()->setContextProperty("backend", &backend);
     engine.rootContext()->setContextProperty("startHidden", p.isSet(background) && !p.isSet(shot));
+    engine.rootContext()->setContextProperty("trayIcon", tintedTrayIcon());
+    QObject::connect(app.styleHints(), &QStyleHints::colorSchemeChanged, &engine, [&engine](Qt::ColorScheme) { engine.rootContext()->setContextProperty("trayIcon", tintedTrayIcon()); });
     engine.rootContext()->setContextProperty("initialPage", p.value(page).toInt());
     engine.load(QUrl("qrc:/qml/Main.qml"));
     if (engine.rootObjects().isEmpty()) return 1;

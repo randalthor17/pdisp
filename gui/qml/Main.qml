@@ -109,7 +109,7 @@ ApplicationWindow {
 
     Platform.SystemTrayIcon {
         id: tray
-        icon.source: "qrc:/pdisp.svg"
+        icon.source: trayIcon // one colour, tinted to the theme (main.cpp)
         visible: true
         tooltip: win.summary()
         onActivated: function(reason) { if (win.visible) win.hide(); else win.present() }

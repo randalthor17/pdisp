@@ -1,6 +1,7 @@
 <RCC>
     <qresource prefix="/">
         <file>pdisp.svg</file>
+        <file>pdisp-tray.svg</file>
         <file>qml/qmldir</file>
         <file>qml/Theme.qml</file>
         <file>qml/Main.qml</file>
