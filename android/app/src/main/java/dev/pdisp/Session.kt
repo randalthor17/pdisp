@@ -43,6 +43,8 @@ class SessionController(private val activity: Activity, private val store: Store
     var stage by mutableStateOf(0); private set
     var pairCode by mutableStateOf<String?>(null); private set
     var stats by mutableStateOf<Stats?>(null); private set
+    /** The screen brightness the PC asked for (0..100, for instance from a DDC/CI slider), or -1 if it never did. */
+    var pcBrightness by mutableStateOf(-1); private set
     var problem by mutableStateOf<Problem?>(null)
     var attempts by mutableStateOf(0); private set
     /** True when a connecting stage has lasted more than a few seconds: the screen then says what usually causes it. */
@@ -207,6 +209,7 @@ class SessionController(private val activity: Activity, private val store: Store
             if (PdispNative.nativeFinished(handle)) { sessionEnded(text); return }
             val info = PdispNative.nativeInfo(handle)
             stage = info[0]
+            if (info.size > 10 && info[10] != pcBrightness) pcBrightness = info[10]
             if (stage != lastStage) { lastStage = stage; stageSinceMs = System.currentTimeMillis() }
             slow = stage != STAGE_STREAMING && stage != STAGE_PAIRING && System.currentTimeMillis() - stageSinceMs > 4000
             when (stage) {

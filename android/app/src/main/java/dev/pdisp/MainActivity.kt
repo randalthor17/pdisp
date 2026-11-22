@@ -92,10 +92,13 @@ class MainActivity : ComponentActivity() {
             if (phase == Phase.Streaming) c.hide(WindowInsetsCompat.Type.systemBars()) else c.show(WindowInsetsCompat.Type.systemBars())
             if (phase != Phase.Streaming) menu = false
         }
-        // full panel brightness for this window only while the picture shows; the system brightness is never changed
-        LaunchedEffect(phase, settings.fullBrightness) {
+        // full panel brightness (or the level the PC asked for) for this window only while the picture shows; the system brightness is never changed
+        LaunchedEffect(phase, settings.fullBrightness, session.pcBrightness) {
             val lp = window.attributes
-            lp.screenBrightness = if (phase == Phase.Streaming && settings.fullBrightness) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            val asked = session.pcBrightness // the PC set a level (DDC/CI): it wins over the switch
+            lp.screenBrightness = if (phase != Phase.Streaming) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+                else if (asked >= 0) (asked / 100f).coerceAtLeast(0.01f) // 0 would switch the panel off on some devices
+                else if (settings.fullBrightness) WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_FULL else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
             window.attributes = lp
         }
         LaunchedEffect(phase) { if (phase == Phase.Streaming) screen = Screen.Home; pcs = store.pcs() } // the list shows when each PC was last used

@@ -37,6 +37,7 @@ enum proto_ctl_type {
 	PROTO_CTL_RECONFIGURE = 0x0010,
 	PROTO_CTL_RECONFIGURE_ACK = 0x0011,
 	PROTO_CTL_DISPLAY_CHANGED = 0x0012,
+	PROTO_CTL_BRIGHTNESS = 0x0013,       /* PC to phone: one byte, the screen brightness 0..100 (the host set it over DDC/CI or pdisp-ctl) */
 	PROTO_CTL_CURSOR_SHAPE = 0x0020,
 	PROTO_CTL_PING = 0x0030,
 	PROTO_CTL_PONG = 0x0031,

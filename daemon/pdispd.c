@@ -109,6 +109,8 @@ static struct proto_hello g_hello;      /* the device's HELLO, to pick another m
 static uint8_t g_dev_pub[PC_DH_LEN];    /* its key (secure sessions only) */
 static bool g_have_dev_pub, g_stepped;  /* g_stepped: this session lowered the rate */
 static char g_rates_path[1100];         /* "learned_rates" beside the settings file */
+static volatile int g_brightness = -1;      /* the phone brightness the host last set over DDC/CI (0..100), -1 while it never did */
+static int g_brightness_sent = -1;         /* ... and the one the connected phone was last told */
 
 enum { PAIR_ASK, PAIR_ACCEPT, PAIR_DENY };
 static struct touchdev *touchdev;  /* the phone's touchscreen on this PC, while a session is running */
@@ -196,6 +198,13 @@ static void encode_and_submit(const uint8_t *pixels, int stride, uint64_t captur
 	}
 }
 
+static void on_brightness(unsigned percent, void *user)
+{
+	(void)user;
+	g_brightness = (int)percent;
+	LOG("brightness set to %u %% by the host", percent);
+}
+
 static void on_frame(const struct vdisplay_frame *f, void *user)
 {
 	(void)user;
@@ -271,9 +280,10 @@ static int bring_up(const struct edid_params *ep, const struct edid_timing *t, c
 	if (!D.vd) {
 		int card = C.card >= 0 ? C.card : vdisplay_find_free_device();
 		if (card < 0) return -ENODEV;
-		struct vdisplay_events ev = { .frame = on_frame };
+		struct vdisplay_events ev = { .frame = on_frame, .brightness = on_brightness };
 		int err = vdisplay_open(card, &ev, &D.vd);
 		if (err) return err;
+		if (g_brightness >= 0) vdisplay_set_brightness(D.vd, (unsigned)g_brightness);
 		LOG("using evdi card%d", card);
 		D.card_index = card;
 	} else {
@@ -1136,6 +1146,7 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	ctl_session_begin(hello.device_name);
 
 	/* ---- stream: the first frame is the current screen, so a static desktop shows up at once */
+	g_brightness_sent = -1; /* a phone that connects is told the level the host set earlier */
 	D.streaming = true;
 	struct vdisplay_frame cur;
 	if (vdisplay_current_frame(D.vd, &cur)) encode_and_submit(cur.data, cur.stride, net_now_us(), PIC_NEW);
@@ -1245,6 +1256,11 @@ static enum end_reason serve(struct conn *c, double run_secs)
 				}
 			}
 			if (done) break;
+		}
+		if (g_brightness >= 0 && g_brightness != g_brightness_sent && !D.awaiting_ack) {
+			uint8_t bb = (uint8_t)g_brightness;
+			g_brightness_sent = g_brightness;
+			net_ctl_send(ctl, PROTO_CTL_BRIGHTNESS, &bb, 1);
 		}
 		if (D.awaiting_ack && now > D.ack_deadline_us) { LOG("the phone did not confirm the reconfiguration"); end = END_LINK; break; }
 		if (now > next_ping) { /* liveness of the control channel itself */

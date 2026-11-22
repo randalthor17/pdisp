@@ -47,6 +47,7 @@ struct session {
 	atomic_int stage;        /* what the connection is doing, for the UI: STAGE_* */
 	atomic_uint pair_code;   /* the pairing code to compare, while stage is STAGE_PAIRING */
 	atomic_uint info[8];     /* live numbers while streaming: width, height, fps x 10, decoded, lost frames, IDR requests, touches sent, touches acknowledged */
+	atomic_int brightness;   /* the screen brightness the PC asked for, 0..100, or -1 while it never did */
 	ANativeWindow *window;
 	char host[128], name[PROTO_NAME_MAX];
 	atomic_uint pending_w, pending_h; /* a new display size reported by the UI thread, sent by the session thread */
@@ -555,6 +556,7 @@ static void *run(void *arg)
 				if (type == PROTO_CTL_CLOSE) { set_status(s, "the PC ended the session"); goto out; }
 				if (type == PROTO_CTL_PING) net_ctl_send(&ctl, PROTO_CTL_PONG, payload, plen);
 				else if (type == PROTO_CTL_PONG) last_pong = now;
+				else if (type == PROTO_CTL_BRIGHTNESS) { if (plen == 1 && payload[0] <= 100) atomic_store(&s->brightness, payload[0]); }
 				else if (type == PROTO_CTL_RECONFIGURE) {
 					struct proto_stream_params np;
 					if (proto_stream_params_decode(payload, plen, &np) != 0 || open_codec(s, &np) != 0) {
@@ -687,6 +689,7 @@ static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, job
 	struct session *s = calloc(1, sizeof *s);
 	if (!s) return 0;
 	s->usb_fd = usb_fd;
+	atomic_store(&s->brightness, -1);
 	s->ctl_fd = -1;
 	pthread_mutex_init(&s->ctl_mu, NULL);
 	pthread_mutex_init(&s->status_mu, NULL);
@@ -736,19 +739,21 @@ JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStartUsb(JNIEnv *env, j
 }
 
 /* Why the session ended on its own: 0 we stopped it, 1 the link failed (the app should try again), 2 it was refused or cannot work (it should not). */
-/* The connection stage, the pairing code and the live numbers (see struct session): int[10] = stage, pair code, then info[0..7]. */
+/* The connection stage, the pairing code and the live numbers (see struct session): int[11] = stage, pair code, info[0..7], then the brightness the PC asked for (-1: none). */
 JNIEXPORT jintArray JNICALL Java_dev_pdisp_PdispNative_nativeInfo(JNIEnv *env, jclass cls, jlong handle)
 {
 	(void)cls;
 	struct session *s = (struct session *)(intptr_t)handle;
-	jint v[10] = { 0 };
+	jint v[11] = { 0 };
+	v[10] = -1;
 	if (s) {
 		v[0] = atomic_load(&s->stage);
 		v[1] = (jint)atomic_load(&s->pair_code);
 		for (int i = 0; i < 8; i++) v[2 + i] = (jint)atomic_load(&s->info[i]);
+		v[10] = atomic_load(&s->brightness);
 	}
-	jintArray out = (*env)->NewIntArray(env, 10);
-	if (out) (*env)->SetIntArrayRegion(env, out, 0, 10, v);
+	jintArray out = (*env)->NewIntArray(env, 11);
+	if (out) (*env)->SetIntArrayRegion(env, out, 0, 11, v);
 	return out;
 }
 

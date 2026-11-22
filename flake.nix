@@ -61,6 +61,7 @@
           imagemagick # the gesture and window checks
           loupe
           android-tools # adb, for the checks that need a tablet on a USB cable (m5, m7)
+          ddcutil # the brightness check (m13) talks DDC/CI to the virtual monitor
           iproute2
           ffmpeg-headless
           SDL2

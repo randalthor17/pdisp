@@ -724,6 +724,7 @@ int main(int argc, char **argv)
 				if (type == PROTO_CTL_CLOSE) { LOG("the daemon closed the session"); done = true; break; }
 				if (type == PROTO_CTL_PING) net_ctl_send(&ctl, PROTO_CTL_PONG, payload, plen);
 				else if (type == PROTO_CTL_PONG) { V.pongs++; last_pong = now; }
+				else if (type == PROTO_CTL_BRIGHTNESS && plen == 1) LOG("BRIGHTNESS: %u %%", payload[0]);
 				else if (type == PROTO_CTL_RECONFIGURE) {
 					struct proto_stream_params np;
 					if (proto_stream_params_decode(payload, plen, &np) != 0) { LOG("bad RECONFIGURE"); done = true; break; }

@@ -49,6 +49,8 @@ struct vdisplay_events {
 	/* the output was blanked or woken (DPMS), or its CRTC was enabled or disabled */
 	void (*dpms)(int mode, void *user);
 	void (*crtc_state)(int state, void *user);
+	/* the host set the monitor brightness over DDC/CI (for instance ddcutil, or a desktop shell's slider), 0..100 */
+	void (*brightness)(unsigned percent, void *user);
 	/* a screen update; setting this enables frame capture */
 	void (*frame)(const struct vdisplay_frame *frame, void *user);
 	void *user;
@@ -64,6 +66,9 @@ int vdisplay_open(int card, const struct vdisplay_events *events, struct vdispla
 int vdisplay_connect(struct vdisplay *vd, const uint8_t edid[EDID_SIZE], unsigned width, unsigned height,
 		     unsigned pixel_clock_khz);
 void vdisplay_disconnect(struct vdisplay *vd);
+
+/* The brightness the monitor reports over DDC/CI (starts at 100), for a change that did not come from the host. */
+void vdisplay_set_brightness(struct vdisplay *vd, unsigned percent);
 bool vdisplay_is_connected(const struct vdisplay *vd);
 
 /* For callers with their own poll loop: the descriptor to wait on, and a non-blocking step that delivers every ready

@@ -51,6 +51,7 @@ Unknown message types are skipped by length. Receivers must never read past `len
 | 0x0010 | RECONFIGURE | PC to phone |
 | 0x0011 | RECONFIGURE_ACK | phone to PC |
 | 0x0012 | DISPLAY_CHANGED | phone to PC |
+| 0x0013 | BRIGHTNESS | PC to phone |
 | 0x0020 | CURSOR_SHAPE | PC to phone |
 | 0x0030 | PING | both |
 | 0x0031 | PONG | both |
@@ -101,6 +102,10 @@ and carries the `new_epoch` flag. Packets of an older epoch are discarded. A new
 and packet sequence numbers start again from 0**, and the receiver resets its state (and its delay baseline) with the epoch.
 **DISPLAY_CHANGED** (phone to PC): the HELLO display fields again (rotation, new insets, window size). The PC decides whether
 to change the virtual output (EDID reconnect or mode change) and replies with RECONFIGURE.
+
+**BRIGHTNESS** (PC to phone): `u8 percent` (0..100). The host set the monitor brightness (over DDC/CI, see `docs/brightness.md`); the phone applies it to
+the screen while it shows the picture. It is sent when the level changes and once after a connection if the host has set one earlier; a
+phone that never receives it keeps its own setting. A value above 100 is ignored.
 
 **CURSOR_SHAPE**: `u16 shape_id, i16 hot_x, i16 hot_y, u16 width, u16 height, bytes argb` (at most 128 x 128 x 4 bytes).
 Cursor positions use shape ids (section 3.7).

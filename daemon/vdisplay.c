@@ -1,5 +1,7 @@
 #include "vdisplay.h"
 
+#include "ddcci.h"
+
 #include <errno.h>
 #include <evdi_lib.h>
 #include <poll.h>
@@ -16,6 +18,7 @@ struct vdisplay {
 	evdi_handle handle;
 	bool connected;
 	struct vdisplay_events events;
+	struct ddcci ddc; /* the DDC/CI monitor the kernel's I2C adapter talks to */
 
 	/* frame capture */
 	bool want_frames;
@@ -109,6 +112,20 @@ static void on_dpms(int mode, void *user)
 	if (vd->events.dpms) vd->events.dpms(mode, vd->events.user);
 }
 
+/* One I2C transaction on address 0x37 (DDC/CI). The kernel waits for exactly one answer of the same length, for a write as well. */
+static void on_ddcci(struct evdi_ddcci_data d, void *user)
+{
+	struct vdisplay *vd = user;
+	uint8_t out[DDCCI_MAX_FRAME] = { 0 };
+	uint32_t n = d.buffer_length < sizeof out ? d.buffer_length : (uint32_t)sizeof out;
+	if (d.flags & 1) { /* I2C_M_RD */
+		ddcci_read(&vd->ddc, out, n);
+	} else if (ddcci_write(&vd->ddc, d.buffer, n) && vd->events.brightness) {
+		vd->events.brightness(vd->ddc.brightness, vd->events.user);
+	}
+	evdi_ddcci_response(vd->handle, out, n, true);
+}
+
 static void on_crtc_state(int state, void *user)
 {
 	struct vdisplay *vd = user;
@@ -120,6 +137,7 @@ int vdisplay_open(int card, const struct vdisplay_events *events, struct vdispla
 	struct vdisplay *vd = calloc(1, sizeof *vd);
 	if (!vd) return -ENOMEM;
 	if (events) vd->events = *events;
+	ddcci_init(&vd->ddc, 100);
 	vd->want_frames = vd->events.frame != NULL;
 
 	vd->handle = evdi_open(card);
@@ -164,6 +182,7 @@ static void dispatch(struct vdisplay *vd)
 	ctx.update_ready_handler = on_update_ready;
 	ctx.dpms_handler = on_dpms;
 	ctx.crtc_state_handler = on_crtc_state;
+	ctx.ddcci_data_handler = on_ddcci;
 	ctx.user_data = vd;
 	evdi_handle_events(vd->handle, &ctx);
 }
@@ -217,4 +236,9 @@ void vdisplay_close(struct vdisplay *vd)
 	drop_buffer(vd);
 	evdi_close(vd->handle);
 	free(vd);
+}
+
+void vdisplay_set_brightness(struct vdisplay *vd, unsigned percent)
+{
+	vd->ddc.brightness = percent > 100 ? 100 : percent;
 }
