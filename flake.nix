@@ -60,6 +60,7 @@
           jq
           imagemagick # the gesture and window checks
           loupe
+          android-tools # adb, for the checks that need a tablet on a USB cable (m5, m7)
           iproute2
           ffmpeg-headless
           SDL2
