@@ -133,3 +133,14 @@ series only. The 6.6 Mbit/s collapse itself did not happen again in the runs aft
 - Reopen if evdi gets a 10-bit format, or if the capture path moves away from evdi (for example a compositor-side virtual output). Then the change is: P010
   surfaces and VPP in `daemon/encoder.c`, Main10 in the VPS/SPS, the colour tags (BT.709/BT.2020, range, transfer) in the VUI, a matching EDID
   (colour characteristics, HDR static metadata block) and the phone checking `MediaCodecInfo` for Main10 and the panel's colour modes.
+
+## Refresh-rate policy
+1. **The PC picks the highest rate the phone offers that is at or below its cap `-R`, default 60.** The default stays 60 because that is the only rate that
+   was clean on every link measured: tablet over Wi-Fi 60 Hz clean, 90 Hz about 30 times the repairs and 6 extra keyframes; Pixel over USB 120 Hz works
+   but the phone is at its limit (see above and the decode-time rule). `-R 90` or `-R 120` is the user's call.
+2. **The phone only offers rates its decoder can hold** (`limit_rates_to_decoder` in `session.c`, before HELLO): each display rate is tried as the decoder's
+   operating rate with a throwaway decoder, and a rate the vendor refuses is not offered (the lowest always stays). So `-R 120` on the Tab S9 FE, whose
+   decoder refuses 110 and 120, should now give 90 and never a 120 it cannot decode. This replaces the idea of clamping to the display's maximum, because
+   the display and the decoder disagree on that tablet. Checked on the Pixel 8a (both rates kept, 120 chosen with `-R 120`). Not checked on the tablet: it
+   is not on adb, so the new app was not installed there.
+3. Not done: choosing the rate by itself from the link quality (starting at 60 and trying higher), and a per-transport default.

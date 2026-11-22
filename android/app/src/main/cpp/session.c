@@ -163,7 +163,7 @@ static int try_codec(struct session *s, const struct proto_stream_params *p, int
 	AMediaFormat_setString(f, AMEDIAFORMAT_KEY_MIME, "video/hevc");
 	AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_WIDTH, p->width);
 	AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_HEIGHT, p->height);
-	AMediaFormat_setBuffer(f, "csd-0", p->param_sets, p->param_sets_len);
+	if (p->param_sets_len) AMediaFormat_setBuffer(f, "csd-0", p->param_sets, p->param_sets_len);
 	AMediaFormat_setInt32(f, "low-latency", 1); /* no output reordering delay */
 	if (hints & 1) AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_PRIORITY, 0); /* real-time */
 	if ((hints & 2) && rate > 0) AMediaFormat_setInt32(f, "operating-rate", rate); /* clocks the decoder for this many frames a second */
@@ -212,6 +212,26 @@ static int open_codec(struct session *s, const struct proto_stream_params *p)
 }
 
 static void drain_output(struct session *s);
+
+/* Which of the display's refresh rates the decoder can really sustain: a vendor refuses an operating rate above what it can reserve in real time
+ * (the Tab S9 FE refuses 110 and 120 although its panel runs 120). The PC picks from the rates in HELLO, so a rate the decoder would not hold must
+ * not be in it. Throwaway decoders without a surface, like in open_codec. Rates are only removed, never added, and the lowest always stays. */
+static void limit_rates_to_decoder(struct session *s)
+{
+	if (s->n_rates < 2) return;
+	struct proto_stream_params p;
+	memset(&p, 0, sizeof p);
+	p.width = (uint16_t)s->width;
+	p.height = (uint16_t)s->height;
+	unsigned keep = 0, lowest = s->rates_mhz[0];
+	for (unsigned i = 0; i < s->n_rates; i++) if (s->rates_mhz[i] < lowest) lowest = s->rates_mhz[i];
+	for (unsigned i = 0; i < s->n_rates; i++) {
+		unsigned hz = (s->rates_mhz[i] + 500) / 1000;
+		if (s->rates_mhz[i] == lowest || try_codec(s, &p, 3, (int)hz, true) == 0) s->rates_mhz[keep++] = s->rates_mhz[i];
+		else LOGI("the decoder cannot hold %u Hz: not offered", hz);
+	}
+	s->n_rates = keep;
+}
 
 /* vrecv's decode callback: copy the access unit into a free codec input buffer. Non-zero means the decoder could not take it,
  * which makes the receiver ask for an IDR. */
@@ -407,6 +427,7 @@ static void *run(void *arg)
 	uint16_t type;
 	const uint8_t *payload;
 	size_t plen;
+	limit_rates_to_decoder(s);
 	if (send_hello(s, &ctl, PROTO_CTL_HELLO) != 0) { set_status(s, "cannot send HELLO"); goto out; }
 	set_status(s, "waiting for the PC to create the monitor (%ux%u)", s->width, s->height);
 	int r = 0;
