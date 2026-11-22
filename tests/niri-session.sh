@@ -11,8 +11,13 @@
 set -u
 repo=$(cd "$(dirname "$0")/.." && pwd)
 [ -n "${WAYLAND_DISPLAY:-}" ] && { echo "Run this from a plain terminal (a spare VT), not inside a desktop session: it starts its own niri."; exit 2; }
+# The tests need the evdi device for themselves (there is one): pause your own pdisp services while they run, and start them again afterwards.
+stopped=""
+for u in pdisp-gui pdispd; do systemctl --user is-active --quiet $u 2>/dev/null && { systemctl --user stop $u && stopped="$u $stopped"; }; done
+[ -n "$stopped" ] && echo "paused your services: $stopped(started again at the end)"
+restore() { rm -f "$cfg"; for u in $stopped; do systemctl --user start $u; done; }
 cfg=$(mktemp --suffix=.kdl)
-trap 'rm -f "$cfg"' EXIT
+trap restore EXIT
 cat >"$cfg" <<'KDL'
 // a bare niri for the tests: no bar, no autostart, no animations
 animations { off; }
