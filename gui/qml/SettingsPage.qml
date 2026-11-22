@@ -40,7 +40,7 @@ Page {
         opacity: page.online ? 1 : 0.5
         Setting {
             headline: "Highest refresh rate"
-            supporting: "The PC uses the best rate the device offers that is not above this. 60 Hz is the smoothest on every link tried."
+            supporting: "The most the PC will ask for. It starts at the best rate the device offers under this and steps down by itself if the device cannot keep up, then remembers the rate that worked. Setting this starts that search again."
             MSegmented { model: page.rates(); current: page.cfg.refresh_cap_hz; onPicked: function(v) { Backend.setConfig("refresh_cap_hz", v) } }
         }
         Divider {}
