@@ -12,7 +12,7 @@ lower bound on what real text gets. It is not a substitute for looking at a real
 ## Static refinement
 Before: after the screen stopped changing the daemon sent nothing more, so the last picture stayed as the encoder left it, which at the starting rate
 for dense content is poor (**13.5 dB**, visible smearing along strokes). Now, once the screen has not changed for 150 ms, the daemon encodes the same
-screen again up to 40 times (33 ms apart), each a P-frame that improves on the last: minimum QP 4 instead of 10, a budget of 100% of the normal peak
+screen again up to 40 times (50 ms apart), each a P-frame that improves on the last: minimum QP 4 instead of 10, a budget of 50% of the normal peak
 rate, starting QP 22 (`encoder_set_refine`, `daemon/pdispd.c`). A new capture stops it at once and the next change starts a new round.
 
 | Setting (text page, loopback) | PSNR after refinement |
@@ -23,10 +23,10 @@ rate, starting QP 22 (`encoder_set_refine`, `daemon/pdispd.c`). A new capture st
 | 60 frames at 16 ms, normal budget | 29 dB |
 | 20 frames, 400% budget | 28 dB |
 | 20 frames, 800% budget | breaks the stream (queue, keyframe loop) |
-| **default: 40 frames, 100% budget** | **30.4 dB, 12 runs out of 12** |
+| **default: 40 frames, 50 ms apart, 50% budget** | **29.8 dB** (30.4 dB at the old 200% budget) |
 
 Options: `pdispd -F N` sets the number of refinement pictures (0 = off). The rest are environment variables while the defaults prove themselves:
-`PDISP_REFINE_FRAMES`, `PDISP_REFINE_MINQP` (4), `PDISP_REFINE_QP0` (22), `PDISP_REFINE_RATE_PCT` (100), `PDISP_REFINE_GAP_MS` (33),
+`PDISP_REFINE_FRAMES`, `PDISP_REFINE_MINQP` (4), `PDISP_REFINE_QP0` (22), `PDISP_REFINE_RATE_PCT` (50), `PDISP_REFINE_GAP_MS` (50),
 `PDISP_REFINE_SETTLE_MS` (150).
 
 ## Two stream bugs found on the way
@@ -58,3 +58,18 @@ Refinement costs a change nothing measurable in steady state: a new capture is e
 - With the 200% budget, 1 run in 4 had a loss episode in the middle (1900 repair packets, 27 NACKs) that delayed three changes by 140 to 520 ms; the
   `-F 0` runs and all six runs at 100% had none. The final quality is the same at 100% (30.35 dB against 30.37 dB), so 100% is the default. If a
   real Wi-Fi link shows the same, the budget or the frame size needs a cap tied to the measured link rate.
+
+## Over Wi-Fi (Tab S9 FE, 2304x1440, Wi-Fi to the PC, text page with a changing stamp, 40 Mbit/s target)
+Loopback hid a problem: bursts of refinement frames overload a real link.
+
+| refinement | result over 50 s |
+|---|---|
+| off (`-F 0`) | clean: 1 keyframe, 4 frames lost at startup, no repair storm |
+| 100% budget, 33 ms apart | 1330 repair packets within 2 s, then a loss episode: queue 500 ms, keyframes 1 to 22, 38 frames lost |
+| 50% budget, 50 ms apart (the default now) | clean: 1 keyframe, 10 frames lost (all at startup), 109 repair packets |
+| 50% / 50 ms, a change every 1.5 s for 60 s | clean: 1 keyframe, 4 frames lost, 96 repair packets |
+
+Loopback quality of 50%/50 ms: 29.84 dB (30.37 dB at 100%/33 ms), so the cost is small. The rate control still does not react to this kind of
+loss (the target stayed at 40 Mbit/s through the episode); a budget tied to the measured link rate would be the real fix.
+The picture on the tablet was not judged by eye in these runs, and the phone does not report decode time yet. One tablet, one network, a few runs each.
+The NixOS firewall blocks port 47110 after every reboot until a rule is added (`docs/spikes/m5-android.md`).

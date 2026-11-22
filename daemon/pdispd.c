@@ -326,10 +326,10 @@ int main(int argc, char **argv)
 		/* Static refinement (docs/quality.md): 40 pictures of the same screen, each a little better, once it has not changed for 150 ms. */
 		C.refine_frames = (e = getenv("PDISP_REFINE_FRAMES")) ? (unsigned)atoi(e) : 40;
 		C.refine_min_qp = (e = getenv("PDISP_REFINE_MINQP")) ? (unsigned)atoi(e) : 4;
-		C.refine_gap_ms = (e = getenv("PDISP_REFINE_GAP_MS")) ? (unsigned)atoi(e) : 33;
+		C.refine_gap_ms = (e = getenv("PDISP_REFINE_GAP_MS")) ? (unsigned)atoi(e) : 50;
 		C.refine_settle_ms = (e = getenv("PDISP_REFINE_SETTLE_MS")) ? (unsigned)atoi(e) : 150;
 		C.refine_start_qp = (e = getenv("PDISP_REFINE_QP0")) ? (unsigned)atoi(e) : 22;
-		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 100;
+		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 50;
 	}
 	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uV:K:P:H:F:TIho")) != -1) {
 		switch (opt) {
