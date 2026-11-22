@@ -51,6 +51,8 @@ struct session {
 	int usb_fd; /* >= 0: talk over this USB accessory descriptor instead of the network */
 	unsigned port, width, height, dpi, n_rates, rates_mhz[PROTO_MAX_RATES];
 
+	pthread_mutex_t ctl_mu;     /* guards ctl_fd */
+	int ctl_fd;                 /* the control socket while the session thread has it open: nativeStop shuts it down to wake a blocked handshake */
 	pthread_mutex_t in_mu;      /* guards in_tx: touches arrive on the UI thread, the session thread sends them */
 	struct input_tx in_tx;
 	struct palm_filter palm;    /* guarded by in_mu too */
@@ -365,8 +367,12 @@ static void *run(void *arg)
 	}
 	struct net_ctl ctl;
 	net_ctl_init(&ctl, cfd);
+	pthread_mutex_lock(&s->ctl_mu);
+	s->ctl_fd = cfd;
+	pthread_mutex_unlock(&s->ctl_mu);
 	struct vrecv *vr = NULL;
 	int ufd = -1;
+	if (atomic_load(&s->stop)) goto out; /* stopped before the control socket was registered */
 
 	/* ---- the secure handshake: who is the PC, and does it know us? */
 	struct sec_udp udp;
@@ -607,6 +613,9 @@ out:
 	close_codec(s);
 	if (vr) vrecv_destroy(vr);
 	if (ufd >= 0) close(ufd);
+	pthread_mutex_lock(&s->ctl_mu);
+	s->ctl_fd = -1;
+	pthread_mutex_unlock(&s->ctl_mu);
 	net_ctl_close(&ctl);
 	if (mux) usbmux_stop(mux);
 	/* The accessory descriptor is ours to close. While it stays open Android treats the accessory as in use and ignores the PC's next
@@ -623,6 +632,8 @@ static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, job
 	struct session *s = calloc(1, sizeof *s);
 	if (!s) return 0;
 	s->usb_fd = usb_fd;
+	s->ctl_fd = -1;
+	pthread_mutex_init(&s->ctl_mu, NULL);
 	pthread_mutex_init(&s->status_mu, NULL);
 	pthread_mutex_init(&s->in_mu, NULL);
 	atomic_store(&s->end_kind, 1);
@@ -685,6 +696,9 @@ JNIEXPORT void JNICALL Java_dev_pdisp_PdispNative_nativeStop(JNIEnv *env, jclass
 	if (!s) return;
 	atomic_store(&s->close_reason, reason);
 	atomic_store(&s->stop, true);
+	pthread_mutex_lock(&s->ctl_mu); /* a handshake can block for 10 s: the UI thread must not wait that long */
+	if (s->ctl_fd >= 0) shutdown(s->ctl_fd, SHUT_RDWR);
+	pthread_mutex_unlock(&s->ctl_mu);
 	pthread_join(s->thread, NULL);
 	ANativeWindow_release(s->window);
 	free(s);

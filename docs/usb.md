@@ -39,3 +39,12 @@ Not tested: other vendors, RNDIS/tethering and MIDI modes, USB hubs and docks, A
 - **Leaving the app ends the session on purpose.** Opening a system screen on top of the app (the USB mode chooser) stops the app's
   surface, so the session is closed "on purpose" and the monitor is removed at once (lifecycle design). It reconnects when the app is back.
 - `PDISP_USB_DEBUG=1` makes the daemon print what it does to each USB device.
+
+## The app freezing ("pdisp isn't responding") with an unanswered USB session
+A phone left in accessory mode, with a PC that listens on Wi-Fi only, connects over USB and waits 10 s for a handshake nobody answers. Typing an
+address and pressing Go during that wait stopped the session on the UI thread, which joined the session thread, which sat in the handshake read (up to
+10 s) or in a write to an accessory the host never reads: Android showed the ANR dialog after 5 s. Fixes:
+- `nativeStop` shuts down the control socket first, which wakes a blocked handshake at once.
+- `usbmux_stop` interrupts the write thread with SIGUSR2 as it already did the read thread, waits at most 0.5 s, and detaches it if it is still stuck.
+- An address typed and confirmed on purpose replaces a USB session (`MainActivity`).
+Not covered: `net_tcp_connect` to an unreachable Wi-Fi address also blocks the session thread, so stopping then can still wait.
