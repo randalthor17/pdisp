@@ -324,7 +324,7 @@ seconds. Sent every second. Used to turn `capture_us` into glass-to-glass latenc
 
 ## 6. Not covered by this draft
 
-- Device discovery (manual host and port in M4; mDNS later) and the AOA accessory strings.
+- The AOA accessory strings. Device discovery is not part of the protocol: it is mDNS (`docs/discovery.md`), with a manual host and port as the fallback.
 - The congestion control algorithm beyond the wire fields above.
 - Audio, clipboard, multiple phones (not in v1).
 - HDR and 10-bit signalling beyond the reserved codec and capability values.

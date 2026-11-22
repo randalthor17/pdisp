@@ -7,7 +7,7 @@ pairing code, live numbers).
 ## Screens
 | Screen | What it does |
 |---|---|
-| Start | A USB card (what to do, or the USB state: waiting for the cable, charging-only advice, waiting for permission), the saved PCs (tap to connect; the menu renames or removes one), **Add a PC** (address, optional name; the keyboard opens only in that dialog), a "No PC yet" guide with three steps, and the last problem in a card with what to try (`explain()` in `Session.kt` turns the native text into a title and a hint). Settings are behind the gear. |
+| Start | A USB card (what to do, or the USB state: waiting for the cable, charging-only advice, waiting for permission), the saved PCs (tap to connect; the menu renames or removes one), a "Found on your network" list (PCs announced over mDNS; one tap adds and connects), **Add a PC** (address, optional name, for a PC that is not found; the keyboard opens only in that dialog), a "No PC yet" guide with three steps, and the last problem in a card with what to try (`explain()` in `Session.kt` turns the native text into a title and a hint). Settings are behind the gear. |
 | Connecting | Progress and what is happening (connecting, securing, waiting for the PC's monitor, starting the video, or "lost the PC, reconnecting (attempt N)"), Cancel. |
 | Pairing | The code to compare with the PC's notification, in large type. Cancel. |
 | Streaming | The picture, edge to edge, system bars hidden. Every touch and pen event goes to the PC. **Back** opens a small menu (connection, picture size and rate, statistics switch, Disconnect, Close); Back again closes it. An optional statistics line sits in a corner and lets touches through. |
@@ -25,7 +25,7 @@ rotation through `tests/m5_rotate_check.sh` (62 fps afterwards), touch reaching 
 ## Not done or not checked
 - **The phone layout** (Pixel 8a) with this UI: no phone was attached while it was written. The screens are one centred column up to 640 dp, so they should fit.
 - The light theme, TalkBack and large font sizes were not looked at.
-- No automatic discovery of PCs: addresses are typed. (mDNS on the PC and in the app would remove that step.)
+- Discovery of PCs is automatic (mDNS, `docs/discovery.md`). Not covered there: IPv6, and Android 17's local-network permission.
 - While streaming there is no way to open the menu except Back (a gesture-navigation back swipe works too); a three-finger gesture or an edge handle was not added
   because the PC's own gestures use touches.
 - On a tablet with a floating keyboard the keyboard can cover the Add dialog's Connect button; the keyboard's own Go key still works.

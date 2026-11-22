@@ -40,7 +40,7 @@ stdenv.mkDerivation {
 
   meta = {
     description = "Use an Android phone or tablet as a Linux second monitor";
-    license = lib.licenses.gpl3Plus;
+    license = lib.licenses.mit;
     platforms = [ "x86_64-linux" ];
     mainProgram = "pdispd";
   };

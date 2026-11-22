@@ -34,7 +34,7 @@ One rebuild does all of this:
 |---|---|
 | virtual display driver | `boot.extraModulePackages = [ evdi ]`, `boot.kernelModules = [ "evdi" ]`, and `options evdi initial_device_count=N` so a device exists at boot (adding one later needs root) |
 | the user may open the phone over USB | the package's udev rule (`70-pdisp.rules`, `uaccess`: the user at the active seat gets access, no group needed) |
-| Wi-Fi | with `openFirewall`, TCP and UDP 47110 are opened (all interfaces; every device must be paired and the traffic is encrypted) |
+| Wi-Fi | with `openFirewall`, TCP and UDP 47110 are opened, and UDP 5353 so the app can find the PC over mDNS (all interfaces; every device must be paired and the traffic is encrypted) |
 | the daemon | a systemd **user** service `pdispd`, started with the graphical session, with `-u -W -P ask -A pdisp-pair-prompt` |
 | pairing prompt | `libnotify` (`notify-send`) is installed; your notification daemon must show actions (mako, dunst, GNOME, KDE and DankMaterialShell do) |
 | tray application | `services.pdisp.gui.enable` (default on) installs the tray application (`pdisp gui`) and starts it with the session (`pdisp gui --background`): status, paired devices, settings and a dialog to approve new devices (`docs/gui.md`) |
@@ -74,7 +74,7 @@ accessory whose app is not running (it never answers) is dropped as soon as a ne
 2. **evdi**: install the evdi kernel module for your kernel (DKMS) and load it with a device already created:
    `echo evdi > /etc/modules-load.d/evdi.conf` and `echo "options evdi initial_device_count=1" > /etc/modprobe.d/evdi.conf`.
 3. **udev**: copy `70-pdisp.rules` to `/etc/udev/rules.d/`, then `udevadm control --reload`, and replug the phone.
-4. **Firewall** (Wi-Fi only): allow TCP and UDP port 47110 from your LAN, for example `ufw allow from 192.168.0.0/24 to any port 47110`.
+4. **Firewall** (Wi-Fi only): allow TCP and UDP port 47110 from your LAN, for example `ufw allow from 192.168.0.0/24 to any port 47110`, and UDP 5353 for discovery (`ufw allow from 192.168.0.0/24 to any port 5353 proto udp`).
 5. **Service**: `systemctl --user enable --now pdispd`. Change the options with `systemctl --user edit pdispd`.
 6. **Compositor**: the niri snippet above (include it, or paste it). For other compositors map the touchscreen and the pen to the monitor, or run the daemon
    with `-H COMMAND` (`docs/touch.md`).
@@ -84,7 +84,7 @@ accessory whose app is not running (it never answers) is dropped as soon as a ne
 Install the APK (`android/build.sh` builds `android/app/build/outputs/apk/debug/app-debug.apk`; `adb install -r` or copy it to the device).
 Developer options and USB debugging are **not** needed.
 
-- **Wi-Fi**: open the app, tap Add a PC and type its address. The first time, a notification on the PC asks whether to allow the device; the code it shows
+- **Wi-Fi**: open the app: the PC appears under "Found on your network" (it announces itself over mDNS, `docs/discovery.md`). Tap it. If it is not found (another network, or mDNS blocked), tap Add a PC and type its address. The first time, a notification on the PC asks whether to allow the device; the code it shows
   must match the code on the device's screen. Later, tap the PC in the list. The screens are described in `docs/app.md`. "Allow always" remembers the device (`pdisp keys list` and `pdisp keys remove` manage them).
 - **USB**: plug the cable in. The PC switches the device into accessory mode and Android offers to open pdisp: accept. The USB mode did not have to
   be File transfer on the two devices tried (charging only worked, with USB debugging on or off); a phone that hides itself until the user allows data was not
