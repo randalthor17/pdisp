@@ -153,3 +153,8 @@ Measured on a fresh niri session (2026-11-22, RX 9060 XT): GTT 45 MiB, niri's sh
 (a viewer connecting for 3 s, then a clean close) raised VRAM from 309 to 704 MiB: **about 38 MiB per cycle**, and it stayed after the daemon
 exited. That is one 2304x1536 buffer set per removed output; 600+ cycles of the test suite explain the 24 GiB seen before. A real user who
 connects a few times a day loses a few hundred MiB per day at most; scripts that cycle the output are the problem.
+
+## Running the display tests without growing your session's GPU memory
+`tests/niri-session.sh` (run it from a spare virtual terminal, not from the desktop): starts a throwaway niri, runs `meson test` inside it, prints the GPU memory
+before and after, and quits that niri, which frees what the output cycles took. A nested niri (a window) cannot be used: it has no DRM backend and never sees evdi outputs.
+Not run yet (it needs a free VT).
