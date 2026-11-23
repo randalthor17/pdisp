@@ -18,6 +18,7 @@ struct ctl_state {
 	bool session;                  /* a device is connected */
 	char device[64];
 	char transport[8];             /* "usb" or "network" */
+	char codec[8];                 /* "hevc" or "h264": what the session streams */
 	unsigned width, height;
 	double refresh_hz, session_secs;
 	double fps, bitrate_mbps, queue_ms, phone_queue_ms, phone_decode_ms;
@@ -27,6 +28,7 @@ struct ctl_state {
 	bool grace;                    /* the monitor is kept for a device that was lost */
 	/* settings, as they are now (the ones a client may change: see set_config) */
 	unsigned refresh_cap_hz, bitrate_kbps, max_bitrate_kbps, grace_secs, refine_frames;
+	char codecs[16];               /* the codecs a session may use: "hevc,h264", "hevc" or "h264" */
 };
 
 struct control_ops {

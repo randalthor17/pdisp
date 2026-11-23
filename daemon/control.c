@@ -79,6 +79,7 @@ static const char *state_json(char *out, size_t cap, const struct ctl_state *s)
 		jw_obj_member(&w, "session");
 		jw_str(&w, "device", s->device);
 		jw_str(&w, "transport", s->transport);
+		jw_str(&w, "codec", s->codec);
 		jw_int(&w, "width", s->width);
 		jw_int(&w, "height", s->height);
 		jw_num(&w, "refresh_hz", s->refresh_hz);
@@ -109,6 +110,7 @@ static const char *state_json(char *out, size_t cap, const struct ctl_state *s)
 	jw_int(&w, "max_bitrate_kbps", s->max_bitrate_kbps);
 	jw_int(&w, "grace_secs", s->grace_secs);
 	jw_int(&w, "refine_frames", s->refine_frames);
+	jw_str(&w, "codecs", s->codecs);
 	jw_obj_end(&w);
 	jw_obj_end(&w);
 	return jw_done(&w);
