@@ -3,7 +3,7 @@
  *   pdisp [-s SOCKET] watch [N]            print events as they come (N lines, default: until interrupted)
  *   pdisp [-s SOCKET] devices              the paired devices
  *   pdisp [-s SOCKET] remove FINGERPRINT   revoke one (a prefix of at least 4 characters)
- *   pdisp [-s SOCKET] set KEY VALUE        change a setting (refresh_cap_hz, bitrate_kbps, max_bitrate_kbps, grace_secs, refine_frames)
+ *   pdisp [-s SOCKET] set KEY VALUE        change a setting (refresh_cap_hz, bitrate_kbps, max_bitrate_kbps, grace_secs, refine_frames, codecs)
  *   pdisp [-s SOCKET] disconnect           end the session and remove the monitor
  *   pdisp [-s SOCKET] pairing [SECS]       listen for pairing requests and print them (and the answers); SECS default 30
  *   pdisp [-s SOCKET] answer ID always|once|deny

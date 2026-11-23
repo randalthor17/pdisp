@@ -59,7 +59,7 @@ Page {
                     color: !page.online ? Theme.fgErrorContainer : page.session ? Theme.fgPrimaryContainer : Theme.fgSurfaceVariant
                     text: !page.online ? "The daemon has to run for a phone or tablet to connect. It normally starts with your session."
                         : page.session ? (page.session.transport === "usb" ? "USB cable" : "Wi-Fi") + "  ·  " + page.session.width + "×" + page.session.height + " at "
-                                         + Math.round(page.session.refresh_hz) + " Hz" + (page.monitor ? "  ·  " + page.monitor.connector : "")
+                                         + Math.round(page.session.refresh_hz) + " Hz" + (page.session.codec ? "  ·  " + (page.session.codec === "h264" ? "H.264" : "HEVC") : "") + (page.monitor ? "  ·  " + page.monitor.connector : "")
                         : "Plug a phone or tablet in, or open the pdisp app on it and connect to this PC."
                 }
             }

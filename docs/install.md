@@ -4,7 +4,7 @@ pdisp has three parts: the **daemon** on the PC (`pdispd`, creates a virtual mon
 and a few **system and desktop settings** that let the daemon and the touch input work. On NixOS and home-manager the settings are done by the modules in
 this repository. Other systems do them by hand, listed below.
 
-Needs: a Wayland compositor that handles a new monitor (niri 26.04 is the one tried), a GPU with VAAPI HEVC encoding (only an AMD RX 9060 XT was tried), and Android 10 (API 29) or newer (tried on Android 17 on a Pixel 8a and a Galaxy Tab S9 FE).
+Needs: a Wayland compositor that handles a new monitor (niri 26.04 is the one tried), a GPU with VAAPI HEVC or H.264 encoding (only an AMD RX 9060 XT was tried), and Android 10 (API 29) or newer (tried on Android 17 on a Pixel 8a and a Galaxy Tab S9 FE).
 
 ## NixOS
 

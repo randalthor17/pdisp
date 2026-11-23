@@ -7,7 +7,7 @@ at any time without touching a stream.
 |---|---|
 | **Status** | Is the daemon running (with a Start button if not), who is connected, over which transport, the picture size and rate, pictures per second, bitrate, lost frames, send queue, the device's decode time, how long it has been connected, and Disconnect. While a lost device's monitor is kept, a button removes it at once. A Connections card shows whether USB and Wi-Fi are on. |
 | **Devices** | The paired devices (name, key fingerprint) with Remove, and Refresh. |
-| **Settings** | Highest refresh rate, starting and highest bitrate, still-picture sharpening, how long a lost device's monitor is kept. Saved by the daemon (`pdispd.conf`) and used from the next connection. Port, USB and the pairing mode are daemon options, not GUI settings. |
+| **Settings** | Highest refresh rate, starting and highest bitrate, still-picture sharpening, the video codec (Automatic, HEVC or H.264), how long a lost device's monitor is kept. Saved by the daemon (`pdispd.conf`) and used from the next connection. Port, USB and the pairing mode are daemon options, not GUI settings. |
 | **Pairing dialog** | When an unknown device connects: its name, the code to compare with the one on its screen, its fingerprint, and Allow always / Allow this time / Deny. Refused after 90 s. The window comes up by itself, and a tray notification says so. |
 
 Without a daemon connection the window says so and offers `systemctl --user start pdispd`.

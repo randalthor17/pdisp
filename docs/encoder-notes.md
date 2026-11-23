@@ -72,3 +72,21 @@ Text quality is an M10 item.
   and unused.
 - Reconnect and mode change: the encoder is opened for one size and the tool ignores frames of another size (M9).
 - The Android decoder accepting this exact stream (level 5.0/5.1, tv range) is verified only on the desktop (M5).
+
+## H.264 (the same encoder, a second codec)
+
+`encoder_config.codec` selects HEVC (default) or H.264. Code: `daemon/h264_headers.c` (SPS, PPS, slice header), the `_h264` functions in `daemon/encoder.c`.
+Checks: `tests/test_h264_headers.c`, `tests/loss_recovery_check.sh <enc_synth> <dir> h264`, `tests/m14_codec_check.sh`, and the m4 loopback test with `-F h264`.
+The stream properties are in `docs/protocol.md` (section 2.4). What was found building it (RX 9060 XT, Mesa 26.3, libva 1.24):
+
+- **Same rule as HEVC: the application supplies the headers.** The packed sequence header carries SPS and PPS together, and every slice has a packed slice header. The driver
+  passes our SPS through into the stream unchanged (checked with ffmpeg's `trace_headers`: `gaps_in_frame_num_allowed_flag`, `max_num_ref_frames`, the VUI), unlike HEVC where Mesa rewrites it.
+- **The CABAC slice header ends with `cabac_alignment_one_bit`** (ones to the byte boundary), not the 1-then-zeros trailing bits of HEVC. The bit length of the packed slice header includes them.
+- **Loss recovery is bit-exact**, as with HEVC: after a loss the next frame predicts from the newest frame the receiver has (5 and 6 frames back in the test), written as a
+  reference list modification, and falls back to an IDR beyond the buffer. The decoder side relies on `gaps_in_frame_num_value_allowed_flag`, so a lost frame leaves a gap in
+  `frame_num` that the decoder fills in instead of failing.
+- **POC type 2** (no reordering) works with the driver; the POC given to VA is twice the frame number, which is what ffmpeg's own encoder passes.
+- **Sizes**: the surfaces are allocated in whole macroblocks and the colour conversion places the picture at the top left (`output_region`); the SPS crops the rest. 1288x800 and
+  2344x1080 decode at exactly their size. Slices (by macroblock rows) and the rolling intra refresh (in macroblock columns) work as with HEVC.
+- **Levels**: the smallest H.264 level that holds the macroblock rate (`h264_level_idc`): 2304x1440 at 90 Hz is level 5.2. A device whose decoder stops at 5.1 would refuse it; not seen yet.
+- Not measured: H.264 timing and bitrate against HEVC at 90 Hz, and decoding on the tablet or the Pixel (no device run yet).
