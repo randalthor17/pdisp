@@ -44,7 +44,7 @@ xdg_shell_c = custom_target('xdg-shell-protocol-code',
 libva_dep = dependency('libva')
 libva_drm_dep = dependency('libva-drm')
 
-encoder_lib = static_library('pdisp-encoder', 'daemon/encoder.c', 'daemon/hevc_headers.c',
+encoder_lib = static_library('pdisp-encoder', 'daemon/encoder.c', 'daemon/hevc_headers.c', 'daemon/h264_headers.c',
   include_directories: inc,
   dependencies: [libva_dep, libva_drm_dep])
 encoder_dep = declare_dependency(
@@ -114,11 +114,20 @@ test_hevc_headers = executable('test_hevc_headers', 'tests/test_hevc_headers.c',
   include_directories: inc)
 test('hevc headers unit', test_hevc_headers)
 
+test_h264_headers = executable('test_h264_headers', 'tests/test_h264_headers.c', 'daemon/h264_headers.c',
+  include_directories: inc)
+test('h264 headers unit', test_h264_headers)
+
 # synthetic-frame encoder driver used by the loss recovery test
 enc_synth = executable('enc_synth', 'tests/enc_synth.c', dependencies: [encoder_dep], include_directories: inc)
 
 test('loss recovery', find_program('tests/loss_recovery_check.sh'),
-  args: [enc_synth, meson.current_build_dir() / 'loss-artifacts'],
+  args: [enc_synth, meson.current_build_dir() / 'loss-artifacts', 'hevc'],
+  protocol: 'exitcode',
+  timeout: 120,
+  suite: 'integration')
+test('loss recovery (h264)', find_program('tests/loss_recovery_check.sh'),
+  args: [enc_synth, meson.current_build_dir() / 'loss-artifacts-h264', 'h264'],
   protocol: 'exitcode',
   timeout: 120,
   suite: 'integration')
