@@ -295,6 +295,18 @@ fun SettingsScreen(c: SessionController, settings: Settings, onChange: (Settings
             for (hz in rates) FilterChip(selected = settings.maxRefreshHz == hz, onClick = { onChange(settings.copy(maxRefreshHz = hz)) }, label = { Text("$hz Hz") })
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
+        Text("Video codecs", style = MaterialTheme.typography.titleMedium)
+        Text("What this device offers the PC. The PC uses HEVC when it can, and H.264 otherwise. Changes apply from the next connection.",
+            style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 4.dp))
+        val hevcOn = settings.hevc && Codecs.hevcHardware
+        val h264On = settings.h264 && Codecs.h264Hardware
+        SwitchRow("HEVC (H.265)", if (Codecs.hevcHardware) "Better picture for the same bandwidth." else "This device has no hardware decoder for it.", hevcOn, Codecs.hevcHardware) { on ->
+            if (on || h264On) onChange(settings.copy(hevc = on)) // one codec always stays on
+        }
+        SwitchRow("H.264", if (Codecs.h264Hardware) "Works with every PC and device; needs more bandwidth for the same picture." else "This device has no hardware decoder for it.", h264On, Codecs.h264Hardware) { on ->
+            if (on || hevcOn) onChange(settings.copy(h264 = on))
+        }
+        HorizontalDivider(Modifier.padding(vertical = 12.dp))
         Text("Pairing", style = MaterialTheme.typography.titleMedium)
         Text("This device proves who it is to a PC with a key. Forgetting it makes every PC treat this device as new: you approve it again, and the PC's old entry can be removed with pdisp keys.",
             style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 4.dp))
@@ -314,13 +326,13 @@ fun SettingsScreen(c: SessionController, settings: Settings, onChange: (Settings
 }
 
 @Composable
-private fun SwitchRow(title: String, subtitle: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().clickable { onChange(!checked) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun SwitchRow(title: String, subtitle: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().clickable(enabled = enabled) { onChange(!checked) }.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).padding(end = 12.dp)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }
 

@@ -17,6 +17,9 @@ data class Settings(
     val showStats: Boolean = false,
     /** Highest refresh rate (Hz) this device offers the PC; 0 = everything the display and decoder can do. */
     val maxRefreshHz: Int = 0,
+    /** The video codecs to offer the PC (it uses HEVC when both are on and it has it: smaller pictures). At least one stays on; see Codecs.mask. */
+    val hevc: Boolean = true,
+    val h264: Boolean = true,
 )
 
 /** The saved PCs and settings (SharedPreferences), and the device's pairing files. */
@@ -64,11 +67,11 @@ class Store(private val ctx: Context) {
     var settings: Settings
         get() = Settings(
             prefs.getBoolean("keepScreenOn", true), prefs.getBoolean("fullBrightness", true), prefs.getBoolean("palmRejection", true),
-            prefs.getBoolean("showStats", false), prefs.getInt("maxRefreshHz", 0),
+            prefs.getBoolean("showStats", false), prefs.getInt("maxRefreshHz", 0), prefs.getBoolean("codecHevc", true), prefs.getBoolean("codecH264", true),
         )
         set(v) {
             prefs.edit().putBoolean("keepScreenOn", v.keepScreenOn).putBoolean("fullBrightness", v.fullBrightness).putBoolean("palmRejection", v.palmRejection)
-                .putBoolean("showStats", v.showStats).putInt("maxRefreshHz", v.maxRefreshHz).apply()
+                .putBoolean("showStats", v.showStats).putInt("maxRefreshHz", v.maxRefreshHz).putBoolean("codecHevc", v.hevc).putBoolean("codecH264", v.h264).apply()
         }
 
     /** Forgets this device's key and every PC it trusted: the next connection pairs again (the PC may also have to forget this device: pdisp keys). */
