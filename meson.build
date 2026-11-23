@@ -44,7 +44,7 @@ xdg_shell_c = custom_target('xdg-shell-protocol-code',
 libva_dep = dependency('libva')
 libva_drm_dep = dependency('libva-drm')
 
-encoder_lib = static_library('pdisp-encoder', 'daemon/encoder.c', 'daemon/hevc_headers.c',
+encoder_lib = static_library('pdisp-encoder', 'daemon/encoder.c', 'daemon/hevc_headers.c', 'daemon/h264_headers.c',
   include_directories: inc,
   dependencies: [libva_dep, libva_drm_dep])
 encoder_dep = declare_dependency(
@@ -114,11 +114,23 @@ test_hevc_headers = executable('test_hevc_headers', 'tests/test_hevc_headers.c',
   include_directories: inc)
 test('hevc headers unit', test_hevc_headers)
 
+test_h264_headers = executable('test_h264_headers', 'tests/test_h264_headers.c', 'daemon/h264_headers.c',
+  include_directories: inc)
+test('h264 headers unit', test_h264_headers)
+
+test_codecs = executable('test_codecs', 'tests/test_codecs.c', 'daemon/codecs.c', dependencies: proto_dep, include_directories: inc)
+test('codec sets', test_codecs)
+
 # synthetic-frame encoder driver used by the loss recovery test
 enc_synth = executable('enc_synth', 'tests/enc_synth.c', dependencies: [encoder_dep], include_directories: inc)
 
 test('loss recovery', find_program('tests/loss_recovery_check.sh'),
-  args: [enc_synth, meson.current_build_dir() / 'loss-artifacts'],
+  args: [enc_synth, meson.current_build_dir() / 'loss-artifacts', 'hevc'],
+  protocol: 'exitcode',
+  timeout: 120,
+  suite: 'integration')
+test('loss recovery (h264)', find_program('tests/loss_recovery_check.sh'),
+  args: [enc_synth, meson.current_build_dir() / 'loss-artifacts-h264', 'h264'],
   protocol: 'exitcode',
   timeout: 120,
   suite: 'integration')
@@ -133,7 +145,7 @@ test_stream = executable('test_stream', 'tests/test_stream.c', dependencies: pro
 test('video stream over a simulated link', test_stream, timeout: 300)
 
 # the daemon and the desktop test client
-pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/usblink.c', 'daemon/touch.c', 'daemon/control.c', 'daemon/json.c', 'daemon/mdns.c', 'daemon/ratestep.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')], install: true)
+pdispd = executable('pdispd', 'daemon/pdispd.c', 'daemon/codecs.c', 'daemon/usblink.c', 'daemon/touch.c', 'daemon/control.c', 'daemon/json.c', 'daemon/mdns.c', 'daemon/ratestep.c', dependencies: [vdisplay_dep, encoder_dep, proto_dep, dependency('libusb-1.0'), dependency('threads')], install: true)
 libav_deps = [dependency('libavcodec'), dependency('libavutil'), dependency('libswscale')]
 pdisp_view = executable('pdisp-view', 'tools/pdisp-view.c', 'tools/png.c', dependencies: [proto_dep, zlib_dep, dependency('threads'), dependency('sdl2'), meson.get_compiler('c').find_library('m')] + libav_deps)
 
@@ -333,4 +345,19 @@ test('m13 brightness over DDC/CI', m13_brightness,
   protocol: 'exitcode',
   is_parallel: false,
   timeout: 90,
+  suite: 'integration')
+
+m14_codec = find_program('tests/m14_codec_check.sh')
+test('m14 video codec negotiation', m14_codec,
+  args: [pdispd, pdisp_view, pdisp_ctl, meson.current_build_dir() / 'm14-artifacts'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
+  suite: 'integration')
+
+test('m4 loopback through the real pipeline (h264)', m4_loopback,
+  args: [pdispd, pdisp_view, pdisp_pattern, meson.current_build_dir() / 'm4-artifacts-h264', '-F', 'h264'],
+  protocol: 'exitcode',
+  is_parallel: false,
+  timeout: 120,
   suite: 'integration')

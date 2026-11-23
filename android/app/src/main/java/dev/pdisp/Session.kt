@@ -124,7 +124,7 @@ class SessionController(private val activity: Activity, private val store: Store
         usbHint = null
         handle = PdispNative.nativeStartUsb(
             pfd.detachFd(), surface!!, d.width, d.height, activity.resources.displayMetrics.densityDpi, d.rates, Build.MODEL,
-            activity.filesDir.absolutePath, deviceCaps(),
+            activity.filesDir.absolutePath, deviceCaps(), Codecs.mask(store.settings),
         )
         sessionStarted()
     }
@@ -185,7 +185,7 @@ class SessionController(private val activity: Activity, private val store: Store
         phase = Phase.Connecting
         handle = PdispNative.nativeStart(
             host, port, s, d.width, d.height, activity.resources.displayMetrics.densityDpi, d.rates, Build.MODEL,
-            activity.filesDir.absolutePath, deviceCaps(),
+            activity.filesDir.absolutePath, deviceCaps(), Codecs.mask(store.settings),
         )
         sessionStarted()
     }
@@ -345,8 +345,9 @@ fun explain(text: String): Problem {
         "does not use the secure protocol" in t -> Problem("The PC runs an older pdisp", "Update pdispd on the PC.")
         "refused" in t && "pairing was denied" in t -> Problem("Pairing was denied on the PC", "Connect again and choose Allow on the PC when it asks.")
         "pairing timed out" in t -> Problem("Nobody approved the pairing", "Connect again and answer the notification on the PC within 90 seconds.")
+        "no video codec in common" in t -> Problem("No video codec in common", "Turn on the other codec in this app's Settings, or allow it on the PC: pdisp set codecs hevc,h264.")
         "the pc refused" in t -> Problem(text.replaceFirstChar { it.uppercase() }, null)
-        "cannot decode" in t -> Problem("This device cannot decode the stream", "It needs a hardware HEVC decoder.")
+        "cannot decode" in t -> Problem("This device cannot decode the stream", "It needs a hardware HEVC or H.264 decoder.")
         "decoder failed" in t -> Problem("The video decoder failed", "Connect again. If it keeps happening, restart the app.")
         "lost contact" in t || "no data from the pc" in t -> Problem("Lost the connection to the PC", "Check the network or the cable.")
         "pc closed" in t || "pc ended" in t -> Problem("The PC ended the session", null)

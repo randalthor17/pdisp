@@ -55,7 +55,7 @@ int proto_ctl_frame_parse(const uint8_t *buf, size_t len, uint16_t *type, const 
 /* ---- control messages */
 
 enum { PROTO_CAP_TOUCH = 1, PROTO_CAP_STYLUS = 2, PROTO_CAP_HDR10 = 4, PROTO_CAP_WIDE_GAMUT = 8, PROTO_CAP_HLG = 16 };
-enum { PROTO_CODEC_HEVC = 1, PROTO_CODEC_AV1 = 2, PROTO_CODEC_HEVC_MAIN10 = 3 };
+enum { PROTO_CODEC_HEVC = 1, PROTO_CODEC_AV1 = 2, PROTO_CODEC_HEVC_MAIN10 = 3, PROTO_CODEC_H264 = 4 };
 enum { PROTO_SECURITY_NONE = 0, PROTO_SECURITY_CHACHA20POLY1305 = 1 };
 
 struct proto_hello {

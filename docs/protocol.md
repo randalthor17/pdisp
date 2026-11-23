@@ -70,7 +70,7 @@ extension TLVs (`u16 type, u16 length, value`); unknown TLVs are skipped, which 
     u8  orientation                      0 landscape, 1 portrait, 2 reverse landscape, 3 reverse portrait
     u16 inset_left, inset_top, inset_right, inset_bottom   safe-area insets in pixels
     list<u32> refresh_mhz                supported refresh rates in millihertz, e.g. 60000, 90000, 120000
-    list<u8>  codecs                     1 = HEVC Main 8-bit (required in v1); 2 = AV1, 3 = HEVC Main10 are reserved
+    list<u8>  codecs                     the video codecs the phone decodes in hardware: 1 = HEVC Main 8-bit, 4 = H.264 High (at least one of them); 2 = AV1, 3 = HEVC Main10 are reserved
     u8  max_touch_points
     u16 max_udp_payload                  largest UDP payload the phone will accept, at least 1200
     string app_version
@@ -84,13 +84,13 @@ extension TLVs (`u16 type, u16 length, value`); unknown TLVs are skipped, which 
     u8  security                         0 none (M4 only), 1 chacha20-poly1305 (M6)
     u16 width, height                    the mode of the virtual output (pixels), may differ from native
     u32 refresh_mhz
-    u8  codec                            1 = HEVC Main 8-bit
+    u8  codec                            the one the PC chose from the phone's list (see "Codec choice"): 1 = HEVC Main 8-bit, 4 = H.264 High
     u8  color_range, color_primaries, color_transfer, color_matrix    H.273 codes; v1: 0 (limited), 1, 13, 1
     u16 shard_size                       bytes of video payload per UDP packet, at most max_udp_payload minus 64
     u8  fec_percent                      initial parity overhead
     u32 bitrate_kbps, min_bitrate_kbps, max_bitrate_kbps
     u8  dpb_frames                       references the encoder retains (7 in v1, so up to 5 lost frames recover without an IDR)
-    bytes parameter_sets                 VPS, SPS and PPS, Annex B (codec-specific data for MediaCodec)
+    bytes parameter_sets                 HEVC: VPS, SPS and PPS; H.264: SPS and PPS. Annex B (codec-specific data for MediaCodec; for H.264 the SPS goes in csd-0 and the PPS in csd-1)
     ... TLVs
 
 **REJECT**: `u16 reason` (1 no common version, 2 not authorised, 3 busy, 4 unsupported display, 5 pairing denied, 6 pairing timed out), `string text`.
@@ -135,6 +135,25 @@ period (30 s by default) so the same phone can come back to it.
 The virtual output (and its EDID, from the HELLO display fields and the paired device key) exists before SETUP is sent,
 because SETUP carries the real mode; the compositor modeset takes about a second, so the phone shows "connecting".
 
+### 2.4 Codec choice
+
+The phone lists in HELLO the codecs it decodes in hardware (and that the user left on in its settings). The PC has its own setting of allowed codecs
+(`pdispd -c`, `pdisp set codecs`). The PC takes the **best codec in both lists that its GPU can encode**: HEVC before H.264 (the same picture takes
+fewer bits), and sends it as `codec` in SETUP. It tries the next one if the encoder for the best cannot be opened. The choice is made once per session: a
+RECONFIGURE keeps it. If the two lists have nothing in common the PC answers REJECT (reason 4) with a text that names both sides, and creates no output.
+A phone must not accept a SETUP whose codec it did not list.
+
+H.264 here is High profile, progressive, CABAC and 8x8 transform, no B-frames, one reference picture per slice. It carries the same loss recovery as HEVC:
+
+- `pic_order_cnt_type` 2 (decode order is output order; POC is twice `frame_num`), `max_num_ref_frames` 6, sliding-window marking: the decoder keeps the last six
+  pictures, as the encoder does (`dpb_frames`).
+- `gaps_in_frame_num_value_allowed_flag` 1: a picture the phone never received leaves a gap in `frame_num`, which the decoder fills with "non-existing"
+  frames, so decoding goes on without an IDR.
+- A P slice predicts from the previous picture by default. To predict from an older one (reference invalidation after a loss) the slice header carries a
+  reference list modification (`abs_diff_pic_num_minus1`) that puts that picture first.
+- The size is coded in whole macroblocks (16x16); a size that is not a multiple of 16 is cropped by the SPS.
+- `frame_num` is 8 bits and counts the pictures since the last IDR; consecutive IDR pictures use different `idr_pic_id`.
+
 ## 3. Media channel (UDP)
 
 ### 3.1 Common packet header (16 bytes, then the payload, then the 16-byte AEAD tag when `security = 1`)
@@ -165,7 +184,7 @@ Example, a VIDEO packet header with session 0x11223344 and seq 1:
 
 ### 3.2 VIDEO packets
 
-One encoded frame (one HEVC access unit, Annex B) is split into data shards of `shard_size` bytes (the last one padded with
+One encoded frame (one access unit, Annex B) is split into data shards of `shard_size` bytes (the last one padded with
 zeros) and protected with Reed-Solomon parity shards over GF(2^8) (systematic, Cauchy matrix). A frame of at most 255
 shards is one block; larger frames are split into blocks of at most 255 shards each (data plus parity). Any `data_shards`
 of the `data_shards + parity_shards` shards of a block reconstruct it.
@@ -349,4 +368,4 @@ seconds. Sent every second. Used to turn `capture_us` into glass-to-glass latenc
 4. **Input**: the redundant ordered event stream (section 3.8), not state snapshots.
 5. **Cursor**: drawn on the phone from CURSOR_POS and CURSOR_SHAPE.
 6. **Library sharing**: one C library, used from Kotlin through JNI.
-7. **Codecs**: HEVC Main 8-bit only in v1; AV1 and Main10 stay reserved in the codec list.
+7. **Codecs**: HEVC Main 8-bit and H.264 High (0.4: both, negotiated, see "Codec choice"); AV1 and Main10 stay reserved in the codec list.

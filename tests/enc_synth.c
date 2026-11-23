@@ -1,5 +1,5 @@
 /* Test helper: drive the encoder with a synthetic image (optionally scrolling) and simulate lost frames.
- * usage: enc_synth [-I refresh_frames] [-L slices] [-n frames] [-m] [-X first:last] [-c cbr|vbr] [-o out.hevc]
+ * usage: enc_synth [-C hevc|h264] [-I refresh_frames] [-L slices] [-n frames] [-m] [-X first:last] [-c cbr|vbr] [-o out.bin]
  *   -m          scroll the pattern 6 px per frame so every block changes and lost frames matter
  *   -X a:b      after frame b, tell the encoder that frames a..b never reached the receiver
  * Prints each frame size; the frame after the loss is followed by "[ref -N]" (N frames back; 0 = IDR). */
@@ -22,8 +22,9 @@ int main(int argc, char **argv)
 	const char *outfile = NULL;
 	int lost_a = -1, lost_b = -1;
 	double pace_fps = 0;
-	while ((opt = getopt(argc, argv, "I:L:n:o:c:mX:W:H:p:")) != -1) {
+	while ((opt = getopt(argc, argv, "C:I:L:n:o:c:mX:W:H:p:")) != -1) {
 		switch (opt) {
+		case 'C': cfg.codec = strcmp(optarg, "h264") == 0 ? ENCODER_H264 : ENCODER_HEVC; break;
 		case 'I': cfg.intra_refresh_frames = (unsigned)atoi(optarg); break;
 		case 'L': cfg.slices = (unsigned)atoi(optarg); break;
 		case 'n': frames = atoi(optarg); break;

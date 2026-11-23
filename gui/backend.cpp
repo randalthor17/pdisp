@@ -107,4 +107,5 @@ void Backend::refreshDevices() { send({{"cmd", "devices"}}); }
 void Backend::removeDevice(const QString &fp) { send({{"cmd", "remove_device"}, {"fingerprint", fp}}); }
 // the daemon's commands take every value as text
 void Backend::setConfig(const QString &key, int value) { send({{"cmd", "set_config"}, {"key", key}, {"value", QString::number(value)}}); }
+void Backend::setConfigText(const QString &key, const QString &value) { send({{"cmd", "set_config"}, {"key", key}, {"value", value}}); }
 void Backend::startDaemon() { QProcess::startDetached("systemctl", {"--user", "start", "pdispd"}); }

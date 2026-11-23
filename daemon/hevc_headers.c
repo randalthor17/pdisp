@@ -1,50 +1,12 @@
 #include "hevc_headers.h"
 
+#include "bits.h"
+
 #include <string.h>
 
 #define NAL_VPS 32
 #define NAL_SPS 33
 #define NAL_PPS 34
-
-struct bits {
-	uint8_t *buf;
-	size_t cap;
-	size_t pos; /* in bits */
-	bool overflow;
-};
-
-static void put_bit(struct bits *b, unsigned v)
-{
-	if (b->pos / 8 >= b->cap) { b->overflow = true; return; }
-	if ((b->pos & 7) == 0) b->buf[b->pos / 8] = 0;
-	if (v) b->buf[b->pos / 8] |= (uint8_t)(0x80 >> (b->pos & 7));
-	b->pos++;
-}
-
-static void u(struct bits *b, unsigned n, uint32_t v)
-{
-	for (unsigned i = n; i-- > 0;) put_bit(b, (v >> i) & 1);
-}
-
-static void ue(struct bits *b, uint32_t v)
-{
-	uint64_t x = (uint64_t)v + 1;
-	unsigned len = 0;
-	while ((x >> len) > 1) len++;
-	for (unsigned i = 0; i < len; i++) put_bit(b, 0);
-	for (unsigned i = len + 1; i-- > 0;) put_bit(b, (x >> i) & 1);
-}
-
-static void se(struct bits *b, int32_t v)
-{
-	ue(b, v > 0 ? (uint32_t)(2 * v - 1) : (uint32_t)(-2 * v));
-}
-
-static void trailing_bits(struct bits *b)
-{
-	put_bit(b, 1);
-	while (b->pos & 7) put_bit(b, 0);
-}
 
 static void profile_tier_level(struct bits *b, unsigned level_idc)
 {

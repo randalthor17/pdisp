@@ -360,10 +360,12 @@ static void show_picture(void)
 	pthread_mutex_unlock(&V.last_mu);
 }
 
-/* (Re)opens the HEVC decoder with the parameter sets of the current epoch and starts its thread. */
+/* (Re)opens the decoder for the codec the PC chose, with the parameter sets of the current epoch, and starts its thread. */
+static int g_codec = PROTO_CODEC_HEVC; /* what the PC chose in SETUP: PROTO_CODEC_HEVC or PROTO_CODEC_H264 */
+
 static int start_decoder(const uint8_t *param_sets, size_t len)
 {
-	const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_HEVC);
+	const AVCodec *codec = avcodec_find_decoder(g_codec == PROTO_CODEC_H264 ? AV_CODEC_ID_H264 : AV_CODEC_ID_HEVC);
 	V.dec = avcodec_alloc_context3(codec);
 	V.dec->thread_count = 0;
 	V.dec->flags |= AV_CODEC_FLAG_LOW_DELAY;
@@ -467,6 +469,7 @@ static void usage(const char *argv0)
 		"  -w            show the stream in a window (SDL2)\n"
 		"  -G            read the timestamp the pattern client draws (-T there) and report glass-to-glass latency\n"
 		"  -g SECS      with -G: ignore the first SECS seconds of stamps\n"
+		"  -F CODECS     the codecs to say this viewer can decode: hevc (default), h264 or hevc,h264\n"
 		"  -L pct        drop this percentage of incoming datagrams at random\n"
 		"  -B hz:pct     drop this percentage of incoming datagrams while the stream is faster than hz (a phone that cannot keep up)\n"
 		"  -X secs:WxH   after this long, report a display change to this size (a rotation), exercising RECONFIGURE\n"
@@ -489,7 +492,7 @@ int main(int argc, char **argv)
 	unsigned port = (unsigned)atoi(argv[2]);
 	unsigned nw = 2304, nh = 1440, dpi = 262;
 	double secs = 10, drop_pct = 0;
-	const char *snap = NULL, *rates = "60";
+	const char *snap = NULL, *rates = "60", *offer = "hevc"; /* offer: the codecs to say this viewer can decode (-F) */
 	bool check = false;
 	optind = 3;
 	int opt;
@@ -499,7 +502,7 @@ int main(int argc, char **argv)
 	bool insecure = false;
 	double change_after = 0;
 	unsigned change_w = 0, change_h = 0;
-	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGg:wL:B:K:X:i:j:J:q:C:IQvh")) != -1) {
+	while ((opt = getopt(argc, argv, "W:H:r:D:S:o:cGg:wL:B:K:X:i:j:J:q:C:F:IQvh")) != -1) {
 		switch (opt) {
 		case 'W': nw = (unsigned)atoi(optarg); break;
 		case 'H': nh = (unsigned)atoi(optarg); break;
@@ -511,6 +514,7 @@ int main(int argc, char **argv)
 		case 'Q': V.textq = true; break;
 		case 'G': V.read_stamps = true; break;
 		case 'g': V.glass_skip_us = (uint64_t)(atof(optarg) * 1e6); break;
+		case 'F': offer = optarg; break;
 		case 'w': V.window = true; break;
 		case 'L': drop_pct = atof(optarg); break;
 		case 'B': V.hot_hz_mhz = (unsigned)(atof(optarg) * 1000); { const char *c = strchr(optarg, ':'); V.hot_drop = c ? atof(c + 1) / 100.0 : 0; } break;
@@ -584,7 +588,8 @@ int main(int argc, char **argv)
 		hello.refresh_mhz[hello.n_refresh++] = (uint32_t)(strtod(s, &e) * 1000 + 0.5);
 		if (e == s) break;
 	}
-	hello.n_codecs = 1; hello.codecs[0] = PROTO_CODEC_HEVC;
+	if (strstr(offer, "hevc")) hello.codecs[hello.n_codecs++] = PROTO_CODEC_HEVC;
+	if (strstr(offer, "h264")) hello.codecs[hello.n_codecs++] = PROTO_CODEC_H264;
 	hello.max_touch_points = 10; hello.max_udp_payload = 1472;
 	snprintf(hello.app_version, sizeof hello.app_version, "test");
 	uint8_t b[2048];
@@ -611,13 +616,14 @@ int main(int argc, char **argv)
 	if (type != PROTO_CTL_SETUP || proto_setup_decode(payload, plen, &su) != 0) { fprintf(stderr, "bad SETUP\n"); return 1; }
 	if (new_pc && keystore_add(pcs_path, pc.pub, pc.name) == 0) LOG("remembered this PC");
 	V.drop_rate = drop_pct / 100.0 + (V.hot_hz_mhz && su.params.refresh_mhz > V.hot_hz_mhz ? V.hot_drop : 0);
-	LOG("SETUP: %ux%u@%.3f, session %08x, %u kbit/s, %u bytes of parameter sets", su.params.width, su.params.height,
+	g_codec = su.params.codec;
+	LOG("SETUP: %s, %ux%u@%.3f, session %08x, %u kbit/s, %u bytes of parameter sets", g_codec == PROTO_CODEC_H264 ? "h264" : "hevc", su.params.width, su.params.height,
 	    su.params.refresh_mhz / 1000.0, su.session_id, su.params.bitrate_kbps, su.params.param_sets_len);
 
 	if (V.window && SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "cannot initialise SDL: %s\n", SDL_GetError()); return 1; }
 
 	/* ---- decoder */
-	if (start_decoder(su.params.param_sets, su.params.param_sets_len) != 0) { fprintf(stderr, "cannot open the HEVC decoder\n"); return 1; }
+	if (start_decoder(su.params.param_sets, su.params.param_sets_len) != 0) { fprintf(stderr, "cannot open the decoder\n"); return 1; }
 
 	struct vrecv_config rc = { .session_id = su.session_id, .shard_size = su.params.shard_size };
 	struct vrecv_callbacks rcb = { .decode = decode_cb };
@@ -729,6 +735,7 @@ int main(int argc, char **argv)
 					struct proto_stream_params np;
 					if (proto_stream_params_decode(payload, plen, &np) != 0) { LOG("bad RECONFIGURE"); done = true; break; }
 					LOG("RECONFIGURE: epoch %u, %ux%u: restarting the decoder", np.epoch, np.width, np.height);
+					g_codec = np.codec;
 					V.drop_rate = drop_pct / 100.0 + (V.hot_hz_mhz && np.refresh_mhz > V.hot_hz_mhz ? V.hot_drop : 0);
 					stop_decoder();
 					if (start_decoder(np.param_sets, np.param_sets_len) != 0) { LOG("cannot reopen the decoder"); done = true; break; }

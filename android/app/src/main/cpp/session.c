@@ -1,5 +1,5 @@
 /* One streaming session on the phone: TCP handshake, UDP receive with loss repair (the shared proto library), and hardware
- * HEVC decode with AMediaCodec straight onto the SurfaceView's window. Runs on its own thread; Kotlin only starts, stops and
+ * HEVC or H.264 decode with AMediaCodec straight onto the SurfaceView's window. Runs on its own thread; Kotlin only starts, stops and
  * reads a status line. */
 #include <android/log.h>
 #include <android/native_window.h>
@@ -61,6 +61,7 @@ struct session {
 	struct input_tx in_tx;
 	struct palm_filter palm;    /* guarded by in_mu too */
 	unsigned device_caps;       /* PROTO_CAP_TOUCH, plus PROTO_CAP_STYLUS if the screen has a digitiser pen */
+	unsigned codecs;            /* the video codecs offered to the PC: a mask with bit PROTO_CODEC_* set for each (HEVC, H.264) */
 	uint64_t touch_pushed, touch_acked;
 	pthread_mutex_t status_mu;
 	char status[256];
@@ -163,20 +164,39 @@ static void close_codec(struct session *s)
 	s->codec = NULL;
 }
 
+static const char *mime_of(int codec) { return codec == PROTO_CODEC_H264 ? "video/avc" : "video/hevc"; }
+static const char *codec_label(int codec) { return codec == PROTO_CODEC_H264 ? "H.264" : "HEVC"; }
+
+/* The parameter sets as codec-specific data: HEVC takes VPS, SPS and PPS together in csd-0; H.264 takes the SPS in csd-0 and the PPS in csd-1
+ * (both Annex B, so the second start code is where to split). */
+static void set_csd(AMediaFormat *f, const struct proto_stream_params *p)
+{
+	if (!p->param_sets_len) return;
+	if (p->codec == PROTO_CODEC_H264) {
+		for (size_t i = 4; i + 4 <= p->param_sets_len; i++)
+			if (!p->param_sets[i] && !p->param_sets[i + 1] && !p->param_sets[i + 2] && p->param_sets[i + 3] == 1) {
+				AMediaFormat_setBuffer(f, "csd-0", p->param_sets, i);
+				AMediaFormat_setBuffer(f, "csd-1", p->param_sets + i, p->param_sets_len - i);
+				return;
+			}
+	}
+	AMediaFormat_setBuffer(f, "csd-0", p->param_sets, p->param_sets_len);
+}
+
 /* Tries to start a decoder for a stream: the parameter sets go in as codec-specific data, output goes to the window.
  * `hints` asks for real-time scheduling, which some vendors (Exynos) refuse; the caller then retries without. */
 static int try_codec(struct session *s, const struct proto_stream_params *p, int hints, int rate, bool probe)
 {
 	AMediaFormat *f = AMediaFormat_new();
-	AMediaFormat_setString(f, AMEDIAFORMAT_KEY_MIME, "video/hevc");
+	AMediaFormat_setString(f, AMEDIAFORMAT_KEY_MIME, mime_of(p->codec));
 	AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_WIDTH, p->width);
 	AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_HEIGHT, p->height);
-	if (p->param_sets_len) AMediaFormat_setBuffer(f, "csd-0", p->param_sets, p->param_sets_len);
+	set_csd(f, p);
 	AMediaFormat_setInt32(f, "low-latency", 1); /* no output reordering delay */
 	if (hints & 1) AMediaFormat_setInt32(f, AMEDIAFORMAT_KEY_PRIORITY, 0); /* real-time */
 	if ((hints & 2) && rate > 0) AMediaFormat_setInt32(f, "operating-rate", rate); /* clocks the decoder for this many frames a second */
-	s->codec = AMediaCodec_createDecoderByType("video/hevc");
-	if (!s->codec) { AMediaFormat_delete(f); LOGE("no HEVC decoder"); return -1; }
+	s->codec = AMediaCodec_createDecoderByType(mime_of(p->codec));
+	if (!s->codec) { AMediaFormat_delete(f); LOGE("no %s decoder", codec_label(p->codec)); return -1; }
 	media_status_t st = AMediaCodec_configure(s->codec, f, probe ? NULL : s->window, NULL, 0);
 	AMediaFormat_delete(f);
 	if (st == AMEDIA_OK) st = AMediaCodec_start(s->codec);
@@ -231,6 +251,7 @@ static void limit_rates_to_decoder(struct session *s)
 	memset(&p, 0, sizeof p);
 	p.width = (uint16_t)s->width;
 	p.height = (uint16_t)s->height;
+	p.codec = (s->codecs & (1u << PROTO_CODEC_HEVC)) ? PROTO_CODEC_HEVC : PROTO_CODEC_H264; /* the PC has not chosen yet: probe the one it will prefer */
 	unsigned keep = 0, lowest = s->rates_mhz[0];
 	for (unsigned i = 0; i < s->n_rates; i++) if (s->rates_mhz[i] < lowest) lowest = s->rates_mhz[i];
 	for (unsigned i = 0; i < s->n_rates; i++) {
@@ -358,8 +379,8 @@ static int send_hello(struct session *s, struct net_ctl *ctl, uint16_t type)
 	h.orientation = s->height > s->width ? 1 : 0;
 	h.density_dpi = (uint16_t)s->dpi;
 	for (unsigned i = 0; i < s->n_rates && i < PROTO_MAX_RATES; i++) h.refresh_mhz[h.n_refresh++] = s->rates_mhz[i];
-	h.n_codecs = 1;
-	h.codecs[0] = PROTO_CODEC_HEVC;
+	if (s->codecs & (1u << PROTO_CODEC_HEVC)) h.codecs[h.n_codecs++] = PROTO_CODEC_HEVC;
+	if (s->codecs & (1u << PROTO_CODEC_H264)) h.codecs[h.n_codecs++] = PROTO_CODEC_H264;
 	h.max_touch_points = 10;
 	h.max_udp_payload = 1472;
 	snprintf(h.app_version, sizeof h.app_version, "0.1");
@@ -468,7 +489,9 @@ static void *run(void *arg)
 	struct proto_setup su;
 	if (type != PROTO_CTL_SETUP || proto_setup_decode(payload, plen, &su) != 0) { set_status(s, "bad SETUP from the PC"); goto out; }
 	if (new_pc) keystore_add(pcs_path, pc.pub, pc.name); /* the PC let us in: remember it */
-	if (open_codec(s, &su.params) != 0) { set_status(s, "this device cannot decode the stream"); atomic_store(&s->end_kind, 2); goto out; }
+	if (su.params.codec >= 32 || !(s->codecs & (1u << su.params.codec))) { set_status(s, "the PC chose a video codec this device did not offer"); atomic_store(&s->end_kind, 2); goto out; }
+	LOGI("the PC chose %s", codec_label(su.params.codec));
+	if (open_codec(s, &su.params) != 0) { set_status(s, "this device cannot decode the %s stream", codec_label(su.params.codec)); atomic_store(&s->end_kind, 2); goto out; }
 
 	struct vrecv_config rc = { .session_id = su.session_id, .shard_size = su.params.shard_size };
 	struct vrecv_callbacks rcb = { .decode = decode_cb, .user = s };
@@ -684,7 +707,7 @@ out:
 }
 
 static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, jobject surface, jint width, jint height, jint dpi,
-			  jintArray rates, jstring name, jstring identity_dir, jint caps)
+			  jintArray rates, jstring name, jstring identity_dir, jint caps, jint codecs)
 {
 	struct session *s = calloc(1, sizeof *s);
 	if (!s) return 0;
@@ -698,6 +721,7 @@ static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, job
 	input_tx_init(&s->in_tx);
 	palm_init(&s->palm, &(struct palm_config){ .enabled = 1 });
 	s->device_caps = (unsigned)caps;
+	s->codecs = codecs ? (unsigned)codecs : (1u << PROTO_CODEC_HEVC); /* never offer nothing */
 	{
 		const char *d = (*env)->GetStringUTFChars(env, identity_dir, NULL);
 		snprintf(s->identity_dir, sizeof s->identity_dir, "%s", d);
@@ -724,18 +748,18 @@ static jlong start_common(JNIEnv *env, jstring host, jint port, jint usb_fd, job
 }
 
 JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStart(JNIEnv *env, jclass cls, jstring host, jint port, jobject surface,
-							      jint width, jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir, jint caps)
+							      jint width, jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir, jint caps, jint codecs)
 {
 	(void)cls;
-	return start_common(env, host, port, -1, surface, width, height, dpi, rates, name, identity_dir, caps);
+	return start_common(env, host, port, -1, surface, width, height, dpi, rates, name, identity_dir, caps, codecs);
 }
 
 /* `fd` is the descriptor of the open USB accessory; ownership passes to the native side. */
 JNIEXPORT jlong JNICALL Java_dev_pdisp_PdispNative_nativeStartUsb(JNIEnv *env, jclass cls, jint fd, jobject surface, jint width,
-								 jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir, jint caps)
+								 jint height, jint dpi, jintArray rates, jstring name, jstring identity_dir, jint caps, jint codecs)
 {
 	(void)cls;
-	return start_common(env, NULL, 0, fd, surface, width, height, dpi, rates, name, identity_dir, caps);
+	return start_common(env, NULL, 0, fd, surface, width, height, dpi, rates, name, identity_dir, caps, codecs);
 }
 
 /* Why the session ended on its own: 0 we stopped it, 1 the link failed (the app should try again), 2 it was refused or cannot work (it should not). */

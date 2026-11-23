@@ -13,7 +13,7 @@
 | event | when | fields |
 |---|---|---|
 | `hello` | on connect | `version` ("1") |
-| `state` | on connect, on a change, otherwise at most 4 times a second while numbers move | `usb`, `net`, `port`, `usb_state` (`off`, `waiting`, `accessory`), `session` (null or `device`, `transport` (`usb`, `network`), `width`, `height`, `refresh_hz`, `seconds`, `fps` (pictures sent per second, refinement included), `bitrate_mbps`, `queue_ms`, `phone_queue_ms`, `phone_decode_ms`, `frames_lost`, `idr_frames`, `repair_packets`), `monitor` (null or `connector`, `grace`: kept for a lost device), `config` (`refresh_cap_hz`, `bitrate_kbps`, `max_bitrate_kbps`, `grace_secs`, `refine_frames`) |
+| `state` | on connect, on a change, otherwise at most 4 times a second while numbers move | `usb`, `net`, `port`, `usb_state` (`off`, `waiting`, `accessory`), `session` (null or `device`, `transport` (`usb`, `network`), `codec` (`hevc` or `h264`), `width`, `height`, `refresh_hz`, `seconds`, `fps` (pictures sent per second, refinement included), `bitrate_mbps`, `queue_ms`, `phone_queue_ms`, `phone_decode_ms`, `frames_lost`, `idr_frames`, `repair_packets`), `monitor` (null or `connector`, `grace`: kept for a lost device), `config` (`refresh_cap_hz`, `bitrate_kbps`, `max_bitrate_kbps`, `grace_secs`, `refine_frames`, `codecs`: `hevc,h264`, `hevc` or `h264`) |
 | `pairing` | an unknown device asks to be trusted, to clients that sent `subscribe` with `"pairing":true` | `id`, `name`, `fingerprint`, `code` (six digits: the device shows the same) |
 | `pairing_done` | the request was decided or timed out | `id`, `result` (`always`, `once`, `deny`, `timeout`) |
 
@@ -28,9 +28,9 @@ Every command may carry a `"req"` string, which comes back in the reply. A reply
 | `{"cmd":"disconnect"}` | end the session and remove the virtual monitor now (also while it waits for a lost device) |
 | `{"cmd":"devices"}` | reply with `devices`: `[{"fingerprint":"xxxx-xxxx-xxxx-xxxx-xxxx","name":"..."}]` |
 | `{"cmd":"remove_device","fingerprint":"..."}` | revoke by prefix (at least 4 characters); reply `removed` |
-| `{"cmd":"set_config","key":"refresh_cap_hz","value":"90"}` | validated, applied from the next session, and saved in `pdispd.conf` next to the keys; keys as in `config` above |
+| `{"cmd":"set_config","key":"refresh_cap_hz","value":"90"}` | validated, applied from the next session, and saved in `pdispd.conf` next to the keys; keys as in `config` above. Every value is text; all are whole numbers except `codecs` (`hevc`, `h264` or `hevc,h264`) |
 
-The settings file `pdispd.conf` (`key=value` lines in the config directory) is read at start; an option given on the command line (`-R`, `-b`, `-B`, `-g`, `-F`) wins.
+The settings file `pdispd.conf` (`key=value` lines in the config directory) is read at start; an option given on the command line (`-R`, `-b`, `-B`, `-g`, `-F`, `-c`) wins.
 
 ## pdisp (the control commands)
 `pdisp status | watch [N] | devices | remove FINGERPRINT | set KEY VALUE | disconnect | pairing [SECS] | answer ID always|once|deny` (`-s SOCKET` to choose the

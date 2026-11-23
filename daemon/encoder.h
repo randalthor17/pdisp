@@ -1,9 +1,9 @@
-/* HEVC hardware encoder (VAAPI), driven directly through libva.
+/* Hardware video encoder (VAAPI), HEVC or H.264, driven directly through libva.
  *
  * Input is a BGRA/BGRX frame in system memory. It is uploaded to a VA surface, converted to NV12 on the GPU by the
- * VA video-processing pipeline (BT.709, full range in, limited range out) and encoded as HEVC Main 8-bit:
+ * VA video-processing pipeline (BT.709, full range in, limited range out) and encoded as HEVC Main 8-bit or H.264 High:
  * no B-frames, one reference frame, CBR or VBR with a small VBV buffer. The first frame and any frame with `force_idr` are
- * IDR; there is no periodic keyframe. One slice per picture.
+ * IDR; there is no periodic keyframe. One slice per picture by default.
  */
 #ifndef PDISP_ENCODER_H
 #define PDISP_ENCODER_H
@@ -14,9 +14,12 @@
 
 struct encoder;
 
+enum encoder_codec { ENCODER_HEVC = 0, ENCODER_H264 };
+
 struct encoder_config {
-	const char *render_node; /* e.g. /dev/dri/renderD128; NULL picks the first node that can encode HEVC */
-	unsigned width;          /* multiple of 8 */
+	enum encoder_codec codec; /* the default (zero) is HEVC */
+	const char *render_node; /* e.g. /dev/dri/renderD128; NULL picks the first node that can encode the codec */
+	unsigned width;          /* multiple of 8 (H.264 crops the picture when it is not a multiple of 16) */
 	unsigned height;         /* multiple of 8 */
 	unsigned fps;            /* nominal frame rate, used for rate control */
 	unsigned bitrate_kbps;   /* CBR: the rate. VBR: the peak rate the buffer is sized for */
@@ -42,7 +45,7 @@ struct encoder_packet {
 /* Returns 0, or -errno / -EIO. `*out` is set on success. */
 int encoder_open(const struct encoder_config *cfg, struct encoder **out);
 
-/* The VPS, SPS and PPS the stream uses (Annex B), for the receiver's decoder configuration. Returns the length, or 0 if
+/* The parameter sets the stream uses (Annex B; HEVC: VPS, SPS and PPS, H.264: SPS and PPS), for the receiver's decoder configuration. Returns the length, or 0 if
  * `cap` is too small. */
 size_t encoder_parameter_sets(const struct encoder *enc, uint8_t *out, size_t cap);
 

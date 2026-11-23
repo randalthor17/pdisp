@@ -9,7 +9,7 @@ pdisp creates a real virtual monitor, so your Wayland compositor treats the phon
 ## Features
 
 - **Real extended monitor**: a virtual output made with [evdi](https://github.com/DisplayLink/evdi), with a stable identity per paired phone. Nothing compositor-specific in the capture path.
-- **Low latency video**: VAAPI HEVC encoding, loss recovery (forward error correction, retransmission, reference invalidation) and a rate governor that adapts to the link.
+- **Low latency video**: VAAPI HEVC or H.264 encoding (HEVC when the device has it, H.264 otherwise; either can be switched off on the PC and in the app), loss recovery (forward error correction, retransmission, reference invalidation) and a rate governor that adapts to the link.
 - **Wi-Fi or USB**: the PC announces itself over mDNS, so the app finds it without typing an address. USB uses Android Open Accessory, with no adb and no developer mode. Cable and Wi-Fi fail over to each other.
 - **Touch and pen**: the phone's touches and stylus appear on the PC as a `uinput` touchscreen and tablet, mapped to the pdisp monitor only.
 - **Brightness from the desktop**: the phone's brightness is a DDC/CI monitor setting, so your shell's brightness slider controls it.
@@ -20,7 +20,7 @@ pdisp creates a real virtual monitor, so your Wayland compositor treats the phon
 
 - Linux with a Wayland compositor that handles hot-plugged monitors (niri 26.04 is the tested one)
 - The `evdi` kernel module
-- A GPU with VAAPI HEVC encoding (tested on an AMD RX 9060 XT)
+- A GPU with VAAPI HEVC or H.264 encoding (tested on an AMD RX 9060 XT)
 - Android 10 (API 29) or newer, arm64 (tested on Android 17: Pixel 8a, Galaxy Tab S9 FE)
 
 ## Install
@@ -76,7 +76,7 @@ Details are in [docs/control.md](docs/control.md).
 
 ```
  PC                                                         Phone
- virtual output (evdi) -> capture -> HEVC encode (VAAPI) -> network / USB -> decode -> screen
+ virtual output (evdi) -> capture -> HEVC or H.264 encode (VAAPI) -> network / USB -> decode -> screen
  uinput touchscreen    <----------------------------------- touch and pen events
 ```
 

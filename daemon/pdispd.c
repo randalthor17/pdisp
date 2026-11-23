@@ -24,6 +24,7 @@
 #include <sys/wait.h>
 #include <time.h>
 
+#include "codecs.h"
 #include "control.h"
 #include "mdns.h"
 #include "ratestep.h"
@@ -67,12 +68,13 @@ static struct {
 	bool usb;          /* look for a USB cable (accessory mode); without -W this replaces listening on the network */
 	bool also_net;     /* -W: with -u, listen on the network as well */
 	unsigned usb_vid;  /* only consider this USB vendor (0 = any) */
+	unsigned codecs;   /* the video codecs a session may use (codecs.h): a set of PROTO_CODEC_*; HEVC is preferred when the phone has it too */
 	unsigned refine_frames, refine_min_qp, refine_start_qp, refine_rate_percent, refine_gap_ms, refine_settle_ms; /* static refinement (see D.refine_left); 0 frames = off */
 } C = { .port = 47110, .max_hz_mhz = 60000, .bitrate = 12000, .max_bitrate = 40000, .name = "pdisp",
-	.serial_text = "PDISP0001", .serial = 1, .card = -1, .grace_secs = 30 };
+	.serial_text = "PDISP0001", .serial = 1, .card = -1, .grace_secs = 30, .codecs = CODEC_SET_ALL };
 
 /* which settings the command line gave (they win over the settings file a client may change) */
-enum { CONF_R = 1, CONF_B = 2, CONF_BMAX = 4, CONF_G = 8, CONF_F = 16 };
+enum { CONF_R = 1, CONF_B = 2, CONF_BMAX = 4, CONF_G = 8, CONF_F = 16, CONF_CODECS = 32 };
 static unsigned g_cli_set;
 
 /* ---- the live session */
@@ -98,6 +100,8 @@ struct daemon {
 	double encode_ms_sum, encode_ms_max;
 	uint64_t t_service_us, t_poll_us, auth_drops;
 	int card_index; /* the evdi card in use, for finding the connector name */
+	int codec;                 /* PROTO_CODEC_* the encoder produces; 0 while there is no encoder. Chosen once per session: a reconfiguration keeps it */
+	unsigned codec_set;        /* what this session may use: the PC's setting and what the phone can decode */
 };
 
 static struct daemon D;
@@ -296,12 +300,19 @@ static int bring_up(const struct edid_params *ep, const struct edid_timing *t, c
 	LOG("virtual output %ux%u@%.3f", D.width, D.height, t->refresh_hz);
 
 	if (D.enc) { encoder_close(D.enc); D.enc = NULL; }
-	struct encoder_config ec = { .render_node = C.render_node, .width = D.width, .height = D.height,
-				     .fps = (unsigned)(t->refresh_hz + 0.5), .bitrate_kbps = C.bitrate, .vbr = true,
-				     .target_percent = 50, .vbv_ms = 30 };
-	err = encoder_open(&ec, &D.enc);
+	/* The codec is chosen once per session (the best one the phone and the PC both have that this GPU can encode); a reconfiguration keeps it. */
+	err = -ENODEV;
+	for (int codec = D.codec ? D.codec : codec_best(D.codec_set); codec; codec = D.codec ? 0 : codec_next(D.codec_set, codec)) {
+		struct encoder_config ec = { .codec = codec == PROTO_CODEC_H264 ? ENCODER_H264 : ENCODER_HEVC,
+					     .render_node = C.render_node, .width = D.width, .height = D.height,
+					     .fps = (unsigned)(t->refresh_hz + 0.5), .bitrate_kbps = C.bitrate, .vbr = true,
+					     .target_percent = 50, .vbv_ms = 30 };
+		err = encoder_open(&ec, &D.enc);
+		if (!err) { D.codec = codec; break; }
+		LOG("cannot open a %s encoder: %s", codec_name(codec), strerror(-err));
+	}
 	if (err) return err;
-	LOG("encoder: %s", encoder_description(D.enc));
+	LOG("encoder: %s, %s", codec_name(D.codec), encoder_description(D.enc));
 	return 0;
 }
 
@@ -313,7 +324,7 @@ static void make_params(struct proto_stream_params *p)
 	p->width = (uint16_t)D.width;
 	p->height = (uint16_t)D.height;
 	p->refresh_mhz = D.refresh_mhz;
-	p->codec = PROTO_CODEC_HEVC;
+	p->codec = (uint8_t)D.codec;
 	p->color_range = 0; p->color_primaries = 1; p->color_transfer = 13; p->color_matrix = 1;
 	p->shard_size = 1200;
 	p->fec_percent = 10;
@@ -364,7 +375,8 @@ static void usage(const char *argv0)
 		"  -R MAXHZ    highest refresh rate to pick from the phone's list (default 60)\n"
 		"  -b KBPS     initial bitrate (default 12000; the controller raises it while the link allows)\n"
 		"  -B KBPS     highest bitrate (default 40000)\n"
-		"  -r NODE     VAAPI render node (default: first that can encode HEVC)\n"
+		"  -r NODE     VAAPI render node (default: first that can encode the codec)\n"
+		"  -c CODECS   video codecs to allow: hevc, h264 or hevc,h264 (default both; HEVC is used when the phone has it too, else H.264)\n"
 		"  -d CARD     evdi card (default: first free)\n"
 		"  -S SECS     stop streaming after this long (default: until the phone leaves)\n"
 		"  -W          with -u: also listen on the network (a cable and Wi-Fi at the same time)\n"
@@ -405,7 +417,7 @@ int main(int argc, char **argv)
 		C.refine_start_qp = (e = getenv("PDISP_REFINE_QP0")) ? (unsigned)atoi(e) : 22;
 		C.refine_rate_percent = (e = getenv("PDISP_REFINE_RATE_PCT")) ? (unsigned)atoi(e) : 50;
 	}
-	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:d:S:g:uWV:K:P:A:H:F:C:TMIho")) != -1) {
+	while ((opt = getopt(argc, argv, "p:n:t:N:m:R:b:B:r:c:d:S:g:uWV:K:P:A:H:F:C:TMIho")) != -1) {
 		switch (opt) {
 		case 'p': C.port = (unsigned)atoi(optarg); break;
 		case 'F': C.refine_frames = (unsigned)atoi(optarg); g_cli_set |= CONF_F; break; /* static refinement pictures; 0 = off */
@@ -422,6 +434,11 @@ int main(int argc, char **argv)
 		case 'b': C.bitrate = (unsigned)atoi(optarg); g_cli_set |= CONF_B; break;
 		case 'B': C.max_bitrate = (unsigned)atoi(optarg); g_cli_set |= CONF_BMAX; break;
 		case 'r': C.render_node = optarg; break;
+		case 'c':
+			C.codecs = codec_set_parse(optarg);
+			if (!C.codecs) { fprintf(stderr, "-c: hevc, h264 or hevc,h264\n"); return 2; }
+			g_cli_set |= CONF_CODECS;
+			break;
 		case 'd': C.card = atoi(optarg); break;
 		case 'S': run_secs = atof(optarg); break;
 		case 'u': C.usb = true; break;
@@ -781,6 +798,7 @@ static void ctl_publish(void)
 	g_cs.max_bitrate_kbps = C.max_bitrate;
 	g_cs.grace_secs = C.grace_secs;
 	g_cs.refine_frames = C.refine_frames;
+	codec_set_format(C.codecs, g_cs.codecs, sizeof g_cs.codecs);
 	control_publish(&g_cs);
 }
 
@@ -814,6 +832,7 @@ static void ctl_session_begin(const char *device)
 {
 	snprintf(g_cs.device, sizeof g_cs.device, "%s", device);
 	snprintf(g_cs.transport, sizeof g_cs.transport, "%s", g_usb_conn ? "usb" : "network");
+	snprintf(g_cs.codec, sizeof g_cs.codec, "%s", codec_name(D.codec));
 	g_cs.session = true;
 	g_session_start_us = g_pub_us = net_now_us();
 	g_pub_frames = D.frames_encoded;
@@ -837,7 +856,14 @@ static void conf_load(void)
 		char *eq = strchr(line, '=');
 		if (!eq || line[0] == '#') continue;
 		*eq = 0;
-		unsigned v = (unsigned)strtoul(eq + 1, NULL, 10);
+		char *val = eq + 1;
+		val[strcspn(val, "\r\n")] = 0;
+		if (!strcmp(line, "codecs")) {
+			unsigned s = codec_set_parse(val);
+			if (s && !(g_cli_set & CONF_CODECS)) C.codecs = s;
+			continue;
+		}
+		unsigned v = (unsigned)strtoul(val, NULL, 10);
 		if (!strcmp(line, "refresh_cap_hz") && !(g_cli_set & CONF_R) && v >= 24 && v <= 480) C.max_hz_mhz = v * 1000;
 		else if (!strcmp(line, "bitrate_kbps") && !(g_cli_set & CONF_B) && v >= 1000 && v <= 200000) C.bitrate = v;
 		else if (!strcmp(line, "max_bitrate_kbps") && !(g_cli_set & CONF_BMAX) && v >= 2000 && v <= 200000) C.max_bitrate = v;
@@ -852,10 +878,12 @@ static int conf_save(void)
 	if (!g_conf_path[0]) return -ENOENT;
 	char tmp[1120];
 	snprintf(tmp, sizeof tmp, "%s.tmp", g_conf_path);
+	char codecs_text[24];
+	codec_set_format(C.codecs, codecs_text, sizeof codecs_text);
 	FILE *f = fopen(tmp, "w");
 	if (!f) return -errno;
-	fprintf(f, "# written by pdisp: settings changed through the control socket\nrefresh_cap_hz=%u\nbitrate_kbps=%u\nmax_bitrate_kbps=%u\ngrace_secs=%u\nrefine_frames=%u\n",
-		C.max_hz_mhz / 1000, C.bitrate, C.max_bitrate, C.grace_secs, C.refine_frames);
+	fprintf(f, "# written by pdisp: settings changed through the control socket\nrefresh_cap_hz=%u\nbitrate_kbps=%u\nmax_bitrate_kbps=%u\ngrace_secs=%u\nrefine_frames=%u\ncodecs=%s\n",
+		C.max_hz_mhz / 1000, C.bitrate, C.max_bitrate, C.grace_secs, C.refine_frames, codecs_text);
 	if (fclose(f) != 0 || rename(tmp, g_conf_path) != 0) return -errno;
 	return 0;
 }
@@ -892,6 +920,15 @@ static int op_remove_device(void *user, const char *prefix)
 static int op_set_config(void *user, const char *key, const char *value, char *err, size_t errcap)
 {
 	(void)user;
+	if (!strcmp(key, "codecs")) { /* the one setting that is text */
+		unsigned set = codec_set_parse(value);
+		if (!set) { snprintf(err, errcap, "codecs must be hevc, h264 or hevc,h264"); return -EINVAL; }
+		C.codecs = set;
+		if (conf_save() != 0) LOG("cannot save the settings to %s", g_conf_path);
+		LOG("setting codecs = %s (from a client; used from the next session on)", value);
+		ctl_publish();
+		return 0;
+	}
 	char *end;
 	unsigned long v = strtoul(value, &end, 10);
 	if (*end || !*value) { snprintf(err, errcap, "%s must be a whole number", key); return -EINVAL; }
@@ -940,6 +977,7 @@ static void teardown_output(void)
 	if (D.vd) { vdisplay_close(D.vd); D.vd = NULL; }
 	D.streaming = false;
 	D.width = D.height = D.refresh_mhz = 0;
+	D.codec = 0; /* the next session chooses again */
 }
 
 /* Keeps capturing while nobody is connected, so the compositor's updates to the virtual output never back up. */
@@ -1056,9 +1094,20 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	    hello.density_dpi, hello.n_refresh);
 	if (!C.insecure && !authorize(ctl, &c->dev, g_ks_path)) return END_REJECTED;
 	if (hello.proto_min > PROTO_VERSION || hello.proto_max < PROTO_VERSION) { reject(ctl, 1, "no common protocol version"); return END_REJECTED; }
-	int has_hevc = 0;
-	for (int i = 0; i < hello.n_codecs; i++) has_hevc |= hello.codecs[i] == PROTO_CODEC_HEVC;
-	if (!has_hevc) { reject(ctl, 4, "the phone cannot decode HEVC"); return END_REJECTED; }
+	/* the video codec: what the phone can decode, within what this PC allows (the encoder is opened in bring_up, which may find the GPU cannot do the best one) */
+	unsigned codec_set = C.codecs & codec_set_from_list(hello.codecs, hello.n_codecs);
+	if (!codec_set) {
+		char pc[24], ph[24];
+		codec_set_format(C.codecs, pc, sizeof pc);
+		codec_set_format(codec_set_from_list(hello.codecs, hello.n_codecs), ph, sizeof ph);
+		LOG("no video codec in common: this PC allows %s, the phone offers %s", pc, *ph ? ph : "none of them");
+		char why[PROTO_TEXT_MAX];
+		snprintf(why, sizeof why, "no video codec in common (this PC allows %s, the phone can decode %s)", pc, *ph ? ph : "neither");
+		reject(ctl, 4, why);
+		return END_REJECTED;
+	}
+	D.codec_set = codec_set;
+	bool codec_kept = D.codec && (codec_set & (1u << D.codec)); /* the encoder kept for a returning phone can serve this one */
 
 	g_hello = hello;
 	g_have_dev_pub = !C.insecure;
@@ -1076,12 +1125,13 @@ static enum end_reason serve(struct conn *c, double run_secs)
 	if (reason) { reject(ctl, (uint16_t)reason, why); return END_REJECTED; }
 
 	/* the monitor: still there from before (a phone that came back in time), or new */
-	if (D.vd && D.enc && D.width == ep.width && D.height == ep.height && D.refresh_mhz == ep.refresh_mhz) {
+	if (D.vd && D.enc && codec_kept && D.width == ep.width && D.height == ep.height && D.refresh_mhz == ep.refresh_mhz) {
 		LOG("the virtual output %ux%u is still there: reusing it", D.width, D.height);
 	} else {
+		if (!codec_kept) D.codec = 0; /* a different codec: the encoder is opened again */
 		int err = bring_up(&ep, &timing, edid);
 		if (err == -ENODEV && !D.vd) { LOG("no free evdi device"); reject(ctl, 3, "no virtual display available"); g_exit_code = 3; return END_FATAL; }
-		if (err) { LOG("cannot bring up the output and encoder: %s", strerror(-err)); reject(ctl, 4, "no HEVC encoder or display"); return END_REJECTED; }
+		if (err) { LOG("cannot bring up the output and encoder: %s", strerror(-err)); reject(ctl, 4, "no video encoder or display"); return END_REJECTED; }
 	}
 	touch_start(&hello, D.width, D.height, &ep);
 	D.epoch = 0;

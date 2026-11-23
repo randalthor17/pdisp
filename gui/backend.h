@@ -35,6 +35,7 @@ public:
     Q_INVOKABLE void refreshDevices();
     Q_INVOKABLE void removeDevice(const QString &fingerprint);
     Q_INVOKABLE void setConfig(const QString &key, int value);
+    Q_INVOKABLE void setConfigText(const QString &key, const QString &value);
     Q_INVOKABLE void startDaemon();                                 // systemctl --user start pdispd
 
 signals:

@@ -63,6 +63,13 @@ Page {
             supporting: "When nothing changes for a moment, send better versions of the same screen. Text gets sharper."
             MSwitch { checked: (page.cfg.refine_frames || 0) > 0; onToggled: Backend.setConfig("refine_frames", checked ? 40 : 0) }
         }
+        Divider {}
+        Setting {
+            headline: "Video codec"
+            supporting: "Automatic uses HEVC, which gives a better picture for the same bandwidth, and H.264 for a device that only has that. Pick one to force it (H.264 works with every device but needs more bandwidth)."
+            MSegmented { model: [ { "label": "Automatic", "value": "hevc,h264" }, { "label": "HEVC", "value": "hevc" }, { "label": "H.264", "value": "h264" } ]
+                current: page.cfg.codecs; onPicked: function(v) { Backend.setConfigText("codecs", v) } }
+        }
     }
 
     MText { text: "Connection"; kind: "title"; scale: "m"; color: Theme.primary; Layout.topMargin: Theme.s3 }
